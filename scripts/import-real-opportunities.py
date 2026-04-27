@@ -281,9 +281,27 @@ for doc in all_docs:
         except Exception:
             pass
 
+    # Amount from matching filters is a fallback for ACV when main record isn't available
+    mf_amount = None
+    if mf:
+        amt = mf.get("amount")
+        if isinstance(amt, list) and amt:
+            mf_amount = num(amt[0])
+        elif isinstance(amt, (str, int, float)):
+            mf_amount = num(amt)
+
     acv = num(get("ACV"))
+    if acv is None and mf_amount is not None:
+        acv = mf_amount
+
     atr = num(get("Available to Renew (USD)") or get("Available to Renew"))
     fml = num(get("Forecast Most Likely (USD)"))
+    # Fallback: when FML missing or 0 but Order Form TCV / amount has value, use that
+    of_tcv = num(get("Order Form TCV"))
+    if (fml is None or fml == 0) and of_tcv:
+        fml = of_tcv
+    if (fml is None or fml == 0) and mf_amount:
+        fml = mf_amount
     fml_override = num(get("Forecast Most Likely Override (USD)"))
     confidence = get("Most Likely Confidence") or "Medium"
     if isinstance(confidence, list):

@@ -216,7 +216,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     const accountName = account?.accountName || opp.accountId;
     return (
       <tr className="border-t border-gray-100 hover:bg-gray-50">
-        {showCSE && <td className="px-3 py-2 font-medium text-gray-700">{cseName}</td>}
+        <td className="px-3 py-2 font-medium text-gray-700">{showCSE ? cseName : ''}</td>
         <td className="px-3 py-2 font-medium">
           <Link href={`/accounts/${opp.accountId}`} className="hover:underline">
             {accountName}
@@ -392,7 +392,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
                       className="cursor-pointer bg-gray-100 hover:bg-gray-200"
                       onClick={() => toggleGroup(cseName)}
                     >
-                      <td className="px-3 py-2 font-semibold" colSpan={15}>
+                      <td className="px-3 py-2 font-semibold" colSpan={16}>
                         <span className="mr-2">{isExpanded ? '▼' : '▶'}</span>
                         {cseName} ({groupOpps.length} opportunities)
                         <span className="ml-4 font-normal text-gray-600">
