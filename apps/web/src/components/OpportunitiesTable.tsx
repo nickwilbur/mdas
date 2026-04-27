@@ -2,20 +2,35 @@
 
 import Link from 'next/link';
 import { useState, useMemo } from 'react';
+import React from 'react';
 import { fmtUSD } from '@/components/ui';
-import type { CanonicalOpportunity } from '@mdas/canonical';
+import type { CanonicalOpportunity, CanonicalAccount } from '@mdas/canonical';
 
-type SortField = 'account' | 'opportunity' | 'stage' | 'type' | 'product' | 'fy' | 'qtr' | 'acv' | 'forecast' | 'acvDelta' | 'confidence' | 'closeDate';
+type SortField = 'cse' | 'account' | 'opportunity' | 'stage' | 'type' | 'product' | 'fy' | 'qtr' | 'acv' | 'acvDelta' | 'forecastHedge' | 'forecast' | 'forecastOverride' | 'flmNotes' | 'closeDate';
 type SortDirection = 'asc' | 'desc';
 
 interface OpportunitiesTableProps {
   opportunities: CanonicalOpportunity[];
-  accounts: Map<string, string>;
+  accounts: Map<string, CanonicalAccount>;
 }
 
 export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTableProps) {
   const [sortField, setSortField] = useState<SortField>('closeDate');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [groupBy, setGroupBy] = useState<'none' | 'cse'>('cse');
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  const toggleGroup = (cseName: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(cseName)) {
+        next.delete(cseName);
+      } else {
+        next.add(cseName);
+      }
+      return next;
+    });
+  };
 
   // Sort opportunities
   const sortedOpps = useMemo(() => {
@@ -24,11 +39,17 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     // Apply sort
     result.sort((a, b) => {
       let aVal: any, bVal: any;
-      
+
       switch (sortField) {
+        case 'cse':
+          const cseA = accounts.get(a.accountId)?.assignedCSE?.name ?? 'Unassigned';
+          const cseB = accounts.get(b.accountId)?.assignedCSE?.name ?? 'Unassigned';
+          aVal = cseA;
+          bVal = cseB;
+          break;
         case 'account':
-          aVal = accounts.get(a.accountId) || a.accountId;
-          bVal = accounts.get(b.accountId) || b.accountId;
+          aVal = accounts.get(a.accountId)?.accountName || a.accountId;
+          bVal = accounts.get(b.accountId)?.accountName || b.accountId;
           break;
         case 'opportunity':
           aVal = a.opportunityName;
@@ -58,18 +79,25 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
           aVal = a.acv || 0;
           bVal = b.acv || 0;
           break;
-        case 'forecast':
-          aVal = a.forecastMostLikely || 0;
-          bVal = b.forecastMostLikely || 0;
-          break;
         case 'acvDelta':
           aVal = a.acvDelta || 0;
           bVal = b.acvDelta || 0;
           break;
-        case 'confidence':
-          const confOrder = { 'Low': 0, 'Medium': 1, 'High': 2, 'Confirmed': 3, 'Closed': 4 };
-          aVal = confOrder[a.mostLikelyConfidence as keyof typeof confOrder] ?? -1;
-          bVal = confOrder[b.mostLikelyConfidence as keyof typeof confOrder] ?? -1;
+        case 'forecastHedge':
+          aVal = a.forecastHedgeUSD || 0;
+          bVal = b.forecastHedgeUSD || 0;
+          break;
+        case 'forecast':
+          aVal = a.forecastMostLikely || 0;
+          bVal = b.forecastMostLikely || 0;
+          break;
+        case 'forecastOverride':
+          aVal = a.forecastMostLikelyOverride || 0;
+          bVal = b.forecastMostLikelyOverride || 0;
+          break;
+        case 'flmNotes':
+          aVal = a.flmNotes || '';
+          bVal = b.flmNotes || '';
           break;
         case 'closeDate':
           aVal = new Date(a.closeDate).getTime();
@@ -87,6 +115,31 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     return result;
   }, [opportunities, accounts, sortField, sortDirection]);
 
+  // Group by CSE
+  const { groupedData, cseNames } = useMemo(() => {
+    if (groupBy === 'none') {
+      return { groupedData: null, cseNames: [] };
+    }
+
+    const groups = new Map<string, typeof opportunities>();
+    const names = new Set<string>();
+
+    sortedOpps.forEach(opp => {
+      const account = accounts.get(opp.accountId);
+      const cseName = account?.assignedCSE?.name ?? 'Unassigned';
+      names.add(cseName);
+      if (!groups.has(cseName)) {
+        groups.set(cseName, []);
+      }
+      groups.get(cseName)!.push(opp);
+    });
+
+    return {
+      groupedData: groups,
+      cseNames: Array.from(names).sort()
+    };
+  }, [sortedOpps, accounts, groupBy]);
+
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
@@ -101,12 +154,89 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     return sortDirection === 'asc' ? <span className="text-gray-600">↑</span> : <span className="text-gray-600">↓</span>;
   };
 
+  const OpportunityRow = ({ opp, showCSE }: { opp: CanonicalOpportunity; showCSE: boolean }) => {
+    const account = accounts.get(opp.accountId);
+    const cseName = account?.assignedCSE?.name ?? '—';
+    const accountName = account?.accountName || opp.accountId;
+
+    return (
+      <tr key={opp.opportunityId} className="border-t border-gray-100 hover:bg-gray-50">
+        {showCSE && (
+          <td className="px-3 py-2 text-gray-700 font-medium">{cseName}</td>
+        )}
+        <td className="px-3 py-2 font-medium">
+          <Link href={`/accounts/${opp.accountId}`} className="hover:underline">
+            {accountName}
+          </Link>
+        </td>
+        <td className="px-3 py-2 font-medium">
+          {opp.opportunityName}
+        </td>
+        <td className="px-3 py-2 text-gray-700">{opp.stageName}</td>
+        <td className="px-3 py-2 text-gray-700">{opp.type}</td>
+        <td className="px-3 py-2 text-gray-700">{opp.productLine ?? '—'}</td>
+        <td className="px-3 py-2 text-gray-700">{opp.fiscalYear}</td>
+        <td className="px-3 py-2 text-gray-700">
+          {opp.closeQuarter.startsWith('Q') ? opp.closeQuarter : `Q${opp.closeQuarter}`}
+        </td>
+        <td className="px-3 py-2 text-right tabular-nums">{opp.acv ? fmtUSD(opp.acv) : '—'}</td>
+        <td className={`px-3 py-2 text-right tabular-nums ${
+          opp.acvDelta && opp.acvDelta < 0 ? 'text-red-700' :
+          opp.acvDelta && opp.acvDelta > 0 ? 'text-green-700' : 'text-gray-600'
+        }`}>
+          {opp.acvDelta ? fmtUSD(opp.acvDelta) : '—'}
+        </td>
+        <td className="px-3 py-2 text-right tabular-nums">{opp.forecastHedgeUSD ? fmtUSD(opp.forecastHedgeUSD) : '—'}</td>
+        <td className="px-3 py-2 text-right tabular-nums">
+          {opp.forecastMostLikely ? fmtUSD(opp.forecastMostLikely) : '—'}
+        </td>
+        <td className="px-3 py-2 text-right tabular-nums">
+          {opp.forecastMostLikelyOverride ? fmtUSD(opp.forecastMostLikelyOverride) : '—'}
+        </td>
+        <td className="px-3 py-2 text-gray-700 text-xs max-w-xs truncate">{opp.flmNotes || '—'}</td>
+        <td className="px-3 py-2 text-gray-700">{new Date(opp.closeDate).toLocaleDateString()}</td>
+        <td className="px-3 py-2">
+          {(() => {
+            const sfLink = opp.sourceLinks?.find((l) => l.source === 'salesforce');
+            const url = sfLink?.url ?? `https://zuora.lightning.force.com/lightning/r/Opportunity/${opp.opportunityId}/view`;
+            return (
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:underline"
+              >
+                View
+              </a>
+            );
+          })()}
+        </td>
+      </tr>
+    );
+  };
+
   return (
     <>
+      {/* Group by selector */}
+      <div className="flex items-center gap-2">
+        <label className="text-sm font-medium">Group by:</label>
+        <select
+          value={groupBy}
+          onChange={(e) => setGroupBy(e.target.value as 'none' | 'cse')}
+          className="rounded border border-gray-300 px-2 py-1 text-sm"
+        >
+          <option value="none">None</option>
+          <option value="cse">CSE</option>
+        </select>
+      </div>
+
       <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase text-gray-600">
             <tr>
+              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('cse')}>
+                CSE <SortIcon field="cse" />
+              </th>
               <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('account')}>
                 Account <SortIcon field="account" />
               </th>
@@ -131,14 +261,20 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
               <th className="px-3 py-2 text-right cursor-pointer hover:bg-gray-100" onClick={() => handleSort('acv')}>
                 ACV <SortIcon field="acv" />
               </th>
-              <th className="px-3 py-2 text-right cursor-pointer hover:bg-gray-100" onClick={() => handleSort('forecast')}>
-                Forecast (ML) <SortIcon field="forecast" />
-              </th>
               <th className="px-3 py-2 text-right cursor-pointer hover:bg-gray-100" onClick={() => handleSort('acvDelta')}>
                 ACV Δ <SortIcon field="acvDelta" />
               </th>
-              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('confidence')}>
-                Confidence <SortIcon field="confidence" />
+              <th className="px-3 py-2 text-right cursor-pointer hover:bg-gray-100" onClick={() => handleSort('forecastHedge')}>
+                Forecast Hedge <SortIcon field="forecastHedge" />
+              </th>
+              <th className="px-3 py-2 text-right cursor-pointer hover:bg-gray-100" onClick={() => handleSort('forecast')}>
+                Forecast (ML) <SortIcon field="forecast" />
+              </th>
+              <th className="px-3 py-2 text-right cursor-pointer hover:bg-gray-100" onClick={() => handleSort('forecastOverride')}>
+                Forecast Override <SortIcon field="forecastOverride" />
+              </th>
+              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('flmNotes')}>
+                FLM Notes <SortIcon field="flmNotes" />
               </th>
               <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('closeDate')}>
                 Close Date <SortIcon field="closeDate" />
@@ -147,68 +283,32 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
             </tr>
           </thead>
           <tbody>
-            {sortedOpps.map((opp) => {
-              const accountName = accounts.get(opp.accountId) || opp.accountId;
-              return (
-                <tr key={opp.opportunityId} className="border-t border-gray-100 hover:bg-gray-50">
-                  <td className="px-3 py-2 font-medium">
-                    <Link href={`/accounts/${opp.accountId}`} className="hover:underline">
-                      {accountName}
-                    </Link>
-                  </td>
-                  <td className="px-3 py-2 font-medium">
-                    {opp.opportunityName}
-                  </td>
-                  <td className="px-3 py-2 text-gray-700">{opp.stageName}</td>
-                  <td className="px-3 py-2 text-gray-700">{opp.type}</td>
-                  <td className="px-3 py-2 text-gray-700">{opp.productLine ?? '—'}</td>
-                  <td className="px-3 py-2 text-gray-700">{opp.fiscalYear}</td>
-                  <td className="px-3 py-2 text-gray-700">
-                    {opp.closeQuarter.startsWith('Q') ? opp.closeQuarter : `Q${opp.closeQuarter}`}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">{opp.acv ? fmtUSD(opp.acv) : '—'}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    {opp.forecastMostLikely ? fmtUSD(opp.forecastMostLikely) : '—'}
-                  </td>
-                  <td className={`px-3 py-2 text-right tabular-nums ${
-                    opp.acvDelta && opp.acvDelta < 0 ? 'text-red-700' : 
-                    opp.acvDelta && opp.acvDelta > 0 ? 'text-green-700' : 'text-gray-600'
-                  }`}>
-                    {opp.acvDelta ? fmtUSD(opp.acvDelta) : '—'}
-                  </td>
-                  <td className="px-3 py-2">
-                    {opp.mostLikelyConfidence ? (
-                      <span className={`rounded px-2 py-0.5 text-xs font-medium ${
-                        opp.mostLikelyConfidence === 'Confirmed' ? 'bg-green-100 text-green-800' :
-                        opp.mostLikelyConfidence === 'High' ? 'bg-blue-100 text-blue-800' :
-                        opp.mostLikelyConfidence === 'Medium' ? 'bg-yellow-100 text-yellow-800' :
-                        opp.mostLikelyConfidence === 'Low' ? 'bg-red-100 text-red-800' :
-                        'bg-gray-100 text-gray-800'
-                      }`}>
-                        {opp.mostLikelyConfidence}
-                      </span>
-                    ) : '—'}
-                  </td>
-                  <td className="px-3 py-2 text-gray-700">{new Date(opp.closeDate).toLocaleDateString()}</td>
-                  <td className="px-3 py-2">
-                    {(() => {
-                      const sfLink = opp.sourceLinks?.find((l) => l.source === 'salesforce');
-                      const url = sfLink?.url ?? `https://zuora.lightning.force.com/lightning/r/Opportunity/${opp.opportunityId}/view`;
-                      return (
-                        <a
-                          href={url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-600 hover:underline"
-                        >
-                          View
-                        </a>
-                      );
-                    })()}
-                  </td>
-                </tr>
-              );
-            })}
+            {groupBy === 'cse' && groupedData ? (
+              cseNames.map(cseName => {
+                const groupOpps = groupedData.get(cseName) || [];
+                const isExpanded = expandedGroups.has(cseName);
+                const totalACV = groupOpps.reduce((s, o) => s + (o.acv || 0), 0);
+                const totalACVDelta = groupOpps.reduce((s, o) => s + (o.acvDelta || 0), 0);
+                const totalForecast = groupOpps.reduce((s, o) => s + (o.forecastMostLikely || 0), 0);
+
+                return (
+                  <React.Fragment key={cseName}>
+                    <tr className="bg-gray-100 cursor-pointer hover:bg-gray-200" onClick={() => toggleGroup(cseName)}>
+                      <td className="px-3 py-2 font-semibold" colSpan={15}>
+                        <span className="mr-2">{isExpanded ? '▼' : '▶'}</span>
+                        {cseName} ({groupOpps.length} opportunities)
+                        <span className="ml-4 text-gray-600">
+                          ACV: {fmtUSD(totalACV)} | ACV Δ: {fmtUSD(totalACVDelta)} | Forecast: {fmtUSD(totalForecast)}
+                        </span>
+                      </td>
+                    </tr>
+                    {isExpanded && groupOpps.map(opp => <OpportunityRow key={opp.opportunityId} opp={opp} showCSE={false} />)}
+                  </React.Fragment>
+                );
+              })
+            ) : (
+              sortedOpps.map(opp => <OpportunityRow key={opp.opportunityId} opp={opp} showCSE={true} />)
+            )}
           </tbody>
         </table>
       </div>

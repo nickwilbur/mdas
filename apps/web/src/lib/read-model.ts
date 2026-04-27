@@ -72,7 +72,7 @@ export async function getAuditTail(limit = 80) {
 
 export async function getAllOpportunities(): Promise<{
   opportunities: CanonicalOpportunity[];
-  accounts: Map<string, string>;
+  accounts: Map<string, import('@mdas/canonical').CanonicalAccount>;
   refreshId: string | null;
   startedAt: string | null;
 }> {
@@ -80,19 +80,19 @@ export async function getAllOpportunities(): Promise<{
   if (!run) return { opportunities: [], accounts: new Map(), refreshId: null, startedAt: null };
   const [opportunities, accountSnapshots] = await Promise.all([
     readSnapshotOpportunities(run.id),
-    query<{ account_id: string; payload: { accountName?: string } }>(
+    query<{ account_id: string; payload: import('@mdas/canonical').CanonicalAccount }>(
       `SELECT account_id, payload FROM snapshot_account WHERE refresh_id = $1`,
       [run.id],
     ),
   ]);
-  
+
   // Filter: 36 months forward, 15 months trailing from today
   const now = new Date();
   const minDate = new Date(now);
   minDate.setMonth(minDate.getMonth() - 15);
   const maxDate = new Date(now);
   maxDate.setMonth(maxDate.getMonth() + 36);
-  
+
   const filteredOpps = opportunities.filter(opp => {
     const closeDate = new Date(opp.closeDate);
     return closeDate >= minDate && closeDate <= maxDate;
@@ -100,12 +100,12 @@ export async function getAllOpportunities(): Promise<{
   
   // Sort by close date
   filteredOpps.sort((a, b) => new Date(a.closeDate).getTime() - new Date(b.closeDate).getTime());
-  
-  // Create account name map from snapshot accounts
-  const accountMap = new Map<string, string>();
+
+  // Create account map from snapshot accounts
+  const accountMap = new Map<string, import('@mdas/canonical').CanonicalAccount>();
   for (const acc of accountSnapshots.rows) {
-    accountMap.set(acc.account_id, acc.payload.accountName || acc.account_id);
+    accountMap.set(acc.account_id, acc.payload);
   }
-  
+
   return { opportunities: filteredOpps, accounts: accountMap, refreshId: run.id, startedAt: run.started_at };
 }
