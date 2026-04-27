@@ -128,7 +128,7 @@ export default async function OpportunitiesPage({
       )}
 
       <p className="text-xs text-gray-500">
-        Showing opportunities with close dates within 15 months trailing to 36 months forward from today. Sorted by close date.
+        Showing all opportunities sorted by close date.
       </p>
     </div>
   );
