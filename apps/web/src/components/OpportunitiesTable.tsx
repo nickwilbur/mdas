@@ -34,8 +34,6 @@ const CLOSED_STAGE_NUMS = new Set([8, 9]);
 export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTableProps) {
   const [sortField, setSortField] = useState<SortField>('closeDate');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
-  const [groupBy, setGroupBy] = useState<'none' | 'cse'>('cse');
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   // Per-column filter state (extensible — add filters by registering Sets here)
   const [stageFilter, setStageFilter] = useState<Set<string>>(new Set());
@@ -178,20 +176,6 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     return result;
   }, [filteredOpps, accounts, sortField, sortDirection]);
 
-  // Group by CSE
-  const { groupedData, cseNames } = useMemo(() => {
-    if (groupBy === 'none') return { groupedData: null, cseNames: [] };
-    const groups = new Map<string, typeof filteredOpps>();
-    const names = new Set<string>();
-    sortedOpps.forEach((opp) => {
-      const cseName = opp.salesEngineer?.name ?? 'Unassigned';
-      names.add(cseName);
-      if (!groups.has(cseName)) groups.set(cseName, []);
-      groups.get(cseName)!.push(opp);
-    });
-    return { groupedData: groups, cseNames: Array.from(names).sort() };
-  }, [sortedOpps, groupBy]);
-
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
@@ -201,22 +185,13 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     }
   };
 
-  const toggleGroup = (cseName: string) => {
-    setExpandedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(cseName)) next.delete(cseName);
-      else next.add(cseName);
-      return next;
-    });
-  };
-
-  const OpportunityRow = ({ opp, showCSE }: { opp: CanonicalOpportunity; showCSE: boolean }) => {
+  const OpportunityRow = ({ opp }: { opp: CanonicalOpportunity }) => {
     const account = accounts.get(opp.accountId);
     const cseName = opp.salesEngineer?.name ?? '—';
     const accountName = account?.accountName || opp.accountId;
     return (
       <tr className="border-t border-gray-100 hover:bg-gray-50">
-        <td className="px-3 py-2 font-medium text-gray-700">{showCSE ? cseName : ''}</td>
+        <td className="px-3 py-2 font-medium text-gray-700">{cseName}</td>
         <td className="px-3 py-2 font-medium">
           <Link href={`/accounts/${opp.accountId}`} className="hover:underline">
             {accountName}
@@ -278,7 +253,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
 
   return (
     <>
-      {/* Top-bar: filters that are NOT per-column (status & grouping) */}
+      {/* Top-bar: filters that are NOT per-column */}
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
           <label className="text-sm font-medium">Status:</label>
@@ -289,17 +264,6 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
           >
             <option value="open">Open (not closed)</option>
             <option value="all">All (incl. closed)</option>
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <label className="text-sm font-medium">Group by:</label>
-          <select
-            value={groupBy}
-            onChange={(e) => setGroupBy(e.target.value as 'none' | 'cse')}
-            className="rounded border border-gray-300 px-2 py-1 text-sm"
-          >
-            <option value="none">None</option>
-            <option value="cse">CSE</option>
           </select>
         </div>
       </div>
@@ -379,38 +343,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
             </tr>
           </thead>
           <tbody>
-            {groupBy === 'cse' && groupedData ? (
-              cseNames.map((cseName) => {
-                const groupOpps = groupedData.get(cseName) || [];
-                const isExpanded = expandedGroups.has(cseName);
-                const totalACV = groupOpps.reduce((s, o) => s + (o.acv || 0), 0);
-                const totalACVDelta = groupOpps.reduce((s, o) => s + (o.acvDelta || 0), 0);
-                const totalForecast = groupOpps.reduce((s, o) => s + (o.forecastMostLikely || 0), 0);
-                return (
-                  <React.Fragment key={cseName}>
-                    <tr
-                      className="cursor-pointer bg-gray-100 hover:bg-gray-200"
-                      onClick={() => toggleGroup(cseName)}
-                    >
-                      <td className="px-3 py-2 font-semibold" colSpan={16}>
-                        <span className="mr-2">{isExpanded ? '▼' : '▶'}</span>
-                        {cseName} ({groupOpps.length} opportunities)
-                        <span className="ml-4 font-normal text-gray-600">
-                          ACV: {fmtUSD(totalACV)} | ACV Δ: {fmtUSD(totalACVDelta)} | Forecast:{' '}
-                          {fmtUSD(totalForecast)}
-                        </span>
-                      </td>
-                    </tr>
-                    {isExpanded &&
-                      groupOpps.map((opp) => (
-                        <OpportunityRow key={opp.opportunityId} opp={opp} showCSE={false} />
-                      ))}
-                  </React.Fragment>
-                );
-              })
-            ) : (
-              sortedOpps.map((opp) => <OpportunityRow key={opp.opportunityId} opp={opp} showCSE={true} />)
-            )}
+            {sortedOpps.map((opp) => <OpportunityRow key={opp.opportunityId} opp={opp} />)}
           </tbody>
         </table>
       </div>
