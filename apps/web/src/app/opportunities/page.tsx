@@ -103,14 +103,20 @@ export default async function OpportunitiesPage({
                   </td>
                   <td className="px-3 py-2 text-gray-700">{new Date(opp.closeDate).toLocaleDateString()}</td>
                   <td className="px-3 py-2">
-                    <a 
-                      href={`https://zuora.lightning.force.com/lightning/r/Opportunity/${opp.opportunityId}/view`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:underline"
-                    >
-                      View
-                    </a>
+                    {(() => {
+                      const sfLink = opp.sourceLinks?.find((l) => l.source === 'salesforce');
+                      const url = sfLink?.url ?? `https://zuora.lightning.force.com/lightning/r/Opportunity/${opp.opportunityId}/view`;
+                      return (
+                        <a
+                          href={url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline"
+                        >
+                          View
+                        </a>
+                      );
+                    })()}
                   </td>
                 </tr>
               );
