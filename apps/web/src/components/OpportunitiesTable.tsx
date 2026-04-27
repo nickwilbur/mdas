@@ -16,25 +16,10 @@ interface OpportunitiesTableProps {
 export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTableProps) {
   const [sortField, setSortField] = useState<SortField>('closeDate');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
-  const [filters, setFilters] = useState<{ type?: string; stage?: string; product?: string; confidence?: string }>({});
 
-  // Filter and sort opportunities
-  const filteredOpps = useMemo(() => {
+  // Sort opportunities
+  const sortedOpps = useMemo(() => {
     let result = [...opportunities];
-
-    // Apply filters
-    if (filters.type) {
-      result = result.filter(opp => opp.type === filters.type);
-    }
-    if (filters.stage) {
-      result = result.filter(opp => opp.stageName === filters.stage);
-    }
-    if (filters.product) {
-      result = result.filter(opp => opp.productLine === filters.product);
-    }
-    if (filters.confidence) {
-      result = result.filter(opp => String(opp.mostLikelyConfidence) === filters.confidence);
-    }
 
     // Apply sort
     result.sort((a, b) => {
@@ -100,7 +85,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     });
 
     return result;
-  }, [opportunities, accounts, sortField, sortDirection, filters]);
+  }, [opportunities, accounts, sortField, sortDirection]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -116,58 +101,8 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     return sortDirection === 'asc' ? <span className="text-gray-600">↑</span> : <span className="text-gray-600">↓</span>;
   };
 
-  // Get unique values for filters
-  const types = Array.from(new Set(opportunities.map(o => o.type))).sort();
-  const stages = Array.from(new Set(opportunities.map(o => o.stageName))).sort();
-  const products = Array.from(new Set(opportunities.map(o => o.productLine).filter(p => p != null))).sort() as string[];
-  const confidences = Array.from(new Set(opportunities.map(o => String(o.mostLikelyConfidence || '')).filter(c => c))).sort();
-
   return (
     <>
-      {/* Filter bar */}
-      <div className="flex flex-wrap gap-2">
-        <select
-          value={filters.type || ''}
-          onChange={(e) => setFilters(f => ({ ...f, type: e.target.value || undefined }))}
-          className="rounded border border-gray-300 px-2 py-1 text-sm"
-        >
-          <option value="">All Types</option>
-          {types.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <select
-          value={filters.stage || ''}
-          onChange={(e) => setFilters(f => ({ ...f, stage: e.target.value || undefined }))}
-          className="rounded border border-gray-300 px-2 py-1 text-sm"
-        >
-          <option value="">All Stages</option>
-          {stages.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-        <select
-          value={filters.product || ''}
-          onChange={(e) => setFilters(f => ({ ...f, product: e.target.value || undefined }))}
-          className="rounded border border-gray-300 px-2 py-1 text-sm"
-        >
-          <option value="">All Products</option>
-          {products.map(p => <option key={p} value={p}>{p}</option>)}
-        </select>
-        <select
-          value={filters.confidence || ''}
-          onChange={(e) => setFilters(f => ({ ...f, confidence: e.target.value || undefined }))}
-          className="rounded border border-gray-300 px-2 py-1 text-sm"
-        >
-          <option value="">All Confidence</option>
-          {confidences.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
-        {(filters.type || filters.stage || filters.product || filters.confidence) && (
-          <button
-            onClick={() => setFilters({})}
-            className="rounded border border-gray-300 px-2 py-1 text-sm text-gray-600 hover:bg-gray-50"
-          >
-            Clear filters
-          </button>
-        )}
-      </div>
-
       <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase text-gray-600">
@@ -212,7 +147,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
             </tr>
           </thead>
           <tbody>
-            {filteredOpps.map((opp) => {
+            {sortedOpps.map((opp) => {
               const accountName = accounts.get(opp.accountId) || opp.accountId;
               return (
                 <tr key={opp.opportunityId} className="border-t border-gray-100 hover:bg-gray-50">
@@ -278,14 +213,14 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
         </table>
       </div>
 
-      {filteredOpps.length === 0 && (
+      {sortedOpps.length === 0 && (
         <div className="rounded-lg border border-gray-200 bg-white p-8 text-center text-gray-500">
           No opportunities found
         </div>
       )}
 
       <p className="text-xs text-gray-500">
-        Showing {filteredOpps.length} of {opportunities.length} opportunities with close dates within 15 months trailing to 36 months forward from today. Click headers to sort.
+        Showing {sortedOpps.length} of {opportunities.length} opportunities with close dates within 15 months trailing to 36 months forward from today. Click headers to sort.
       </p>
     </>
   );
