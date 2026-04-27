@@ -86,8 +86,20 @@ export async function getAllOpportunities(): Promise<{
     ),
   ]);
   
+  // Filter: 36 months forward, 15 months trailing from today
+  const now = new Date();
+  const minDate = new Date(now);
+  minDate.setMonth(minDate.getMonth() - 15);
+  const maxDate = new Date(now);
+  maxDate.setMonth(maxDate.getMonth() + 36);
+  
+  const filteredOpps = opportunities.filter(opp => {
+    const closeDate = new Date(opp.closeDate);
+    return closeDate >= minDate && closeDate <= maxDate;
+  });
+  
   // Sort by close date
-  opportunities.sort((a, b) => new Date(a.closeDate).getTime() - new Date(b.closeDate).getTime());
+  filteredOpps.sort((a, b) => new Date(a.closeDate).getTime() - new Date(b.closeDate).getTime());
   
   // Create account name map from snapshot accounts
   const accountMap = new Map<string, string>();
@@ -95,5 +107,5 @@ export async function getAllOpportunities(): Promise<{
     accountMap.set(acc.account_id, acc.payload.accountName || acc.account_id);
   }
   
-  return { opportunities, accounts: accountMap, refreshId: run.id, startedAt: run.started_at };
+  return { opportunities: filteredOpps, accounts: accountMap, refreshId: run.id, startedAt: run.started_at };
 }

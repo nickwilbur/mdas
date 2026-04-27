@@ -103,16 +103,14 @@ export default async function OpportunitiesPage({
                   </td>
                   <td className="px-3 py-2 text-gray-700">{new Date(opp.closeDate).toLocaleDateString()}</td>
                   <td className="px-3 py-2">
-                    {opp.sourceLinks.find(l => l.source === 'salesforce') ? (
-                      <a 
-                        href={opp.sourceLinks.find(l => l.source === 'salesforce')!.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline"
-                      >
-                        View
-                      </a>
-                    ) : '—'}
+                    <a 
+                      href={`https://zuora.lightning.force.com/lightning/r/Opportunity/${opp.opportunityId}/view`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:underline"
+                    >
+                      View
+                    </a>
                   </td>
                 </tr>
               );
@@ -128,7 +126,7 @@ export default async function OpportunitiesPage({
       )}
 
       <p className="text-xs text-gray-500">
-        Showing all opportunities sorted by close date.
+        Showing opportunities with close dates within 15 months trailing to 36 months forward from today. Sorted by close date.
       </p>
     </div>
   );
