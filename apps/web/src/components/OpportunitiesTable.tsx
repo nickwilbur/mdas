@@ -42,8 +42,8 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
 
       switch (sortField) {
         case 'cse':
-          const cseA = accounts.get(a.accountId)?.assignedCSE?.name ?? 'Unassigned';
-          const cseB = accounts.get(b.accountId)?.assignedCSE?.name ?? 'Unassigned';
+          const cseA = a.salesEngineer?.name ?? 'Unassigned';
+          const cseB = b.salesEngineer?.name ?? 'Unassigned';
           aVal = cseA;
           bVal = cseB;
           break;
@@ -125,8 +125,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     const names = new Set<string>();
 
     sortedOpps.forEach(opp => {
-      const account = accounts.get(opp.accountId);
-      const cseName = account?.assignedCSE?.name ?? 'Unassigned';
+      const cseName = opp.salesEngineer?.name ?? 'Unassigned';
       names.add(cseName);
       if (!groups.has(cseName)) {
         groups.set(cseName, []);
@@ -138,7 +137,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
       groupedData: groups,
       cseNames: Array.from(names).sort()
     };
-  }, [sortedOpps, accounts, groupBy]);
+  }, [sortedOpps, groupBy]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -156,7 +155,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
 
   const OpportunityRow = ({ opp, showCSE }: { opp: CanonicalOpportunity; showCSE: boolean }) => {
     const account = accounts.get(opp.accountId);
-    const cseName = account?.assignedCSE?.name ?? '—';
+    const cseName = opp.salesEngineer?.name ?? '—';
     const accountName = account?.accountName || opp.accountId;
 
     return (
