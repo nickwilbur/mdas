@@ -30,7 +30,7 @@ mdas/
         glean-mcp/          # Cross-source synthesis
         local-snapshots/    # Self-adapter for prior snapshots
         _shared/            # readOnlyGuard, rate limiter
-      mock/                  # 12-account fixtures
+      mock/                  # 236 Expand 3 account fixtures from Glean
   mcp.config.json
   docker-compose.yml
   scripts/
