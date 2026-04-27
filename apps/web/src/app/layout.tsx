@@ -22,7 +22,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en">
       <body className="min-h-screen bg-gray-50 text-gray-900">
         <header className="sticky top-0 z-10 border-b border-gray-200 bg-white">
-          <div className="mx-auto flex max-w-7xl items-center gap-6 px-6 py-3">
+          <div className="mx-auto flex w-full items-center gap-6 px-6 py-3">
             <Link href="/" className="font-semibold tracking-tight">
               MDAS <span className="text-xs font-normal text-gray-500">Expand 3</span>
             </Link>
@@ -35,7 +35,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             </nav>
           </div>
         </header>
-        <main className="mx-auto max-w-7xl px-6 py-6">{children}</main>
+        <main className="mx-auto w-full px-6 py-6">{children}</main>
       </body>
     </html>
   );
