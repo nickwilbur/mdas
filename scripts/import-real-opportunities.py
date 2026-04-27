@@ -54,6 +54,24 @@ our_accounts = set(
 )
 print(f"Our accounts: {len(our_accounts)}")
 
+# Build account_id -> assignedCSE mapping for opportunity CSE field
+account_cse = {}
+cse_rows = psql(
+    f"SELECT account_id || '|||' || COALESCE(payload->>'assignedCSE', '') "
+    f"FROM snapshot_account WHERE refresh_id='{src_refresh}';",
+    capture=True,
+).splitlines()
+for row in cse_rows:
+    if not row or '|||' not in row:
+        continue
+    aid, cse_str = row.split('|||', 1)
+    if cse_str:
+        try:
+            account_cse[aid] = json.loads(cse_str)
+        except Exception:
+            pass
+print(f"Account CSE mappings: {len(account_cse)}")
+
 
 def add_months(d: date, m: int) -> date:
     y = d.year + (d.month - 1 + m) // 12
@@ -272,8 +290,8 @@ for doc in all_docs:
         confidence = confidence[0] if confidence else "Medium"
     if confidence not in ("Low", "Medium", "High", "Confirmed", "Closed"):
         confidence = "Medium"
-    hedge = num(get("Forecast Hedge")) or 0
-    acv_delta = num(get("ACV Delta (USD)")) or 0
+    hedge = num(get("Forecast Hedge"))
+    acv_delta = num(get("ACV Delta (USD)"))
     cd_corp = num(get("Churn Delta (Corp)"))
     known_churn = abs(cd_corp) if (cd_corp is not None and cd_corp < 0) else 0
 
@@ -299,6 +317,29 @@ for doc in all_docs:
 
     sf_url = f"https://zuora.lightning.force.com/lightning/r/Opportunity/{opp_id}/view"
 
+    # Sales Engineer / CSE: source data has no SE field, so fall back to account's assignedCSE
+    sales_engineer = account_cse.get(cust_id)
+
+    # Opportunity owner (AE) from matching filters
+    opp_owner_name = None
+    opp_owner_email = None
+    if mf:
+        ow_n = mf.get("ownername")
+        if isinstance(ow_n, list) and ow_n:
+            opp_owner_name = ow_n[0]
+        elif isinstance(ow_n, str):
+            opp_owner_name = ow_n
+        ow_e = mf.get("owner")
+        if isinstance(ow_e, list) and ow_e:
+            opp_owner_email = ow_e[0]
+        elif isinstance(ow_e, str):
+            opp_owner_email = ow_e
+    opportunity_owner = (
+        {"id": opp_owner_email, "name": opp_owner_name}
+        if opp_owner_name
+        else None
+    )
+
     payload = {
         "opportunityId": opp_id,
         "opportunityName": name,
@@ -321,7 +362,8 @@ for doc in all_docs:
         "flmNotes": flm_notes if isinstance(flm_notes, str) else "",
         "slmNotes": None,
         "scNextSteps": next_steps if isinstance(next_steps, str) else "",
-        "salesEngineer": None,
+        "salesEngineer": sales_engineer,
+        "opportunityOwner": opportunity_owner,
         "fullChurnNotificationToOwnerDate": full_churn_notif,
         "fullChurnFinalEmailSentDate": None,
         "churnDownsellReason": churn_reason if isinstance(churn_reason, str) else None,

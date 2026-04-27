@@ -1,97 +1,118 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import React from 'react';
 import { fmtUSD } from '@/components/ui';
+import { TableHeader, type SortDirection } from '@/components/TableHeader';
 import type { CanonicalOpportunity, CanonicalAccount } from '@mdas/canonical';
 
-type SortField = 'cse' | 'account' | 'opportunity' | 'stage' | 'type' | 'product' | 'fy' | 'qtr' | 'acv' | 'acvDelta' | 'forecastHedge' | 'forecast' | 'forecastOverride' | 'flmNotes' | 'closeDate';
-type SortDirection = 'asc' | 'desc';
+type SortField =
+  | 'cse'
+  | 'account'
+  | 'opportunity'
+  | 'stage'
+  | 'type'
+  | 'product'
+  | 'fy'
+  | 'qtr'
+  | 'acv'
+  | 'acvDelta'
+  | 'forecastHedge'
+  | 'forecast'
+  | 'forecastOverride'
+  | 'flmNotes'
+  | 'closeDate';
 
 interface OpportunitiesTableProps {
   opportunities: CanonicalOpportunity[];
   accounts: Map<string, CanonicalAccount>;
 }
 
+const CLOSED_STAGE_NUMS = new Set([8, 9]);
+
 export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTableProps) {
   const [sortField, setSortField] = useState<SortField>('closeDate');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [groupBy, setGroupBy] = useState<'none' | 'cse'>('cse');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const [selectedStages, setSelectedStages] = useState<Set<number>>(new Set());
-  const [showClosed, setShowClosed] = useState(false);
-  const [stageDropdownOpen, setStageDropdownOpen] = useState(false);
-  const stageDropdownRef = useRef<HTMLDivElement>(null);
 
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (stageDropdownRef.current && !stageDropdownRef.current.contains(event.target as Node)) {
-        setStageDropdownOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  // Per-column filter state (extensible — add filters by registering Sets here)
+  const [stageFilter, setStageFilter] = useState<Set<string>>(new Set());
+  const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
+  const [productFilter, setProductFilter] = useState<Set<string>>(new Set());
+  const [fyFilter, setFyFilter] = useState<Set<string>>(new Set());
+  const [qtrFilter, setQtrFilter] = useState<Set<string>>(new Set());
+  const [cseFilter, setCseFilter] = useState<Set<string>>(new Set());
+  const [statusFilter, setStatusFilter] = useState<'open' | 'all'>('open');
 
-  // Get unique stages
-  const stages = useMemo(() => {
-    const stageMap = new Map<number, string>();
-    opportunities.forEach(opp => {
-      if (opp.stageNum !== null && !stageMap.has(opp.stageNum)) {
-        stageMap.set(opp.stageNum, opp.stageName);
-      }
+  // Distinct values for filter options
+  const filterOptions = useMemo(() => {
+    const stages = new Map<number, string>();
+    const types = new Set<string>();
+    const products = new Set<string>();
+    const fys = new Set<number>();
+    const qtrs = new Set<string>();
+    const cses = new Set<string>();
+    opportunities.forEach((o) => {
+      if (o.stageNum !== null && !stages.has(o.stageNum)) stages.set(o.stageNum, o.stageName);
+      if (o.type) types.add(o.type);
+      if (o.productLine) products.add(o.productLine);
+      if (o.fiscalYear) fys.add(o.fiscalYear);
+      const q = o.closeQuarter.startsWith('Q') ? o.closeQuarter : `Q${o.closeQuarter}`;
+      qtrs.add(q);
+      cses.add(o.salesEngineer?.name ?? 'Unassigned');
     });
-    return Array.from(stageMap.entries()).sort((a, b) => a[0] - b[0]);
+    return {
+      stages: Array.from(stages.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([num, name]) => ({ value: String(num), label: name })),
+      types: Array.from(types).sort().map((v) => ({ value: v, label: v })),
+      products: Array.from(products).sort().map((v) => ({ value: v, label: v })),
+      fys: Array.from(fys).sort((a, b) => a - b).map((v) => ({ value: String(v), label: String(v) })),
+      qtrs: Array.from(qtrs).sort().map((v) => ({ value: v, label: v })),
+      cses: Array.from(cses).sort().map((v) => ({ value: v, label: v })),
+    };
   }, [opportunities]);
 
-  // Filter opportunities
+  // Apply filters
   const filteredOpps = useMemo(() => {
-    let result = [...opportunities];
-
-    // Filter by stage (exclude stage 0 by default)
-    if (selectedStages.size > 0) {
-      result = result.filter(opp => opp.stageNum !== null && selectedStages.has(opp.stageNum));
-    } else {
-      // Default: exclude stage 0
-      result = result.filter(opp => opp.stageNum !== 0);
-    }
-
-    // Filter by closed status
-    if (!showClosed) {
-      result = result.filter(opp => opp.stageNum !== 8 && opp.stageNum !== 9);
-    }
-
-    return result;
-  }, [opportunities, selectedStages, showClosed]);
-
-  const toggleGroup = (cseName: string) => {
-    setExpandedGroups(prev => {
-      const next = new Set(prev);
-      if (next.has(cseName)) {
-        next.delete(cseName);
+    return opportunities.filter((o) => {
+      // Stage filter — if empty, default to excluding stage 0
+      if (stageFilter.size > 0) {
+        if (o.stageNum === null || !stageFilter.has(String(o.stageNum))) return false;
       } else {
-        next.add(cseName);
+        if (o.stageNum === 0) return false;
       }
-      return next;
+      // Status (open/all)
+      if (statusFilter === 'open' && o.stageNum !== null && CLOSED_STAGE_NUMS.has(o.stageNum)) {
+        return false;
+      }
+      // Type
+      if (typeFilter.size > 0 && !typeFilter.has(o.type)) return false;
+      // Product
+      if (productFilter.size > 0 && !productFilter.has(o.productLine ?? '')) return false;
+      // FY
+      if (fyFilter.size > 0 && !fyFilter.has(String(o.fiscalYear))) return false;
+      // Quarter
+      const q = o.closeQuarter.startsWith('Q') ? o.closeQuarter : `Q${o.closeQuarter}`;
+      if (qtrFilter.size > 0 && !qtrFilter.has(q)) return false;
+      // CSE
+      if (cseFilter.size > 0 && !cseFilter.has(o.salesEngineer?.name ?? 'Unassigned')) return false;
+      return true;
     });
-  };
+  }, [opportunities, stageFilter, statusFilter, typeFilter, productFilter, fyFilter, qtrFilter, cseFilter]);
 
-  // Sort opportunities
+  // Sort
   const sortedOpps = useMemo(() => {
-    let result = [...filteredOpps];
-
-    // Apply sort
+    const result = [...filteredOpps];
     result.sort((a, b) => {
-      let aVal: any, bVal: any;
-
+      let aVal: string | number = 0;
+      let bVal: string | number = 0;
       switch (sortField) {
         case 'cse':
-          const cseA = a.salesEngineer?.name ?? 'Unassigned';
-          const cseB = b.salesEngineer?.name ?? 'Unassigned';
-          aVal = cseA;
-          bVal = cseB;
+          aVal = a.salesEngineer?.name ?? 'Unassigned';
+          bVal = b.salesEngineer?.name ?? 'Unassigned';
           break;
         case 'account':
           aVal = accounts.get(a.accountId)?.accountName || a.accountId;
@@ -102,16 +123,16 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
           bVal = b.opportunityName;
           break;
         case 'stage':
-          aVal = a.stageNum || 0;
-          bVal = b.stageNum || 0;
+          aVal = a.stageNum ?? 0;
+          bVal = b.stageNum ?? 0;
           break;
         case 'type':
           aVal = a.type;
           bVal = b.type;
           break;
         case 'product':
-          aVal = a.productLine || '';
-          bVal = b.productLine || '';
+          aVal = a.productLine ?? '';
+          bVal = b.productLine ?? '';
           break;
         case 'fy':
           aVal = a.fiscalYear;
@@ -122,67 +143,53 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
           bVal = b.closeQuarter.replace('Q', '');
           break;
         case 'acv':
-          aVal = a.acv || 0;
-          bVal = b.acv || 0;
+          aVal = a.acv ?? 0;
+          bVal = b.acv ?? 0;
           break;
         case 'acvDelta':
-          aVal = a.acvDelta || 0;
-          bVal = b.acvDelta || 0;
+          aVal = a.acvDelta ?? 0;
+          bVal = b.acvDelta ?? 0;
           break;
         case 'forecastHedge':
-          aVal = a.forecastHedgeUSD || 0;
-          bVal = b.forecastHedgeUSD || 0;
+          aVal = a.forecastHedgeUSD ?? 0;
+          bVal = b.forecastHedgeUSD ?? 0;
           break;
         case 'forecast':
-          aVal = a.forecastMostLikely || 0;
-          bVal = b.forecastMostLikely || 0;
+          aVal = a.forecastMostLikely ?? 0;
+          bVal = b.forecastMostLikely ?? 0;
           break;
         case 'forecastOverride':
-          aVal = a.forecastMostLikelyOverride || 0;
-          bVal = b.forecastMostLikelyOverride || 0;
+          aVal = a.forecastMostLikelyOverride ?? 0;
+          bVal = b.forecastMostLikelyOverride ?? 0;
           break;
         case 'flmNotes':
-          aVal = a.flmNotes || '';
-          bVal = b.flmNotes || '';
+          aVal = a.flmNotes ?? '';
+          bVal = b.flmNotes ?? '';
           break;
         case 'closeDate':
           aVal = new Date(a.closeDate).getTime();
           bVal = new Date(b.closeDate).getTime();
           break;
-        default:
-          return 0;
       }
-
       if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
       if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
       return 0;
     });
-
     return result;
   }, [filteredOpps, accounts, sortField, sortDirection]);
 
   // Group by CSE
   const { groupedData, cseNames } = useMemo(() => {
-    if (groupBy === 'none') {
-      return { groupedData: null, cseNames: [] };
-    }
-
+    if (groupBy === 'none') return { groupedData: null, cseNames: [] };
     const groups = new Map<string, typeof filteredOpps>();
     const names = new Set<string>();
-
-    sortedOpps.forEach(opp => {
+    sortedOpps.forEach((opp) => {
       const cseName = opp.salesEngineer?.name ?? 'Unassigned';
       names.add(cseName);
-      if (!groups.has(cseName)) {
-        groups.set(cseName, []);
-      }
+      if (!groups.has(cseName)) groups.set(cseName, []);
       groups.get(cseName)!.push(opp);
     });
-
-    return {
-      groupedData: groups,
-      cseNames: Array.from(names).sort()
-    };
+    return { groupedData: groups, cseNames: Array.from(names).sort() };
   }, [sortedOpps, groupBy]);
 
   const handleSort = (field: SortField) => {
@@ -194,49 +201,28 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     }
   };
 
-  const SortIcon = ({ field }: { field: SortField }) => {
-    if (sortField !== field) return <span className="text-gray-300">↕</span>;
-    return sortDirection === 'asc' ? <span className="text-gray-600">↑</span> : <span className="text-gray-600">↓</span>;
-  };
-
-  const toggleStage = (stageNum: number) => {
-    setSelectedStages(prev => {
+  const toggleGroup = (cseName: string) => {
+    setExpandedGroups((prev) => {
       const next = new Set(prev);
-      if (next.has(stageNum)) {
-        next.delete(stageNum);
-      } else {
-        next.add(stageNum);
-      }
+      if (next.has(cseName)) next.delete(cseName);
+      else next.add(cseName);
       return next;
     });
-  };
-
-  const selectAllStages = () => {
-    setSelectedStages(new Set(stages.map(([num]) => num)));
-  };
-
-  const clearStageSelection = () => {
-    setSelectedStages(new Set());
   };
 
   const OpportunityRow = ({ opp, showCSE }: { opp: CanonicalOpportunity; showCSE: boolean }) => {
     const account = accounts.get(opp.accountId);
     const cseName = opp.salesEngineer?.name ?? '—';
     const accountName = account?.accountName || opp.accountId;
-
     return (
-      <tr key={opp.opportunityId} className="border-t border-gray-100 hover:bg-gray-50">
-        {showCSE && (
-          <td className="px-3 py-2 text-gray-700 font-medium">{cseName}</td>
-        )}
+      <tr className="border-t border-gray-100 hover:bg-gray-50">
+        {showCSE && <td className="px-3 py-2 font-medium text-gray-700">{cseName}</td>}
         <td className="px-3 py-2 font-medium">
           <Link href={`/accounts/${opp.accountId}`} className="hover:underline">
             {accountName}
           </Link>
         </td>
-        <td className="px-3 py-2 font-medium">
-          {opp.opportunityName}
-        </td>
+        <td className="px-3 py-2 font-medium">{opp.opportunityName}</td>
         <td className="px-3 py-2 text-gray-700">{opp.stageName}</td>
         <td className="px-3 py-2 text-gray-700">{opp.type}</td>
         <td className="px-3 py-2 text-gray-700">{opp.productLine ?? '—'}</td>
@@ -245,32 +231,35 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
           {opp.closeQuarter.startsWith('Q') ? opp.closeQuarter : `Q${opp.closeQuarter}`}
         </td>
         <td className="px-3 py-2 text-right tabular-nums">{opp.acv ? fmtUSD(opp.acv) : '—'}</td>
-        <td className={`px-3 py-2 text-right tabular-nums ${
-          opp.acvDelta && opp.acvDelta < 0 ? 'text-red-700' :
-          opp.acvDelta && opp.acvDelta > 0 ? 'text-green-700' : 'text-gray-600'
-        }`}>
+        <td
+          className={`px-3 py-2 text-right tabular-nums ${
+            opp.acvDelta && opp.acvDelta < 0
+              ? 'text-red-700'
+              : opp.acvDelta && opp.acvDelta > 0
+              ? 'text-green-700'
+              : 'text-gray-600'
+          }`}
+        >
           {opp.acvDelta ? fmtUSD(opp.acvDelta) : '—'}
         </td>
-        <td className="px-3 py-2 text-right tabular-nums">{opp.forecastHedgeUSD ? fmtUSD(opp.forecastHedgeUSD) : '—'}</td>
+        <td className="px-3 py-2 text-right tabular-nums">
+          {opp.forecastHedgeUSD ? fmtUSD(opp.forecastHedgeUSD) : '—'}
+        </td>
         <td className="px-3 py-2 text-right tabular-nums">
           {opp.forecastMostLikely ? fmtUSD(opp.forecastMostLikely) : '—'}
         </td>
         <td className="px-3 py-2 text-right tabular-nums">
           {opp.forecastMostLikelyOverride ? fmtUSD(opp.forecastMostLikelyOverride) : '—'}
         </td>
-        <td className="px-3 py-2 text-gray-700 text-xs max-w-xs truncate">{opp.flmNotes || '—'}</td>
+        <td className="max-w-xs truncate px-3 py-2 text-xs text-gray-700">{opp.flmNotes || '—'}</td>
         <td className="px-3 py-2 text-gray-700">{new Date(opp.closeDate).toLocaleDateString()}</td>
         <td className="px-3 py-2">
           {(() => {
             const sfLink = opp.sourceLinks?.find((l) => l.source === 'salesforce');
-            const url = sfLink?.url ?? `https://zuora.lightning.force.com/lightning/r/Opportunity/${opp.opportunityId}/view`;
+            const url =
+              sfLink?.url ?? `https://zuora.lightning.force.com/lightning/r/Opportunity/${opp.opportunityId}/view`;
             return (
-              <a
-                href={url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-600 hover:underline"
-              >
+              <a href={url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
                 View
               </a>
             );
@@ -280,72 +269,28 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     );
   };
 
+  // Common header props passed via spread
+  const commonHeader = {
+    sortField,
+    sortDirection,
+    onSort: handleSort,
+  };
+
   return (
     <>
-      {/* Filters */}
-      <div className="flex flex-wrap gap-4">
-        {/* Stage filter */}
-        <div className="flex items-center gap-2">
-          <label className="text-sm font-medium">Stage:</label>
-          <div className="relative" ref={stageDropdownRef}>
-            <button
-              className="rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
-              onClick={() => setStageDropdownOpen(!stageDropdownOpen)}
-            >
-              {selectedStages.size === 0
-                ? 'All (excl. stage 0)'
-                : selectedStages.size === stages.length
-                ? 'All selected'
-                : `${selectedStages.size} selected`}
-            </button>
-            {stageDropdownOpen && (
-              <div className="absolute top-full left-0 mt-1 w-64 rounded border border-gray-200 bg-white shadow-lg p-2 z-10">
-                <div className="flex gap-2 mb-2">
-                  <button
-                    onClick={selectAllStages}
-                    className="text-xs text-blue-600 hover:underline"
-                  >
-                    All
-                  </button>
-                  <button
-                    onClick={clearStageSelection}
-                    className="text-xs text-blue-600 hover:underline"
-                  >
-                    None
-                  </button>
-                </div>
-                <div className="max-h-48 overflow-y-auto">
-                  {stages.map(([num, name]) => (
-                    <label key={num} className="flex items-center gap-2 px-2 py-1 hover:bg-gray-50 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={selectedStages.has(num)}
-                        onChange={() => toggleStage(num)}
-                        className="rounded"
-                      />
-                      <span className="text-sm">{name}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Open/Closed filter */}
+      {/* Top-bar: filters that are NOT per-column (status & grouping) */}
+      <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
           <label className="text-sm font-medium">Status:</label>
           <select
-            value={showClosed ? 'all' : 'open'}
-            onChange={(e) => setShowClosed(e.target.value === 'all')}
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as 'open' | 'all')}
             className="rounded border border-gray-300 px-2 py-1 text-sm"
           >
             <option value="open">Open (not closed)</option>
             <option value="all">All (incl. closed)</option>
           </select>
         </div>
-
-        {/* Group by selector */}
         <div className="flex items-center gap-2">
           <label className="text-sm font-medium">Group by:</label>
           <select
@@ -361,82 +306,110 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
 
       <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-left text-xs uppercase text-gray-600">
+          <thead className="bg-gray-50 text-xs uppercase text-gray-600">
             <tr>
-              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('cse')}>
-                CSE <SortIcon field="cse" />
-              </th>
-              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('account')}>
-                Account <SortIcon field="account" />
-              </th>
-              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('opportunity')}>
-                Opportunity <SortIcon field="opportunity" />
-              </th>
-              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('stage')}>
-                Stage <SortIcon field="stage" />
-              </th>
-              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('type')}>
-                Type <SortIcon field="type" />
-              </th>
-              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('product')}>
-                Product <SortIcon field="product" />
-              </th>
-              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('fy')}>
-                FY <SortIcon field="fy" />
-              </th>
-              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('qtr')}>
-                Qtr <SortIcon field="qtr" />
-              </th>
-              <th className="px-3 py-2 text-right cursor-pointer hover:bg-gray-100" onClick={() => handleSort('acv')}>
-                ACV <SortIcon field="acv" />
-              </th>
-              <th className="px-3 py-2 text-right cursor-pointer hover:bg-gray-100" onClick={() => handleSort('acvDelta')}>
-                ACV Δ <SortIcon field="acvDelta" />
-              </th>
-              <th className="px-3 py-2 text-right cursor-pointer hover:bg-gray-100" onClick={() => handleSort('forecastHedge')}>
-                Forecast Hedge <SortIcon field="forecastHedge" />
-              </th>
-              <th className="px-3 py-2 text-right cursor-pointer hover:bg-gray-100" onClick={() => handleSort('forecast')}>
-                Forecast (ML) <SortIcon field="forecast" />
-              </th>
-              <th className="px-3 py-2 text-right cursor-pointer hover:bg-gray-100" onClick={() => handleSort('forecastOverride')}>
-                Forecast Override <SortIcon field="forecastOverride" />
-              </th>
-              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('flmNotes')}>
-                FLM Notes <SortIcon field="flmNotes" />
-              </th>
-              <th className="px-3 py-2 cursor-pointer hover:bg-gray-100" onClick={() => handleSort('closeDate')}>
-                Close Date <SortIcon field="closeDate" />
-              </th>
-              <th className="px-3 py-2">Salesforce</th>
+              <TableHeader<SortField>
+                {...commonHeader}
+                label="CSE"
+                field="cse"
+                filterOptions={filterOptions.cses}
+                selectedFilters={cseFilter}
+                onFilterChange={setCseFilter}
+              />
+              <TableHeader<SortField> {...commonHeader} label="Account" field="account" />
+              <TableHeader<SortField> {...commonHeader} label="Opportunity" field="opportunity" />
+              <TableHeader<SortField>
+                {...commonHeader}
+                label="Stage"
+                field="stage"
+                filterOptions={filterOptions.stages}
+                selectedFilters={stageFilter}
+                onFilterChange={setStageFilter}
+              />
+              <TableHeader<SortField>
+                {...commonHeader}
+                label="Type"
+                field="type"
+                filterOptions={filterOptions.types}
+                selectedFilters={typeFilter}
+                onFilterChange={setTypeFilter}
+              />
+              <TableHeader<SortField>
+                {...commonHeader}
+                label="Product"
+                field="product"
+                filterOptions={filterOptions.products}
+                selectedFilters={productFilter}
+                onFilterChange={setProductFilter}
+              />
+              <TableHeader<SortField>
+                {...commonHeader}
+                label="FY"
+                field="fy"
+                filterOptions={filterOptions.fys}
+                selectedFilters={fyFilter}
+                onFilterChange={setFyFilter}
+              />
+              <TableHeader<SortField>
+                {...commonHeader}
+                label="Qtr"
+                field="qtr"
+                filterOptions={filterOptions.qtrs}
+                selectedFilters={qtrFilter}
+                onFilterChange={setQtrFilter}
+              />
+              <TableHeader<SortField> {...commonHeader} label="ACV" field="acv" align="right" />
+              <TableHeader<SortField> {...commonHeader} label="ACV Δ" field="acvDelta" align="right" />
+              <TableHeader<SortField>
+                {...commonHeader}
+                label="Forecast Hedge"
+                field="forecastHedge"
+                align="right"
+              />
+              <TableHeader<SortField> {...commonHeader} label="Forecast (ML)" field="forecast" align="right" />
+              <TableHeader<SortField>
+                {...commonHeader}
+                label="Forecast Override"
+                field="forecastOverride"
+                align="right"
+              />
+              <TableHeader<SortField> {...commonHeader} label="FLM Notes" field="flmNotes" />
+              <TableHeader<SortField> {...commonHeader} label="Close Date" field="closeDate" />
+              <TableHeader<SortField> {...commonHeader} label="Salesforce" />
             </tr>
           </thead>
           <tbody>
             {groupBy === 'cse' && groupedData ? (
-              cseNames.map(cseName => {
+              cseNames.map((cseName) => {
                 const groupOpps = groupedData.get(cseName) || [];
                 const isExpanded = expandedGroups.has(cseName);
                 const totalACV = groupOpps.reduce((s, o) => s + (o.acv || 0), 0);
                 const totalACVDelta = groupOpps.reduce((s, o) => s + (o.acvDelta || 0), 0);
                 const totalForecast = groupOpps.reduce((s, o) => s + (o.forecastMostLikely || 0), 0);
-
                 return (
                   <React.Fragment key={cseName}>
-                    <tr className="bg-gray-100 cursor-pointer hover:bg-gray-200" onClick={() => toggleGroup(cseName)}>
-                      <td className="px-3 py-2 font-semibold" colSpan={15}>
+                    <tr
+                      className="cursor-pointer bg-gray-100 hover:bg-gray-200"
+                      onClick={() => toggleGroup(cseName)}
+                    >
+                      <td className="px-3 py-2 font-semibold" colSpan={16}>
                         <span className="mr-2">{isExpanded ? '▼' : '▶'}</span>
                         {cseName} ({groupOpps.length} opportunities)
-                        <span className="ml-4 text-gray-600">
-                          ACV: {fmtUSD(totalACV)} | ACV Δ: {fmtUSD(totalACVDelta)} | Forecast: {fmtUSD(totalForecast)}
+                        <span className="ml-4 font-normal text-gray-600">
+                          ACV: {fmtUSD(totalACV)} | ACV Δ: {fmtUSD(totalACVDelta)} | Forecast:{' '}
+                          {fmtUSD(totalForecast)}
                         </span>
                       </td>
                     </tr>
-                    {isExpanded && groupOpps.map(opp => <OpportunityRow key={opp.opportunityId} opp={opp} showCSE={false} />)}
+                    {isExpanded &&
+                      groupOpps.map((opp) => (
+                        <OpportunityRow key={opp.opportunityId} opp={opp} showCSE={false} />
+                      ))}
                   </React.Fragment>
                 );
               })
             ) : (
-              sortedOpps.map(opp => <OpportunityRow key={opp.opportunityId} opp={opp} showCSE={true} />)
+              sortedOpps.map((opp) => <OpportunityRow key={opp.opportunityId} opp={opp} showCSE={true} />)
             )}
           </tbody>
         </table>
@@ -449,7 +422,8 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
       )}
 
       <p className="text-xs text-gray-500">
-        Showing {sortedOpps.length} of {opportunities.length} opportunities (filtered from {filteredOpps.length}) with close dates within 15 months trailing to 36 months forward from today. Click headers to sort.
+        Showing {sortedOpps.length} of {opportunities.length} opportunities. Click headers to sort, use the
+        funnel icons to filter. Stage 0 is excluded by default.
       </p>
     </>
   );
