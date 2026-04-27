@@ -39,7 +39,47 @@ mdas/
     seed.mjs        # Two refreshes (prior + current) for non-empty WoW
 ```
 
-## Quickstart (mock data)
+## Application Management
+
+### Start the application
+
+Using Docker Compose (recommended):
+```sh
+make up
+# Or: docker compose up -d --build
+```
+
+This starts all services: PostgreSQL database, Next.js web app (port 3000), and worker process.
+
+### Stop the application
+
+```sh
+make down
+# Or: docker compose down
+```
+
+This stops all running containers but preserves database data.
+
+### Restart the application
+
+```sh
+make down && make up
+```
+
+This stops all containers and restarts them fresh.
+
+### View logs
+
+```sh
+make logs
+# Or: docker compose logs -f
+```
+
+View real-time logs from all running services.
+
+### Quickstart (mock data)
+
+First-time setup with mock data:
 
 ```sh
 cp .env.example .env
