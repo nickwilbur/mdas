@@ -230,7 +230,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
         <td className="px-3 py-2 text-gray-700">
           {opp.closeQuarter.startsWith('Q') ? opp.closeQuarter : `Q${opp.closeQuarter}`}
         </td>
-        <td className="px-3 py-2 text-right tabular-nums">{opp.acv ? fmtUSD(opp.acv) : '—'}</td>
+        <td className="px-3 py-2 text-right tabular-nums">{opp.acv != null ? fmtUSD(opp.acv) : '—'}</td>
         <td
           className={`px-3 py-2 text-right tabular-nums ${
             opp.acvDelta && opp.acvDelta < 0
@@ -240,16 +240,16 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
               : 'text-gray-600'
           }`}
         >
-          {opp.acvDelta ? fmtUSD(opp.acvDelta) : '—'}
+          {opp.acvDelta != null ? fmtUSD(opp.acvDelta) : '—'}
         </td>
         <td className="px-3 py-2 text-right tabular-nums">
-          {opp.forecastHedgeUSD ? fmtUSD(opp.forecastHedgeUSD) : '—'}
+          {opp.forecastHedgeUSD != null ? fmtUSD(opp.forecastHedgeUSD) : '—'}
         </td>
         <td className="px-3 py-2 text-right tabular-nums">
-          {opp.forecastMostLikely ? fmtUSD(opp.forecastMostLikely) : '—'}
+          {opp.forecastMostLikely != null ? fmtUSD(opp.forecastMostLikely) : '—'}
         </td>
         <td className="px-3 py-2 text-right tabular-nums">
-          {opp.forecastMostLikelyOverride ? fmtUSD(opp.forecastMostLikelyOverride) : '—'}
+          {opp.forecastMostLikelyOverride != null ? fmtUSD(opp.forecastMostLikelyOverride) : '—'}
         </td>
         <td className="max-w-xs truncate px-3 py-2 text-xs text-gray-700">{opp.flmNotes || '—'}</td>
         <td className="px-3 py-2 text-gray-700">{new Date(opp.closeDate).toLocaleDateString()}</td>
@@ -392,7 +392,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
                       className="cursor-pointer bg-gray-100 hover:bg-gray-200"
                       onClick={() => toggleGroup(cseName)}
                     >
-                      <td className="px-3 py-2 font-semibold" colSpan={16}>
+                      <td className="px-3 py-2 font-semibold" colSpan={15}>
                         <span className="mr-2">{isExpanded ? '▼' : '▶'}</span>
                         {cseName} ({groupOpps.length} opportunities)
                         <span className="ml-4 font-normal text-gray-600">
