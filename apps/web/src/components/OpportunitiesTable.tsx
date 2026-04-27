@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import React from 'react';
 import { fmtUSD } from '@/components/ui';
 import type { CanonicalOpportunity, CanonicalAccount } from '@mdas/canonical';
@@ -19,6 +19,52 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [groupBy, setGroupBy] = useState<'none' | 'cse'>('cse');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [selectedStages, setSelectedStages] = useState<Set<number>>(new Set());
+  const [showClosed, setShowClosed] = useState(false);
+  const [stageDropdownOpen, setStageDropdownOpen] = useState(false);
+  const stageDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (stageDropdownRef.current && !stageDropdownRef.current.contains(event.target as Node)) {
+        setStageDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Get unique stages
+  const stages = useMemo(() => {
+    const stageMap = new Map<number, string>();
+    opportunities.forEach(opp => {
+      if (opp.stageNum !== null && !stageMap.has(opp.stageNum)) {
+        stageMap.set(opp.stageNum, opp.stageName);
+      }
+    });
+    return Array.from(stageMap.entries()).sort((a, b) => a[0] - b[0]);
+  }, [opportunities]);
+
+  // Filter opportunities
+  const filteredOpps = useMemo(() => {
+    let result = [...opportunities];
+
+    // Filter by stage (exclude stage 0 by default)
+    if (selectedStages.size > 0) {
+      result = result.filter(opp => opp.stageNum !== null && selectedStages.has(opp.stageNum));
+    } else {
+      // Default: exclude stage 0
+      result = result.filter(opp => opp.stageNum !== 0);
+    }
+
+    // Filter by closed status
+    if (!showClosed) {
+      result = result.filter(opp => opp.stageNum !== 8 && opp.stageNum !== 9);
+    }
+
+    return result;
+  }, [opportunities, selectedStages, showClosed]);
 
   const toggleGroup = (cseName: string) => {
     setExpandedGroups(prev => {
@@ -34,7 +80,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
 
   // Sort opportunities
   const sortedOpps = useMemo(() => {
-    let result = [...opportunities];
+    let result = [...filteredOpps];
 
     // Apply sort
     result.sort((a, b) => {
@@ -113,7 +159,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     });
 
     return result;
-  }, [opportunities, accounts, sortField, sortDirection]);
+  }, [filteredOpps, accounts, sortField, sortDirection]);
 
   // Group by CSE
   const { groupedData, cseNames } = useMemo(() => {
@@ -121,7 +167,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
       return { groupedData: null, cseNames: [] };
     }
 
-    const groups = new Map<string, typeof opportunities>();
+    const groups = new Map<string, typeof filteredOpps>();
     const names = new Set<string>();
 
     sortedOpps.forEach(opp => {
@@ -151,6 +197,26 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
   const SortIcon = ({ field }: { field: SortField }) => {
     if (sortField !== field) return <span className="text-gray-300">↕</span>;
     return sortDirection === 'asc' ? <span className="text-gray-600">↑</span> : <span className="text-gray-600">↓</span>;
+  };
+
+  const toggleStage = (stageNum: number) => {
+    setSelectedStages(prev => {
+      const next = new Set(prev);
+      if (next.has(stageNum)) {
+        next.delete(stageNum);
+      } else {
+        next.add(stageNum);
+      }
+      return next;
+    });
+  };
+
+  const selectAllStages = () => {
+    setSelectedStages(new Set(stages.map(([num]) => num)));
+  };
+
+  const clearStageSelection = () => {
+    setSelectedStages(new Set());
   };
 
   const OpportunityRow = ({ opp, showCSE }: { opp: CanonicalOpportunity; showCSE: boolean }) => {
@@ -216,17 +282,81 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
 
   return (
     <>
-      {/* Group by selector */}
-      <div className="flex items-center gap-2">
-        <label className="text-sm font-medium">Group by:</label>
-        <select
-          value={groupBy}
-          onChange={(e) => setGroupBy(e.target.value as 'none' | 'cse')}
-          className="rounded border border-gray-300 px-2 py-1 text-sm"
-        >
-          <option value="none">None</option>
-          <option value="cse">CSE</option>
-        </select>
+      {/* Filters */}
+      <div className="flex flex-wrap gap-4">
+        {/* Stage filter */}
+        <div className="flex items-center gap-2">
+          <label className="text-sm font-medium">Stage:</label>
+          <div className="relative" ref={stageDropdownRef}>
+            <button
+              className="rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
+              onClick={() => setStageDropdownOpen(!stageDropdownOpen)}
+            >
+              {selectedStages.size === 0
+                ? 'All (excl. stage 0)'
+                : selectedStages.size === stages.length
+                ? 'All selected'
+                : `${selectedStages.size} selected`}
+            </button>
+            {stageDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 w-64 rounded border border-gray-200 bg-white shadow-lg p-2 z-10">
+                <div className="flex gap-2 mb-2">
+                  <button
+                    onClick={selectAllStages}
+                    className="text-xs text-blue-600 hover:underline"
+                  >
+                    All
+                  </button>
+                  <button
+                    onClick={clearStageSelection}
+                    className="text-xs text-blue-600 hover:underline"
+                  >
+                    None
+                  </button>
+                </div>
+                <div className="max-h-48 overflow-y-auto">
+                  {stages.map(([num, name]) => (
+                    <label key={num} className="flex items-center gap-2 px-2 py-1 hover:bg-gray-50 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedStages.has(num)}
+                        onChange={() => toggleStage(num)}
+                        className="rounded"
+                      />
+                      <span className="text-sm">{name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Open/Closed filter */}
+        <div className="flex items-center gap-2">
+          <label className="text-sm font-medium">Status:</label>
+          <select
+            value={showClosed ? 'all' : 'open'}
+            onChange={(e) => setShowClosed(e.target.value === 'all')}
+            className="rounded border border-gray-300 px-2 py-1 text-sm"
+          >
+            <option value="open">Open (not closed)</option>
+            <option value="all">All (incl. closed)</option>
+          </select>
+        </div>
+
+        {/* Group by selector */}
+        <div className="flex items-center gap-2">
+          <label className="text-sm font-medium">Group by:</label>
+          <select
+            value={groupBy}
+            onChange={(e) => setGroupBy(e.target.value as 'none' | 'cse')}
+            className="rounded border border-gray-300 px-2 py-1 text-sm"
+          >
+            <option value="none">None</option>
+            <option value="cse">CSE</option>
+          </select>
+        </div>
       </div>
 
       <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
@@ -319,7 +449,7 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
       )}
 
       <p className="text-xs text-gray-500">
-        Showing {sortedOpps.length} of {opportunities.length} opportunities with close dates within 15 months trailing to 36 months forward from today. Click headers to sort.
+        Showing {sortedOpps.length} of {opportunities.length} opportunities (filtered from {filteredOpps.length}) with close dates within 15 months trailing to 36 months forward from today. Click headers to sort.
       </p>
     </>
   );
