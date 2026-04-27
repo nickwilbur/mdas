@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { getDashboardData } from '@/lib/read-model';
 import { BucketBadge, RiskBadge, SentimentBadge, fmtUSD } from '@/components/ui';
+import { RefreshButton } from '@/components/RefreshButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,7 +10,10 @@ export default async function AccountsPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">Accounts — Manager Priority</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Accounts — Manager Priority</h1>
+        <RefreshButton />
+      </div>
       <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase text-gray-600">
