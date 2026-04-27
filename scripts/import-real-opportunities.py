@@ -178,6 +178,20 @@ for doc in all_docs:
         skipped_filters += 1
         continue
 
+    # Extract opportunity type early for filtering
+    opp_type = None
+    if rec:
+        opp_type = rec.get("Opportunity Type")
+    if not opp_type and mf:
+        v = mf.get("opportunitytype")
+        if isinstance(v, list) and v:
+            opp_type = v[0]
+        elif isinstance(v, str):
+            opp_type = v
+    if opp_type not in ("Amendment", "Renewal"):
+        skipped_filters += 1
+        continue
+
     # Try to get cust_id from rec if missing
     if not cust_id:
         # rec may not have customerid, fall back
