@@ -1,0 +1,57 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mdas
+          POSTGRES_PASSWORD: mdas
+          POSTGRES_DB: mdas
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mdas -d mdas" --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://mdas:mdas@localhost:5432/mdas
+      ADAPTER_SALESFORCE: mock
+      ADAPTER_CEREBRO: mock
+      ADAPTER_GAINSIGHT: mock
+      ADAPTER_STAIRCASE: mock
+      ADAPTER_ZUORA_MCP: mock
+      ADAPTER_GLEAN_MCP: mock
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci || npm install
+      - name: CI guardrails (read-only enforcement)
+        run: npm run ci:guard
+      - name: TypeScript build check
+        run: npm run lint
+      - name: Unit tests
+        run: npm test
+      - name: Migrate
+        run: npm run migrate
+      - name: Seed (two refreshes for non-empty WoW)
+        run: npm run seed
+      - name: Build web
+        run: npm --workspace apps/web run build
+      - name: Smoke (start web, fetch /, /accounts, /wow)
+        run: |
+          npm --workspace apps/web run start &
+          PID=$!
+          sleep 10
+          curl -fsS http://localhost:3000/ > /dev/null
+          curl -fsS http://localhost:3000/accounts > /dev/null
+          curl -fsS http://localhost:3000/wow > /dev/null
+          curl -fsS http://localhost:3000/hygiene > /dev/null
+          curl -fsS http://localhost:3000/admin/refresh > /dev/null
+          kill $PID

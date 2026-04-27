@@ -1,0 +1,55 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: mdas
+      POSTGRES_PASSWORD: mdas
+      POSTGRES_DB: mdas
+    ports:
+      - "5432:5432"
+    volumes:
+      - mdas_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mdas -d mdas"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      DATABASE_URL: postgres://mdas:mdas@db:5432/mdas
+      NODE_ENV: production
+      ADAPTER_SALESFORCE: ${ADAPTER_SALESFORCE:-mock}
+      ADAPTER_CEREBRO: ${ADAPTER_CEREBRO:-mock}
+      ADAPTER_GAINSIGHT: ${ADAPTER_GAINSIGHT:-mock}
+      ADAPTER_STAIRCASE: ${ADAPTER_STAIRCASE:-mock}
+      ADAPTER_ZUORA_MCP: ${ADAPTER_ZUORA_MCP:-mock}
+      ADAPTER_GLEAN_MCP: ${ADAPTER_GLEAN_MCP:-mock}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    environment:
+      DATABASE_URL: postgres://mdas:mdas@db:5432/mdas
+      ADAPTER_SALESFORCE: ${ADAPTER_SALESFORCE:-mock}
+      ADAPTER_CEREBRO: ${ADAPTER_CEREBRO:-mock}
+      ADAPTER_GAINSIGHT: ${ADAPTER_GAINSIGHT:-mock}
+      ADAPTER_STAIRCASE: ${ADAPTER_STAIRCASE:-mock}
+      ADAPTER_ZUORA_MCP: ${ADAPTER_ZUORA_MCP:-mock}
+      ADAPTER_GLEAN_MCP: ${ADAPTER_GLEAN_MCP:-mock}
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  mdas_pgdata:

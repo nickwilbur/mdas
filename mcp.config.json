@@ -1,0 +1,25 @@
+{
+  "$comment": "Read-only MCP allowlist. CI fails if any tool name matches /^(create|update|cancel|delete|post|send)_/. Do not add write-capable tool names here.",
+  "servers": {
+    "zuora-mcp": {
+      "baseUrl": "https://apisandbox.zuora.com/mcp",
+      "transport": "http",
+      "auth": "oauth2_client_credentials",
+      "allowedTools": [
+        "query_objects",
+        "ask_zuora",
+        "account_summary",
+        "run_report"
+      ]
+    },
+    "glean-mcp": {
+      "transport": "http",
+      "auth": "bearer",
+      "allowedTools": [
+        "search",
+        "chat",
+        "read_document"
+      ]
+    }
+  }
+}

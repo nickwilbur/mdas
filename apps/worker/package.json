@@ -1,0 +1,26 @@
+{
+  "name": "@mdas/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "start": "tsx src/main.ts",
+    "refresh-once": "tsx src/refresh-once.ts"
+  },
+  "dependencies": {
+    "@mdas/canonical": "*",
+    "@mdas/db": "*",
+    "@mdas/scoring": "*",
+    "@mdas/adapters-mock": "*",
+    "@mdas/adapter-salesforce": "*",
+    "@mdas/adapter-cerebro-glean": "*",
+    "@mdas/adapter-gainsight": "*",
+    "@mdas/adapter-staircase-gmail": "*",
+    "@mdas/adapter-zuora-mcp": "*",
+    "@mdas/adapter-glean-mcp": "*",
+    "@mdas/adapter-local-snapshots": "*",
+    "pg": "^8.11.5",
+    "tsx": "^4.7.2"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "declarationMap": true,
+    "composite": false,
+    "noUncheckedIndexedAccess": false,
+    "baseUrl": ".",
+    "paths": {
+      "@mdas/canonical": ["packages/canonical/src/index.ts"],
+      "@mdas/scoring": ["packages/scoring/src/index.ts"],
+      "@mdas/forecast-generator": ["packages/forecast-generator/src/index.ts"],
+      "@mdas/db": ["packages/db/src/index.ts"],
+      "@mdas/adapters-mock": ["packages/adapters/mock/src/index.ts"],
+      "@mdas/adapter-salesforce": ["packages/adapters/read/salesforce/src/index.ts"],
+      "@mdas/adapter-cerebro-glean": ["packages/adapters/read/cerebro-glean/src/index.ts"],
+      "@mdas/adapter-gainsight": ["packages/adapters/read/gainsight/src/index.ts"],
+      "@mdas/adapter-staircase-gmail": ["packages/adapters/read/staircase-gmail/src/index.ts"],
+      "@mdas/adapter-zuora-mcp": ["packages/adapters/read/zuora-mcp/src/index.ts"],
+      "@mdas/adapter-glean-mcp": ["packages/adapters/read/glean-mcp/src/index.ts"],
+      "@mdas/adapter-local-snapshots": ["packages/adapters/read/local-snapshots/src/index.ts"]
+    }
+  }
+}

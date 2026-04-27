@@ -1,0 +1,31 @@
+{
+  "name": "mdas",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "packages/adapters/read/*",
+    "packages/adapters/mock"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:web": "npm run dev --workspace apps/web",
+    "dev:worker": "npm run dev --workspace apps/worker",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc -b --pretty",
+    "ci:guard": "node scripts/ci-guard.mjs",
+    "seed": "node scripts/seed.mjs",
+    "migrate": "node scripts/migrate.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "typescript": "^5.4.5",
+    "vitest": "^1.5.0",
+    "tsx": "^4.7.2"
+  },
+  "dependencies": {
+    "pg": "^8.11.5"
+  }
+}
