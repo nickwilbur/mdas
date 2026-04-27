@@ -19,7 +19,7 @@ import {
   writeSnapshotOpportunities,
 } from '@mdas/db';
 import {
-  SCORING_VERSION,
+  // SCORING_VERSION, // TODO: Fix module resolution issue
   buildAccountView,
   diffAll,
   rankAccountViews,
@@ -98,7 +98,7 @@ export async function runRefresh(
   const sourceNames = adapters.map((a) => a.name);
 
   const refreshId = await startRefreshRun({
-    scoringVersion: SCORING_VERSION,
+    scoringVersion: 'v0.1.0', // TODO: Fix SCORING_VERSION import
     sources: sourceNames,
   });
   await audit(options.actor ?? 'manual:nick', 'refresh.started', {

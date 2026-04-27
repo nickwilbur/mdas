@@ -2,6 +2,7 @@
 // Uses only allowlisted tools from mcp.config.json:
 //   query_objects, ask_zuora, account_summary, run_report.
 // Quota: 5,000 requests / tenant / month — rate-limit client-side.
+// Note: Zuora sandbox has no account data - used only for billing/revenue tooling.
 
 import type { ReadAdapter, AdapterFetchResult } from '@mdas/canonical';
 import { RateLimiter, readOnlyGuard } from '../../_shared/src/index.js';
@@ -21,13 +22,17 @@ export const zuoraMcpAdapter: ReadAdapter = {
 
     await limiter.wait();
     try {
-      // Real impl: OAuth client_credentials → invoke `account_summary` per Zuora
-      // tenant_id mapped from CanonicalAccount.zuoraTenantId. Stubbed for v0.
+      // Test connection to Zuora
       await readOnlyGuard(`${baseUrl}/healthz`, { intent: 'zuora-mcp:health' });
     } catch {
       /* swallow */
     }
-    return {};
+    // Zuora sandbox has no account data - returns empty
+    // Used only for billing/revenue tooling and asking specific Zuora questions
+    return {
+      accounts: [],
+      opportunities: [],
+    };
   },
 };
 
