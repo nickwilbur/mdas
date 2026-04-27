@@ -8,3 +8,7 @@ dist
 coverage
 playwright-report
 test-results
+**/*.d.ts
+**/*.d.ts.map
+**/*.js
+!**/dist/**/*.js
