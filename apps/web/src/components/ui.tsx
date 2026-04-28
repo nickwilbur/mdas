@@ -9,6 +9,7 @@ import type {
   SourceFreshnessMap,
   SourceLink,
 } from '@mdas/canonical';
+import { isStale, relativeTimeLabel } from './time';
 
 export const fmtUSD = (n: number | null | undefined) =>
   n == null ? '—' : n === 0 ? '$0' : `$${Math.round(n).toLocaleString('en-US')}`;
@@ -118,24 +119,10 @@ export function StatTile({
  * when the input is null/empty.
  */
 export function RelativeTime({ iso }: { iso: string | null | undefined }) {
-  if (!iso) return <span className="text-gray-400">—</span>;
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return <span className="text-gray-400">—</span>;
-  const now = Date.now();
-  const diffMs = now - then;
-  const minutes = Math.floor(diffMs / 60_000);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  let label: string;
-  if (diffMs < 0) label = 'in the future';
-  else if (minutes < 1) label = 'just now';
-  else if (minutes < 60) label = `${minutes}m ago`;
-  else if (hours < 24) label = `${hours}h ago`;
-  else if (days === 1) label = 'yesterday';
-  else if (days < 30) label = `${days}d ago`;
-  else label = new Date(iso).toLocaleDateString();
+  const label = relativeTimeLabel(iso);
+  if (label === '—') return <span className="text-gray-400">—</span>;
   return (
-    <span title={new Date(iso).toLocaleString()} className="tabular-nums">
+    <span title={iso ? new Date(iso).toLocaleString() : ''} className="tabular-nums">
       {label}
     </span>
   );
@@ -175,8 +162,6 @@ export function FreshnessRow({
     return null;
   }
 
-  const stale = (iso: string): boolean =>
-    Date.now() - new Date(iso).getTime() > 7 * 24 * 60 * 60 * 1000;
   const errorBySource = new Map(errorEntries);
 
   return (
@@ -204,7 +189,7 @@ export function FreshnessRow({
               title={`Last fetched from ${source}: ${new Date(iso).toLocaleString()}`}
               className={clsx(
                 'inline-flex items-center gap-1 rounded-full border px-2 py-0.5',
-                stale(iso)
+                isStale(iso)
                   ? 'border-amber-300 bg-amber-50 text-amber-800'
                   : 'border-emerald-300 bg-emerald-50 text-emerald-800',
               )}
@@ -238,6 +223,59 @@ export function FreshnessRow({
           <span>no data</span>
         </span>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Compact per-source data-completeness indicator: one small dot per
+ * `expectedSources` entry. Useful in tables where a full FreshnessRow
+ * would be too tall.
+ *
+ *   - emerald : fresh data from this source (≤ 7d)
+ *   - amber   : stale (> 7d)
+ *   - red     : adapter reported a non-fatal error this refresh
+ *   - gray    : source missing from `freshness` and `errors`
+ *
+ * Tooltip on each dot names the source and gives the relative time
+ * (or the error message). Layout is a fixed-width grid so dot
+ * positions are consistent across rows — the eye can scan a column
+ * for "all-grey-third-dot" patterns.
+ */
+export function SourceDots({
+  freshness,
+  errors,
+  expectedSources,
+}: {
+  freshness: SourceFreshnessMap | undefined;
+  errors?: SourceErrorMap;
+  expectedSources: AdapterSource[];
+}) {
+  return (
+    <div className="inline-flex gap-0.5">
+      {expectedSources.map((source) => {
+        const iso = freshness?.[source];
+        const errMsg = errors?.[source];
+        let cls: string;
+        let title: string;
+        if (errMsg) {
+          cls = 'bg-red-500';
+          title = `${source}: error — ${errMsg}`;
+        } else if (iso) {
+          cls = isStale(iso) ? 'bg-amber-400' : 'bg-emerald-500';
+          title = `${source}: ${new Date(iso).toLocaleString()}`;
+        } else {
+          cls = 'bg-gray-300';
+          title = `${source}: no data this refresh`;
+        }
+        return (
+          <span
+            key={source}
+            title={title}
+            className={clsx('inline-block h-2 w-2 rounded-full', cls)}
+          />
+        );
+      })}
     </div>
   );
 }

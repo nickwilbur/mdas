@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
 
 export default defineConfig({
-  test: { include: ['packages/**/*.test.ts'] },
+  test: { include: ['packages/**/*.test.ts', 'apps/**/*.test.ts'] },
   resolve: {
     alias: {
       '@mdas/canonical': resolve(__dirname, 'packages/canonical/src/index.ts'),

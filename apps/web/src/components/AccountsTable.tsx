@@ -3,8 +3,26 @@
 import Link from 'next/link';
 import { useState, useMemo } from 'react';
 import React from 'react';
-import { BucketBadge, RiskBadge, SentimentBadge, fmtUSD } from '@/components/ui';
-import type { AccountView } from '@mdas/canonical';
+import {
+  BucketBadge,
+  RelativeTime,
+  RiskBadge,
+  SentimentBadge,
+  SourceDots,
+  fmtUSD,
+} from '@/components/ui';
+import type { AccountView, AdapterSource } from '@mdas/canonical';
+
+// Order matters — this is the left-to-right dot order in every row,
+// matching the four real adapters wired in PR-3..PR-7. Keep in sync
+// with EXPECTED_SOURCES on the Drill-In page so a reader who learns
+// "3rd dot is gainsight" on the table sees the same on the detail.
+const EXPECTED_SOURCES: AdapterSource[] = [
+  'salesforce',
+  'cerebro',
+  'gainsight',
+  'glean-mcp',
+];
 
 interface AccountsTableProps {
   views: AccountView[];
@@ -84,9 +102,14 @@ export function AccountsTable({ views }: AccountsTableProps) {
           )}
         </td>
         <td className="px-3 py-2 text-xs text-gray-500">
-          {v.account.cseSentimentCommentaryLastUpdated
-            ? new Date(v.account.cseSentimentCommentaryLastUpdated).toLocaleDateString()
-            : '—'}
+          <RelativeTime iso={v.account.cseSentimentCommentaryLastUpdated} />
+        </td>
+        <td className="px-3 py-2">
+          <SourceDots
+            freshness={v.account.lastFetchedFromSource}
+            errors={v.account.sourceErrors}
+            expectedSources={EXPECTED_SOURCES}
+          />
         </td>
       </tr>
     );
@@ -124,6 +147,9 @@ export function AccountsTable({ views }: AccountsTableProps) {
               <th className="px-3 py-2">Renewal</th>
               <th className="px-3 py-2 text-center">Hygiene</th>
               <th className="px-3 py-2">Last Sentiment Update</th>
+              <th className="px-3 py-2" title="Per-source data freshness: SF / Cerebro / Gainsight / Glean">
+                Data
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -138,7 +164,7 @@ export function AccountsTable({ views }: AccountsTableProps) {
                   <React.Fragment key={cseName}>
                     {/* Group header */}
                     <tr className="bg-gray-100 cursor-pointer hover:bg-gray-200" onClick={() => toggleGroup(cseName)}>
-                      <td className="px-3 py-2 font-semibold" colSpan={11}>
+                      <td className="px-3 py-2 font-semibold" colSpan={12}>
                         <span className="mr-2">{isExpanded ? '▼' : '▶'}</span>
                         {cseName} ({groupViews.length} accounts)
                         <span className="ml-4 text-gray-600">
