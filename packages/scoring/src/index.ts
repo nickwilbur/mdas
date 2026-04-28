@@ -42,8 +42,13 @@ export function getRiskIdentifier(account: CanonicalAccount): RiskIdentifier {
         'Cerebro Risk Category (no analysis text available)',
     };
   }
+  // cerebroRisks may be missing entirely on accounts that only had a
+  // Salesforce read (no localSnapshots fixture, Glean unavailable).
+  // Treat as "no Cerebro data" rather than crashing.
   const risks = account.cerebroRisks;
-  const trueRisks = (Object.values(risks) as (boolean | null)[]).filter(Boolean).length;
+  const trueRisks = risks
+    ? (Object.values(risks) as (boolean | null)[]).filter(Boolean).length
+    : 0;
   if (trueRisks >= 4)
     return {
       level: 'Critical',

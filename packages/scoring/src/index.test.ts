@@ -102,6 +102,29 @@ describe('getRiskIdentifier', () => {
     expect(r.level).toBe('High');
     expect(r.source).toBe('fallback');
   });
+
+  it('does not crash when cerebroRisks is missing entirely (SF-only account)', () => {
+    // Real-world: salesforce adapter discovers Expand 3 accounts that
+    // are not in the localSnapshots fixture and Glean is unavailable.
+    // The merged record has no cerebroRisks field at all.
+    const r = getRiskIdentifier({
+      ...baseAccount,
+      cerebroRiskCategory: null,
+      cerebroRisks: undefined as unknown as typeof baseAccount.cerebroRisks,
+    });
+    expect(r.level).toBe('Unknown');
+    expect(r.source).toBe('fallback');
+  });
+
+  it('does not crash when cerebroRisks is null (defensive)', () => {
+    const r = getRiskIdentifier({
+      ...baseAccount,
+      cerebroRiskCategory: null,
+      cerebroRisks: null as unknown as typeof baseAccount.cerebroRisks,
+    });
+    expect(r.level).toBe('Unknown');
+    expect(r.source).toBe('fallback');
+  });
 });
 
 describe('bucketAccount', () => {

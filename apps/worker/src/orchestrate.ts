@@ -81,6 +81,38 @@ interface MergedData {
   opportunities: CanonicalOpportunity[];
 }
 
+/**
+ * Fill in array/object defaults on accounts that came in via a single
+ * adapter (e.g. salesforce-only accounts that aren't in the
+ * localSnapshots fixture). The canonical type marks these fields as
+ * non-nullable, but adapters emit Partial<CanonicalAccount> records,
+ * so a downstream scoring/diffing crash is possible if no adapter
+ * touched the field. This normalizer keeps scoring naive.
+ */
+function withAccountDefaults(a: CanonicalAccount): CanonicalAccount {
+  return {
+    ...a,
+    workshops: a.workshops ?? [],
+    recentMeetings: a.recentMeetings ?? [],
+    accountPlanLinks: a.accountPlanLinks ?? [],
+    gainsightTasks: a.gainsightTasks ?? [],
+    sourceLinks: a.sourceLinks ?? [],
+    activeProductLines: a.activeProductLines ?? [],
+    cerebroSubMetrics: a.cerebroSubMetrics ?? {},
+    cerebroRisks:
+      a.cerebroRisks ?? {
+        utilizationRisk: null,
+        engagementRisk: null,
+        suiteRisk: null,
+        shareRisk: null,
+        legacyTechRisk: null,
+        expertiseRisk: null,
+        pricingRisk: null,
+      },
+    lastFetchedFromSource: a.lastFetchedFromSource ?? {},
+  };
+}
+
 function mergeAdapterResults(
   results: { accounts?: CanonicalAccount[]; opportunities?: CanonicalOpportunity[] }[],
 ): MergedData {
@@ -97,7 +129,7 @@ function mergeAdapterResults(
     }
   }
   return {
-    accounts: [...accountsMap.values()],
+    accounts: [...accountsMap.values()].map(withAccountDefaults),
     opportunities: [...oppsMap.values()],
   };
 }
