@@ -98,7 +98,7 @@ The prompt's Section 2.1 assumed Glean's `app:cerebro` exposes Risk Category + R
 
 - PR-5 smoke test — same `GLEAN_MCP_*` blocker as PR-4.
 
-## PR-6 — Cleanup, docs, deprecation (this PR)
+## PR-6 — Cleanup, docs, deprecation
 
 **Shipped:**
 
@@ -108,13 +108,32 @@ The prompt's Section 2.1 assumed Glean's `app:cerebro` exposes Risk Category + R
 - README adapter activation section expanded — three blocks (Salesforce / Cerebro / Glean) with all the env vars, behavior pointers, and references to the per-integration docs.
 - This changelog.
 
+## PR-7 — Gainsight adapter + tsc cleanup
+
+**Commits**: `eeb0f5b..720cca2`
+
+**Shipped:**
+
+- `fix(tsconfig):` Excluded `apps/web` from the root `tsconfig.json` `include`. Next.js owns its own type-check via `next build` + `apps/web/tsconfig.json` (which has the `@/* → src/*` baseUrl alias the root config does not share). This ends the persistent `@/lib/read-model` "module not found" false positive that PR-3 through PR-6 commit messages had been carrying as a known caveat.
+- `feat(gainsight):` Real Gainsight adapter via Glean's `app:gainsight` datasource (`type:calltoaction`). Verified the field shape live against Glean before writing code.
+  - `mapper.ts:mapGainsightCta()` — pulls company name, CTA name, owner, status, due date, and CTA ID (parsed from the `/cta/<id>` URL segment) into a `GainsightCtaMapped` record. Snippet parser handles `Label: value` lines for fields that aren't on the matchingFilters facet.
+  - `mapper.ts:normalizeName()` — fuzzy match key for the SFDC join. Strips `, Inc.`, `, LLC`, `GmbH`, etc. — Glean's Gainsight connector does NOT expose the SFDC Account ID (only Gainsight's internal GSID), so name match is the only available join.
+  - `index.ts` — one-sweep search (CTA corpus is small), name-bucket, sort (open first, then due date asc), cap 25 per account. Emits Account partials with `gainsightTasks` + per-CTA `SourceLink` + `lastFetchedFromSource: { gainsight: refreshAt }`.
+  - 11 mapper unit tests with a scrubbed CTA fixture covering full-row mapping, open/closed status detection, fallback paths, freshness extraction.
+- `docs(gainsight):` New section in `docs/integrations/glean.md` with the facets-to-canonical mapping table, the cross-system-join rationale, and the sort/cap policy. README adapter-activation section gains a Gainsight block.
+
+**Pending:**
+
+- PR-7 smoke test against prod — same `GLEAN_MCP_*` blocker as PR-4 / PR-5.
+
 ## Pending across the refactor (all credentials-blocked)
 
 | Item | What's needed |
 |---|---|
-| PR-3.g smoke | `SALESFORCE_CLIENT_ID/SECRET/REFRESH_TOKEN/INSTANCE_URL` in the worker container |
-| PR-4 smoke | `GLEAN_MCP_TOKEN` + `GLEAN_MCP_BASE_URL` |
-| PR-5 smoke | same as PR-4 |
+| PR-3.g smoke (Salesforce) | `SALESFORCE_CLIENT_ID/SECRET/REFRESH_TOKEN/INSTANCE_URL` in the worker container |
+| PR-4 smoke (Cerebro) | `GLEAN_MCP_TOKEN` + `GLEAN_MCP_BASE_URL` |
+| PR-5 smoke (Glean account-context + evidence) | same as PR-4 |
+| PR-7 smoke (Gainsight) | same as PR-4 |
 | PR-4.b (Cerebro Risk Category passthrough) | Nick to answer: canonical sheet URL, refresh cadence, perm scope |
 
 ## Test counts at each milestone
@@ -126,3 +145,4 @@ The prompt's Section 2.1 assumed Glean's `app:cerebro` exposes Risk Category + R
 | PR-4 | 37 | + 10 Cerebro mapper |
 | PR-5 | 50 | + 13 Glean (5 context + 8 evidence) |
 | PR-6 | 50 | docs-only PR |
+| PR-7 | 61 | + 11 Gainsight mapper |
