@@ -130,6 +130,33 @@ docker compose exec -T worker node -e \
 # Expect: 401 (real response from upstream, NOT a TLS error).
 ```
 
+## Cascade-relay (bridge while real Glean tokens are pending)
+
+The four real adapters (Salesforce, Cerebro, Gainsight, Glean-MCP) all need a
+dedicated service-account credential to run inside the worker. Until that
+token exists in `.env`, the UI shows grey "no data" pills.
+
+To unblock UI demos, Cascade can pull data via its own Glean MCP integration
+(authenticated as the human user, the same way Windsurf is) and dump it as
+a JSON fixture under `seed/`, which a one-shot script then merges into the
+latest snapshot's account_view rows. Currently wired for Cerebro:
+
+```sh
+# Cascade fetches the Cerebro spreadsheet via mcp2_read_document and
+# parses 197 accounts (with SFDC IDs) into seed/cerebro-snapshot.json.
+# Re-run the parser any time you want fresher data.
+
+# Then merge into the latest snapshot + re-score:
+npx tsx scripts/import-cerebro-fixture.ts
+# → "Merged Cerebro into 56 snapshot_account rows"
+# → "Bucket distribution after merge: { Saveable Risk: 38, ... }"
+```
+
+The fixture file `seed/cerebro-snapshot.json` is gitignored (real customer
+ARR + risk analysis text). The proper path remains the live cerebro-glean
+adapter inside the worker on every refresh, once a service-account Glean
+token lands. Until then this bridge keeps the UI demonstrating real data.
+
 ## Read-only guarantees
 
 1. The `packages/adapters/write/` directory **does not exist**. CI fails the build if it ever appears.

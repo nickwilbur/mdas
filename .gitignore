@@ -16,6 +16,11 @@ test-results
 # keychain to make Zscaler-intercepted TLS work inside docker
 # containers. See README "Corporate TLS interception" section.
 .docker-ca.pem
+# Cascade-relay data fixtures (Glean-pulled customer data dumped here
+# while a real Glean service-account token is unavailable). Real
+# customer ARR / risk analysis content — gitignored same as .env.
+seed/cerebro-snapshot.json
+seed/gainsight-snapshot.json
 # tsc --incremental build cache — per-developer, never commit
 **/*.tsbuildinfo
 **/*.d.ts
