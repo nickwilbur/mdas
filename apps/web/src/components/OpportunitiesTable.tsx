@@ -231,14 +231,8 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
         <td className="px-3 py-2">
           {(() => {
             const sfLink = opp.sourceLinks?.find((l) => l.source === 'salesforce');
-            // Salesforce 18-char IDs start with `006` (Opportunity) and are 15 or 18 chars.
-            // If the opportunityId doesn't match, fall back to linking the account record.
-            const isSfOppId = /^006[A-Za-z0-9]{12,15}$/.test(opp.opportunityId);
             const url =
-              sfLink?.url
-              ?? (isSfOppId
-                ? `https://zuora.lightning.force.com/lightning/r/Opportunity/${opp.opportunityId}/view`
-                : `https://zuora.lightning.force.com/lightning/r/Account/${opp.accountId}/view`);
+              sfLink?.url ?? `https://zuora.lightning.force.com/lightning/r/Opportunity/${opp.opportunityId}/view`;
             return (
               <a href={url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
                 View

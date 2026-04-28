@@ -393,8 +393,12 @@ function buildAccount(
     lastUpdated: new Date().toISOString(),
   };
 
-  const opportunities: CanonicalOpportunity[] = b.opps.map((o) => ({
-    opportunityId: o.id,
+  const opportunities: CanonicalOpportunity[] = b.opps.map((o) => {
+    // Generate a Salesforce-shaped 18-char opportunity ID (starts with 006).
+    // Deterministic per (account index, opp suffix) so refreshes are stable.
+    const sfOppId = ('006Mock' + b.id + o.id.replace(/[^A-Za-z0-9]/g, '')).slice(0, 18).padEnd(18, 'A');
+    return {
+    opportunityId: sfOppId,
     opportunityName: o.name,
     accountId: b.sfid,
     type: o.type,
@@ -427,17 +431,16 @@ function buildAccount(
     fullChurnNotificationToOwnerDate: o.fullChurnNotificationToOwnerDate ?? null,
     fullChurnFinalEmailSentDate: o.fullChurnFinalEmailSentDate ?? null,
     churnDownsellReason: o.churnDownsellReason ?? null,
-    // Mock opportunities don't exist in real SFDC, so link to the (real) account
-    // record instead of a fake opportunity ID that would 404.
     sourceLinks: [
       {
         source: 'salesforce',
-        label: 'SFDC Account',
-        url: `https://zuora.lightning.force.com/lightning/r/Account/${b.sfid}/view`,
+        label: 'SFDC Opportunity',
+        url: `https://zuora.lightning.force.com/lightning/r/Opportunity/${sfOppId}/view`,
       },
     ],
     lastUpdated: new Date().toISOString(),
-  }));
+    };
+  });
 
   return { account, opportunities };
 }
