@@ -479,7 +479,9 @@ const builds: Build[] = REAL_EXPAND_3_ACCOUNTS.map((acc, i) => ({
       productLine: acc.products[0],
       flmNotes: '',
       scNextSteps: i === 1 ? 'Schedule executive meeting to discuss renewal terms.' : '',
-      salesEngineerName: null,
+      // Per-opportunity Sales Engineer (NOT inherited from account.assignedCSE).
+      // Rotates through real CSE names so the opp-level SE is distinct from the account CSE.
+      salesEngineerName: ['Kiran Rajan', 'Shwetha Ravindran', 'Mahalakshmi Krishnan', 'Sneha Stephen', 'Thais Pagliaricci', 'Kyle Larkin'][i % 6],
       fullChurnNotificationToOwnerDate: i === 0 ? daysAgoIso(14).slice(0, 10) : null,
       fullChurnFinalEmailSentDate: i === 0 ? daysAgoIso(7).slice(0, 10) : null,
       churnDownsellReason: i === 0 ? 'Pricing' : null,
