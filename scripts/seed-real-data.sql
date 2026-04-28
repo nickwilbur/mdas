@@ -302,10 +302,5 @@ BEGIN
     ('0017000000zyDA8AAM', 'FPL Energy Services, Inc.', ARRAY['Billing']::text[])
   ) AS v(sfid, name, products);
   
-  -- Fix Stenograph LLC assignedCSE to Kiran Rajan
-  UPDATE snapshot_account
-  SET payload = jsonb_set(payload, '{assignedCSE}', '{"id": "U-CSE-105", "name": "Kiran Rajan"}'::jsonb)
-  WHERE account_id = '0014u00001zmSSOAA2' AND refresh_id = refresh_run_id;
-  
   RAISE NOTICE 'Seeded % real Expand 3 accounts with refresh_id %', 236, refresh_run_id;
 END $$;

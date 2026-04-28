@@ -19,9 +19,30 @@ plus the parsed opportunities.
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date, datetime
+
+# Regex for extracting Salesforce User serializations from snippet 0.
+# These appear for User-typed lookup fields like "Sales Engineer".
+USER_RE = re.compile(
+    r'\{attributes=\{type=User,\s*url=/services/data/v[\d.]+/sobjects/User/([A-Za-z0-9]+)\},'
+    r'\s*Name=([^,}]+),\s*Email=([^,}]+),\s*Id=([A-Za-z0-9]+)\}'
+)
+
+
+def extract_sales_engineer(doc):
+    """Extract Sales Engineer from snippet 0 (the unstructured value list).
+    The SE is the only User-typed lookup field that gets serialized inline,
+    so we take the first User pattern. Returns {id, name} or None."""
+    snippets = doc.get("snippets") or []
+    if not snippets:
+        return None
+    m = USER_RE.search(snippets[0])
+    if not m:
+        return None
+    return {"id": m.group(4), "name": m.group(2).strip()}
 
 DATA_DIR = sys.argv[1] if len(sys.argv) > 1 else "/tmp/opp_data"
 
@@ -54,23 +75,8 @@ our_accounts = set(
 )
 print(f"Our accounts: {len(our_accounts)}")
 
-# Build account_id -> assignedCSE mapping for opportunity CSE field
-account_cse = {}
-cse_rows = psql(
-    f"SELECT account_id || '|||' || COALESCE(payload->>'assignedCSE', '') "
-    f"FROM snapshot_account WHERE refresh_id='{src_refresh}';",
-    capture=True,
-).splitlines()
-for row in cse_rows:
-    if not row or '|||' not in row:
-        continue
-    aid, cse_str = row.split('|||', 1)
-    if cse_str:
-        try:
-            account_cse[aid] = json.loads(cse_str)
-        except Exception:
-            pass
-print(f"Account CSE mappings: {len(account_cse)}")
+# Sales Engineer is extracted per-opportunity from snippet 0 (User serialization).
+# We do NOT fall back to account.assignedCSE — opp SE is opp-level data.
 
 
 def add_months(d: date, m: int) -> date:
@@ -335,8 +341,8 @@ for doc in all_docs:
 
     sf_url = f"https://zuora.lightning.force.com/lightning/r/Opportunity/{opp_id}/view"
 
-    # Sales Engineer / CSE: source data has no SE field, so fall back to account's assignedCSE
-    sales_engineer = account_cse.get(cust_id)
+    # Sales Engineer: parsed from snippet 0 (the only User-typed lookup serialized inline).
+    sales_engineer = extract_sales_engineer(doc)
 
     # Opportunity owner (AE) from matching filters
     opp_owner_name = None
