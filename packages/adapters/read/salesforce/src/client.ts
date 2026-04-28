@@ -144,9 +144,12 @@ export class SalesforceClient {
  */
 export function readSalesforceCredsFromEnv(): SalesforceCredentials | null {
   const e = process.env;
+  // Note: SALESFORCE_CLIENT_SECRET is allowed to be empty/undefined.
+  // Salesforce's built-in PlatformCLI Connected App is a public client
+  // (no secret), and jsforce's OAuth2 helper accepts an empty string
+  // for refresh-token grants against public clients.
   if (
     !e.SALESFORCE_CLIENT_ID ||
-    !e.SALESFORCE_CLIENT_SECRET ||
     !e.SALESFORCE_REFRESH_TOKEN ||
     !e.SALESFORCE_INSTANCE_URL
   ) {
@@ -154,7 +157,7 @@ export function readSalesforceCredsFromEnv(): SalesforceCredentials | null {
   }
   return {
     clientId: e.SALESFORCE_CLIENT_ID,
-    clientSecret: e.SALESFORCE_CLIENT_SECRET,
+    clientSecret: e.SALESFORCE_CLIENT_SECRET ?? '',
     refreshToken: e.SALESFORCE_REFRESH_TOKEN,
     instanceUrl: e.SALESFORCE_INSTANCE_URL,
     apiVersion: e.SALESFORCE_API_VERSION,
