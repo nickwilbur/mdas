@@ -427,11 +427,13 @@ function buildAccount(
     fullChurnNotificationToOwnerDate: o.fullChurnNotificationToOwnerDate ?? null,
     fullChurnFinalEmailSentDate: o.fullChurnFinalEmailSentDate ?? null,
     churnDownsellReason: o.churnDownsellReason ?? null,
+    // Mock opportunities don't exist in real SFDC, so link to the (real) account
+    // record instead of a fake opportunity ID that would 404.
     sourceLinks: [
       {
         source: 'salesforce',
-        label: 'SFDC Opportunity',
-        url: `https://zuora.lightning.force.com/lightning/r/Opportunity/${o.id}/view`,
+        label: 'SFDC Account',
+        url: `https://zuora.lightning.force.com/lightning/r/Account/${b.sfid}/view`,
       },
     ],
     lastUpdated: new Date().toISOString(),
