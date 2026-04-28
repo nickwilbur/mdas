@@ -108,6 +108,18 @@ export async function previousSuccessfulRun(
 }
 
 export async function pruneOldRuns(retain = 12): Promise<number> {
+  // Pre-clear the FK from refresh_jobs to the runs we're about to delete.
+  // refresh_jobs.refresh_run_id has no ON DELETE action, so a direct DELETE
+  // on refresh_runs would fail with FK-violation 23503. We preserve the
+  // refresh_jobs row (queue audit history) but drop the now-stale link.
+  await query(
+    `UPDATE refresh_jobs
+        SET refresh_run_id = NULL
+      WHERE refresh_run_id IN (
+        SELECT id FROM refresh_runs ORDER BY started_at DESC OFFSET $1
+      )`,
+    [retain],
+  );
   const r = await query<{ id: string }>(
     `DELETE FROM refresh_runs
        WHERE id IN (
