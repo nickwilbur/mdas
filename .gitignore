@@ -8,6 +8,10 @@ dist
 coverage
 playwright-report
 test-results
+# Salesforce CLI local state — never commit. Auth tokens and sf project
+# scratchpad are per-developer.
+.sfdx/
+.sf/
 **/*.d.ts
 **/*.d.ts.map
 **/*.js

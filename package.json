@@ -17,7 +17,9 @@
     "lint": "tsc -b --pretty",
     "ci:guard": "node scripts/ci-guard.mjs",
     "seed": "node scripts/seed.mjs",
-    "migrate": "node scripts/migrate.mjs"
+    "migrate": "node scripts/migrate.mjs",
+    "sf:fieldmap": "tsx scripts/generate-sfdc-field-map.ts",
+    "sf:validate": "tsx scripts/validate-salesforce-schema.ts"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
