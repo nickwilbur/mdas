@@ -4,12 +4,26 @@ import { getAccount } from '@/lib/read-model';
 import {
   BucketBadge,
   Card,
+  FreshnessRow,
+  GainsightTaskList,
   RiskBadge,
   SentimentBadge,
   StatTile,
   UpsellBandBadge,
   fmtUSD,
 } from '@/components/ui';
+import type { AdapterSource } from '@mdas/canonical';
+
+// Sources we expect to have run for an Expand 3 account when adapters
+// are fully configured. Any of these missing from `lastFetchedFromSource`
+// will render as a grey "no data" pill so a manager can spot a missing
+// integration at a glance (e.g. SF creds expired → no salesforce pill).
+const EXPECTED_SOURCES: AdapterSource[] = [
+  'salesforce',
+  'cerebro',
+  'gainsight',
+  'glean-mcp',
+];
 
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +50,10 @@ export default async function AccountPage({
             <SentimentBadge value={a.cseSentiment} />
             <UpsellBandBadge band={v.upsell.band} score={v.upsell.score} />
           </div>
+          <FreshnessRow
+            freshness={a.lastFetchedFromSource}
+            expectedSources={EXPECTED_SOURCES}
+          />
         </div>
         <div className="grid grid-cols-3 gap-2">
           <StatTile label="ARR" value={fmtUSD(a.allTimeARR)} />
@@ -146,6 +164,30 @@ export default async function AccountPage({
           </ul>
         </Card>
       </div>
+
+      <Card
+        title={`Gainsight Tasks (${a.gainsightTasks.length})`}
+        right={
+          <span className="text-xs text-gray-500">
+            {a.gainsightTasks.filter((t) => !/^closed/i.test(t.status)).length} open
+          </span>
+        }
+      >
+        <GainsightTaskList
+          tasks={a.gainsightTasks}
+          sourceLinkByCtaId={
+            new Map(
+              a.sourceLinks
+                .filter((l) => l.source === 'gainsight')
+                .map((l) => {
+                  const m = l.url.match(/\/cta\/([A-Z0-9]+)/i);
+                  return [m?.[1] ?? '', l.url] as [string, string];
+                })
+                .filter(([id]) => id !== ''),
+            )
+          }
+        />
+      </Card>
 
       <Card title={`Account Plans & Docs (${a.accountPlanLinks.length})`}>
         <ul className="space-y-1 text-sm">

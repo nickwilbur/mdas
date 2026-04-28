@@ -1,6 +1,12 @@
 import clsx from 'clsx';
 import type { ReactNode } from 'react';
-import type { CerebroRiskCategory, CSESentiment } from '@mdas/canonical';
+import type {
+  AdapterSource,
+  CerebroRiskCategory,
+  CSESentiment,
+  GainsightTask,
+  SourceFreshnessMap,
+} from '@mdas/canonical';
 
 export const fmtUSD = (n: number | null | undefined) =>
   n == null ? '—' : n === 0 ? '$0' : `$${Math.round(n).toLocaleString('en-US')}`;
@@ -101,5 +107,166 @@ export function StatTile({
       <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
       {sub ? <div className="mt-1 text-xs text-gray-500">{sub}</div> : null}
     </div>
+  );
+}
+
+/**
+ * Render an ISO timestamp as a relative time ("3h ago", "yesterday", "5d ago")
+ * with the absolute time available on hover via title attribute. Returns "—"
+ * when the input is null/empty.
+ */
+export function RelativeTime({ iso }: { iso: string | null | undefined }) {
+  if (!iso) return <span className="text-gray-400">—</span>;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return <span className="text-gray-400">—</span>;
+  const now = Date.now();
+  const diffMs = now - then;
+  const minutes = Math.floor(diffMs / 60_000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  let label: string;
+  if (diffMs < 0) label = 'in the future';
+  else if (minutes < 1) label = 'just now';
+  else if (minutes < 60) label = `${minutes}m ago`;
+  else if (hours < 24) label = `${hours}h ago`;
+  else if (days === 1) label = 'yesterday';
+  else if (days < 30) label = `${days}d ago`;
+  else label = new Date(iso).toLocaleDateString();
+  return (
+    <span title={new Date(iso).toLocaleString()} className="tabular-nums">
+      {label}
+    </span>
+  );
+}
+
+/**
+ * Per-source freshness pill row. Each adapter that ran for this record
+ * stamps `lastFetchedFromSource[source] = ISO timestamp`. We render one
+ * colored pill per entry. Stale (>7d) entries dim. Missing entries omitted.
+ *
+ * Pass `expectedSources` to render a placeholder pill for sources that
+ * SHOULD have run but did not (the adapter is enabled but emitted no
+ * data for this account, or the adapter wasn't enabled at all).
+ */
+export function FreshnessRow({
+  freshness,
+  expectedSources,
+}: {
+  freshness: SourceFreshnessMap | undefined;
+  expectedSources?: AdapterSource[];
+}) {
+  const entries = Object.entries(freshness ?? {}) as [AdapterSource, string][];
+  const present = new Set<AdapterSource>(entries.map(([k]) => k));
+  const missing = (expectedSources ?? []).filter((s) => !present.has(s));
+
+  if (entries.length === 0 && missing.length === 0) return null;
+
+  const stale = (iso: string): boolean =>
+    Date.now() - new Date(iso).getTime() > 7 * 24 * 60 * 60 * 1000;
+
+  return (
+    <div className="flex flex-wrap gap-1.5 text-[11px]">
+      {entries
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([source, iso]) => (
+          <span
+            key={source}
+            title={`Last fetched from ${source}: ${new Date(iso).toLocaleString()}`}
+            className={clsx(
+              'inline-flex items-center gap-1 rounded-full border px-2 py-0.5',
+              stale(iso)
+                ? 'border-amber-300 bg-amber-50 text-amber-800'
+                : 'border-emerald-300 bg-emerald-50 text-emerald-800',
+            )}
+          >
+            <span className="font-semibold">{source}</span>
+            <RelativeTime iso={iso} />
+          </span>
+        ))}
+      {missing.map((source) => (
+        <span
+          key={source}
+          title={`No fresh data from ${source} on this account this refresh`}
+          className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-gray-500"
+        >
+          <span className="font-semibold">{source}</span>
+          <span>no data</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Gainsight Task list (CTAs). Surfaces owner, due date, status, and a
+ * deep-link to the Gainsight CTA when available. Open tasks render with
+ * a status dot; closed render dimmed.
+ */
+export function GainsightTaskList({
+  tasks,
+  sourceLinkByCtaId,
+}: {
+  tasks: GainsightTask[];
+  /** Map of ctaId → URL, harvested from CanonicalAccount.sourceLinks. */
+  sourceLinkByCtaId?: Map<string, string>;
+}) {
+  if (tasks.length === 0) {
+    return <p className="text-sm text-gray-500">No Gainsight tasks for this account.</p>;
+  }
+  const isClosed = (s: string) => /^closed/i.test(s);
+  return (
+    <ul className="space-y-2 text-sm">
+      {tasks.map((t) => {
+        const closed = isClosed(t.status);
+        const url = t.ctaId ? sourceLinkByCtaId?.get(t.ctaId) : undefined;
+        return (
+          <li
+            key={t.id}
+            className={clsx(
+              'flex items-start justify-between gap-2 border-b border-gray-100 py-1.5',
+              closed && 'text-gray-400',
+            )}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span
+                  className={clsx(
+                    'inline-block h-1.5 w-1.5 rounded-full',
+                    closed ? 'bg-gray-300' : 'bg-blue-500',
+                  )}
+                />
+                {url ? (
+                  <a href={url} className="truncate font-medium text-blue-700 hover:underline">
+                    {t.title}
+                  </a>
+                ) : (
+                  <span className="truncate font-medium">{t.title}</span>
+                )}
+              </div>
+              {t.owner ? (
+                <div className="ml-3.5 text-xs text-gray-600">Owner: {t.owner.name}</div>
+              ) : null}
+            </div>
+            <div className="flex shrink-0 flex-col items-end gap-0.5">
+              <span
+                className={clsx(
+                  'rounded px-1.5 py-0.5 text-[10px] uppercase',
+                  closed
+                    ? 'bg-gray-100 text-gray-500'
+                    : 'bg-blue-50 text-blue-700 ring-1 ring-blue-200',
+                )}
+              >
+                {t.status}
+              </span>
+              {t.dueDate ? (
+                <span className="text-[10px] text-gray-500">
+                  due {t.dueDate.slice(0, 10)}
+                </span>
+              ) : null}
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

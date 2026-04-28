@@ -12,6 +12,8 @@ test-results
 # scratchpad are per-developer.
 .sfdx/
 .sf/
+# tsc --incremental build cache — per-developer, never commit
+**/*.tsbuildinfo
 **/*.d.ts
 **/*.d.ts.map
 **/*.js
