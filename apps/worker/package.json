@@ -12,7 +12,6 @@
     "@mdas/canonical": "*",
     "@mdas/db": "*",
     "@mdas/scoring": "*",
-    "@mdas/adapters-mock": "*",
     "@mdas/adapter-salesforce": "*",
     "@mdas/adapter-cerebro-glean": "*",
     "@mdas/adapter-gainsight": "*",

@@ -24,35 +24,38 @@ import {
   diffAll,
   rankAccountViews,
 } from '@mdas/scoring';
-import {
-  mockSalesforce,
-  mockCerebroGlean,
-  mockGainsight,
-  mockStaircaseGmail,
-  mockZuoraMcp,
-  mockGleanMcp,
-} from '@mdas/adapters-mock';
 import { salesforceAdapter } from '@mdas/adapter-salesforce';
 import { cerebroGleanAdapter } from '@mdas/adapter-cerebro-glean';
 import { gainsightAdapter } from '@mdas/adapter-gainsight';
 import { staircaseGmailAdapter } from '@mdas/adapter-staircase-gmail';
 import { zuoraMcpAdapter } from '@mdas/adapter-zuora-mcp';
 import { gleanMcpAdapter } from '@mdas/adapter-glean-mcp';
+import { localSnapshotsAdapter } from '@mdas/adapter-local-snapshots';
 
-function pickAdapter(envKey: string, mock: ReadAdapter, real: ReadAdapter): ReadAdapter {
-  const v = (process.env[envKey] ?? 'mock').toLowerCase();
-  return v === 'real' ? real : mock;
-}
+// Real adapters keyed by env-var name. When an adapter env is set to 'real',
+// it is included in the refresh pipeline. Otherwise it is omitted — there is
+// no mock fallback: data persists from the previous snapshot via
+// localSnapshotsAdapter (always run first as the baseline).
+const REAL_ADAPTERS: Record<string, ReadAdapter> = {
+  ADAPTER_SALESFORCE: salesforceAdapter,
+  ADAPTER_CEREBRO: cerebroGleanAdapter,
+  ADAPTER_GAINSIGHT: gainsightAdapter,
+  ADAPTER_STAIRCASE: staircaseGmailAdapter,
+  ADAPTER_ZUORA_MCP: zuoraMcpAdapter,
+  ADAPTER_GLEAN_MCP: gleanMcpAdapter,
+};
 
 function selectAdapters(): ReadAdapter[] {
-  return [
-    pickAdapter('ADAPTER_SALESFORCE', mockSalesforce, salesforceAdapter),
-    pickAdapter('ADAPTER_CEREBRO', mockCerebroGlean, cerebroGleanAdapter),
-    pickAdapter('ADAPTER_GAINSIGHT', mockGainsight, gainsightAdapter),
-    pickAdapter('ADAPTER_STAIRCASE', mockStaircaseGmail, staircaseGmailAdapter),
-    pickAdapter('ADAPTER_ZUORA_MCP', mockZuoraMcp, zuoraMcpAdapter),
-    pickAdapter('ADAPTER_GLEAN_MCP', mockGleanMcp, gleanMcpAdapter),
-  ];
+  // Always start from the prior snapshot so unattended refreshes don't wipe
+  // data when no real source produces a record. Real adapters merged after
+  // override fields they own.
+  const adapters: ReadAdapter[] = [localSnapshotsAdapter];
+  for (const [envKey, real] of Object.entries(REAL_ADAPTERS)) {
+    if ((process.env[envKey] ?? '').toLowerCase() === 'real') {
+      adapters.push(real);
+    }
+  }
+  return adapters;
 }
 
 const FRANCHISE = 'Expand 3';
