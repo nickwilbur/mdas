@@ -6,8 +6,10 @@ import {
   Card,
   FreshnessRow,
   GainsightTaskList,
+  RelativeTime,
   RiskBadge,
   SentimentBadge,
+  SourceLinksGrouped,
   StatTile,
   UpsellBandBadge,
   fmtUSD,
@@ -52,6 +54,7 @@ export default async function AccountPage({
           </div>
           <FreshnessRow
             freshness={a.lastFetchedFromSource}
+            errors={a.sourceErrors}
             expectedSources={EXPECTED_SOURCES}
           />
         </div>
@@ -91,11 +94,14 @@ export default async function AccountPage({
         )}
       </Card>
 
-      <Card title="CSE Sentiment Commentary" right={
-        <span className="text-xs text-gray-500">
-          Updated {a.cseSentimentCommentaryLastUpdated ? new Date(a.cseSentimentCommentaryLastUpdated).toLocaleDateString() : '—'}
-        </span>
-      }>
+      <Card
+        title="CSE Sentiment Commentary"
+        right={
+          <span className="text-xs text-gray-500">
+            Updated <RelativeTime iso={a.cseSentimentCommentaryLastUpdated} />
+          </span>
+        }
+      >
         <pre className="whitespace-pre-wrap text-sm text-gray-800">{a.cseSentimentCommentary ?? '—'}</pre>
       </Card>
 
@@ -224,21 +230,26 @@ export default async function AccountPage({
         </ul>
       </Card>
 
-      <Card title={`Source Links (${a.sourceLinks.length + opps.flatMap((o) => o.sourceLinks).length})`}>
-        <ul className="grid grid-cols-1 gap-1 text-sm sm:grid-cols-2">
-          {a.sourceLinks.map((l, i) => (
-            <li key={`a-${i}`}>
-              <a className="text-blue-700 hover:underline" href={l.url}>[{l.source}] {l.label}</a>
-            </li>
-          ))}
-          {opps.flatMap((o) =>
-            o.sourceLinks.map((l, i) => (
-              <li key={`${o.opportunityId}-${i}`}>
-                <a className="text-blue-700 hover:underline" href={l.url}>[{l.source}] {o.opportunityName}: {l.label}</a>
-              </li>
-            )),
-          )}
-        </ul>
+      <Card
+        title={`Source Links (${
+          a.sourceLinks.length + opps.flatMap((o) => o.sourceLinks).length
+        })`}
+        right={<span className="text-[10px] text-gray-500">📍 = anchored citation</span>}
+      >
+        <SourceLinksGrouped
+          links={[
+            ...a.sourceLinks,
+            // Prefix each opportunity's links with the opp name so the user
+            // can tell which opp each link belongs to once they're sorted
+            // alphabetically inside their source bucket.
+            ...opps.flatMap((o) =>
+              o.sourceLinks.map((l) => ({
+                ...l,
+                label: `${o.opportunityName} — ${l.label}`,
+              })),
+            ),
+          ]}
+        />
       </Card>
     </div>
   );

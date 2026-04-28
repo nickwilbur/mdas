@@ -5,7 +5,9 @@ import type {
   CerebroRiskCategory,
   CSESentiment,
   GainsightTask,
+  SourceErrorMap,
   SourceFreshnessMap,
+  SourceLink,
 } from '@mdas/canonical';
 
 export const fmtUSD = (n: number | null | undefined) =>
@@ -142,45 +144,88 @@ export function RelativeTime({ iso }: { iso: string | null | undefined }) {
 /**
  * Per-source freshness pill row. Each adapter that ran for this record
  * stamps `lastFetchedFromSource[source] = ISO timestamp`. We render one
- * colored pill per entry. Stale (>7d) entries dim. Missing entries omitted.
+ * pill per entry, color-coded:
  *
- * Pass `expectedSources` to render a placeholder pill for sources that
- * SHOULD have run but did not (the adapter is enabled but emitted no
- * data for this account, or the adapter wasn't enabled at all).
+ *   - emerald   : fresh data from this source (≤ 7d)
+ *   - amber     : data older than 7d (stale)
+ *   - red       : adapter ran but reported a non-fatal error this refresh
+ *                 (the field set this source owns may be partial / stale)
+ *   - gray "no data" : the source is in `expectedSources` but absent
+ *                 from `freshness` AND `errors` (adapter not enabled,
+ *                 or emitted nothing for this account)
  */
 export function FreshnessRow({
   freshness,
+  errors,
   expectedSources,
 }: {
   freshness: SourceFreshnessMap | undefined;
+  errors?: SourceErrorMap;
   expectedSources?: AdapterSource[];
 }) {
   const entries = Object.entries(freshness ?? {}) as [AdapterSource, string][];
-  const present = new Set<AdapterSource>(entries.map(([k]) => k));
+  const errorEntries = Object.entries(errors ?? {}) as [AdapterSource, string][];
+  const present = new Set<AdapterSource>([
+    ...entries.map(([k]) => k),
+    ...errorEntries.map(([k]) => k),
+  ]);
   const missing = (expectedSources ?? []).filter((s) => !present.has(s));
 
-  if (entries.length === 0 && missing.length === 0) return null;
+  if (entries.length === 0 && errorEntries.length === 0 && missing.length === 0) {
+    return null;
+  }
 
   const stale = (iso: string): boolean =>
     Date.now() - new Date(iso).getTime() > 7 * 24 * 60 * 60 * 1000;
+  const errorBySource = new Map(errorEntries);
 
   return (
     <div className="flex flex-wrap gap-1.5 text-[11px]">
       {entries
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([source, iso]) => (
+        .map(([source, iso]) => {
+          const errMsg = errorBySource.get(source);
+          if (errMsg) {
+            return (
+              <span
+                key={source}
+                title={`Adapter "${source}" reported an error this refresh: ${errMsg}`}
+                className="inline-flex items-center gap-1 rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-red-800"
+              >
+                <span className="font-semibold">{source}</span>
+                <span aria-label="error">⚠</span>
+                <RelativeTime iso={iso} />
+              </span>
+            );
+          }
+          return (
+            <span
+              key={source}
+              title={`Last fetched from ${source}: ${new Date(iso).toLocaleString()}`}
+              className={clsx(
+                'inline-flex items-center gap-1 rounded-full border px-2 py-0.5',
+                stale(iso)
+                  ? 'border-amber-300 bg-amber-50 text-amber-800'
+                  : 'border-emerald-300 bg-emerald-50 text-emerald-800',
+              )}
+            >
+              <span className="font-semibold">{source}</span>
+              <RelativeTime iso={iso} />
+            </span>
+          );
+        })}
+      {/* Errored-but-no-freshness case: source failed before producing any data. */}
+      {errorEntries
+        .filter(([source]) => !freshness || !(source in freshness))
+        .map(([source, msg]) => (
           <span
             key={source}
-            title={`Last fetched from ${source}: ${new Date(iso).toLocaleString()}`}
-            className={clsx(
-              'inline-flex items-center gap-1 rounded-full border px-2 py-0.5',
-              stale(iso)
-                ? 'border-amber-300 bg-amber-50 text-amber-800'
-                : 'border-emerald-300 bg-emerald-50 text-emerald-800',
-            )}
+            title={`Adapter "${source}" failed this refresh: ${msg}`}
+            className="inline-flex items-center gap-1 rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-red-800"
           >
             <span className="font-semibold">{source}</span>
-            <RelativeTime iso={iso} />
+            <span aria-label="error">⚠</span>
+            <span>error</span>
           </span>
         ))}
       {missing.map((source) => (
@@ -192,6 +237,71 @@ export function FreshnessRow({
           <span className="font-semibold">{source}</span>
           <span>no data</span>
         </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Render a flat list of SourceLinks grouped by source. Each group has a
+ * heading with a count badge; within a group, links are sorted by label.
+ * Citation links (those with citationId / snippetIndex) get a small
+ * "📍" indicator so a reader knows the URL anchors to a specific snippet.
+ */
+export function SourceLinksGrouped({ links }: { links: SourceLink[] }) {
+  if (links.length === 0) {
+    return <p className="text-sm text-gray-500">No source links.</p>;
+  }
+  // Stable bucketing.
+  const groups = new Map<string, SourceLink[]>();
+  for (const l of links) {
+    const arr = groups.get(l.source);
+    if (arr) arr.push(l);
+    else groups.set(l.source, [l]);
+  }
+  const sortedGroups = Array.from(groups.entries()).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+
+  return (
+    <div className="space-y-3">
+      {sortedGroups.map(([source, items]) => (
+        <div key={source}>
+          <h3 className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-gray-600">
+            <span>{source}</span>
+            <span className="rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-700">
+              {items.length}
+            </span>
+          </h3>
+          <ul className="grid grid-cols-1 gap-0.5 text-sm sm:grid-cols-2">
+            {items
+              .slice()
+              .sort((a, b) => a.label.localeCompare(b.label))
+              .map((l, i) => {
+                const isCitation =
+                  typeof l.citationId === 'string' || typeof l.snippetIndex === 'number';
+                return (
+                  <li key={`${source}-${i}`} className="truncate">
+                    <a
+                      href={l.url}
+                      className="text-blue-700 hover:underline"
+                      title={l.url}
+                    >
+                      {l.label}
+                    </a>
+                    {isCitation ? (
+                      <span
+                        className="ml-1 align-middle text-[10px] text-gray-500"
+                        title={`Citation: ${l.citationId ?? ''}#${l.snippetIndex ?? 0}`}
+                      >
+                        📍
+                      </span>
+                    ) : null}
+                  </li>
+                );
+              })}
+          </ul>
+        </div>
       ))}
     </div>
   );

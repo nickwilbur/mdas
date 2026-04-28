@@ -1,6 +1,15 @@
 import Link from 'next/link';
 import { getDashboardData } from '@/lib/read-model';
-import { BucketBadge, Card, RiskBadge, SentimentBadge, StatTile, UpsellBandBadge, fmtUSD } from '@/components/ui';
+import {
+  BucketBadge,
+  Card,
+  RelativeTime,
+  RiskBadge,
+  SentimentBadge,
+  StatTile,
+  UpsellBandBadge,
+  fmtUSD,
+} from '@/components/ui';
 import { RefreshButton } from '@/components/RefreshButton';
 
 export const dynamic = 'force-dynamic';
@@ -40,7 +49,7 @@ export default async function DashboardPage() {
         <div>
           <h1 className="text-2xl font-semibold">Manager Dashboard</h1>
           <p className="text-xs text-gray-500">
-            Last refresh: {startedAt ? new Date(startedAt).toLocaleString() : '—'}
+            Last refresh: <RelativeTime iso={startedAt} />
           </p>
         </div>
         <div className="flex items-center gap-3">
