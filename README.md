@@ -98,6 +98,38 @@ docker compose up -d --build
 npm run migrate && npm run seed
 ```
 
+## Corporate TLS interception (Zscaler etc.)
+
+If your laptop sits behind a corporate proxy that re-signs HTTPS traffic
+(Zscaler, Netskope, ZScaler ZIA, Palo Alto, etc.), the worker container
+will fail every outbound HTTPS call with `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`
+because the host's macOS keychain trusts the corp root CA, but the
+container does not. One-time setup:
+
+```sh
+# 1. Export the corporate root cert(s) from the system keychain into
+#    a PEM bundle the container will mount as :ro. The file is
+#    gitignored — the certs are public, but the path is per-machine.
+security find-certificate -a -c "Zscaler" -p \
+  /Library/Keychains/System.keychain > .docker-ca.pem
+# (substitute your own corp issuer name as needed; check via:
+#  echo s_client | openssl s_client -connect example.com:443 2>&1 \
+#    | grep issuer=)
+
+# 2. Rebuild the worker (Dockerfile installs ca-certificates) and
+#    restart. docker-compose.yml mounts .docker-ca.pem at
+#    /etc/mdas-extra-ca.pem and exports NODE_EXTRA_CA_CERTS to it.
+docker compose up -d --build worker
+```
+
+Verify:
+
+```sh
+docker compose exec -T worker node -e \
+  'fetch(process.env.GLEAN_MCP_BASE_URL).then(r=>console.log(r.status))'
+# Expect: 401 (real response from upstream, NOT a TLS error).
+```
+
 ## Read-only guarantees
 
 1. The `packages/adapters/write/` directory **does not exist**. CI fails the build if it ever appears.

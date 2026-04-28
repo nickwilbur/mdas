@@ -12,6 +12,10 @@ test-results
 # scratchpad are per-developer.
 .sfdx/
 .sf/
+# Per-developer corporate root CA bundle, exported from the host
+# keychain to make Zscaler-intercepted TLS work inside docker
+# containers. See README "Corporate TLS interception" section.
+.docker-ca.pem
 # tsc --incremental build cache — per-developer, never commit
 **/*.tsbuildinfo
 **/*.d.ts
