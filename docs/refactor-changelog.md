@@ -126,6 +126,46 @@ The prompt's Section 2.1 assumed Glean's `app:cerebro` exposes Risk Category + R
 
 - PR-7 smoke test against prod — same `GLEAN_MCP_*` blocker as PR-4 / PR-5.
 
+## PR-8 — UI provenance surface + first half of smoke testing
+
+**Commits**: `1182138..b034815` (UI), then `<this commit>` (table polish + tests).
+
+The UI was previously rendering only the canonical fields PR-1 introduced; the new per-source provenance and the new Gainsight surface had no visual presence yet. PR-8 closes that gap end-to-end.
+
+**Shipped — drill-in surface:**
+
+- `FreshnessRow` pill row below the badge row. Each adapter that ran for this account renders as an emerald pill with relative time; pills older than 7 days dim to amber. Adapters in `sourceErrors` render red with ⚠ and the actual error in the tooltip. Adapters in `EXPECTED_SOURCES` (salesforce / cerebro / gainsight / glean-mcp) but absent from both maps render as grey "no data" pills — so a manager spots a missing integration without leaving the account view.
+- `Gainsight Tasks (N)` Card between Workshops and Account Plans. Renders `CanonicalAccount.gainsightTasks` with status dot, owner, due date, and a deep-link to the Gainsight CTA URL when one is parseable from the account's `sourceLinks`.
+- `Source Links` footer: `SourceLinksGrouped` replaces the flat list. Each source gets a section heading + count badge; items are alpha-sorted within their group; citation links (those with `citationId` / `snippetIndex`) get a `📍` indicator. Opportunity-level links are folded in with their `label` prefixed by the opp name.
+- "CSE Sentiment Updated" header timestamp converted to `RelativeTime`.
+
+**Shipped — accounts list:**
+
+- `SourceDots` column on the `/accounts` table. Four-dot indicator per row (SF / Cerebro / Gainsight / Glean), color-matched to the freshness pills (emerald / amber / red / grey). Tooltip on each dot names the source and gives the full timestamp or error message. Lets a manager scan the table for "all-grey-third-dot" patterns indicating a degraded source.
+- "Last Sentiment Update" column converted to `RelativeTime`.
+
+**Shipped — admin:**
+
+- `/admin/refresh` "Per-source freshness" card replaced. Was showing `run.completed_at` for every source, which masked partial failures. Now aggregates `payload->'lastFetchedFromSource'` across `snapshot_account` rows in the latest run, surfacing per-source MAX timestamp + COUNT(DISTINCT account_id touched). Implemented via `getPerSourceFreshness()` in `apps/web/src/lib/read-model.ts` (one SQL with `jsonb_each_text` + LATERAL).
+
+**Shipped — supporting:**
+
+- `apps/web/src/components/time.ts`: pure `relativeTimeLabel(iso, now)` + `isStale(iso, now)` + exported `STALE_AFTER_MS` constant. Date math extracted from the components so it's vitest-testable directly.
+- `apps/web/src/components/time.test.ts`: 12 tests covering null/undefined/unparseable, "just now" edge, minute / hour / day granularity, "yesterday", 30-day cutoff, future-dated input, and the `STALE_AFTER_MS` boundary precision.
+- `vitest.config.ts` `include` widened to `apps/**/*.test.ts` so app tests run alongside packages.
+- Root `tsconfig.json` excludes `apps/web` so Next.js owns its own type-check (closes the persistent `@/lib/read-model` false positive that PR-3..PR-6 commit messages had been carrying as a known caveat). The fix landed at the start of this PR.
+- `.gitignore`: added `**/*.tsbuildinfo`.
+
+**Smoke (the half I can run today, no credentials needed):**
+
+- Worker: a refresh runs end-to-end with the new adapter set in 491ms. All four credential-gated adapters (cerebro / gainsight / glean-mcp / zuora-mcp) cleanly no-op when `GLEAN_MCP_TOKEN` / `SALESFORCE_*` are absent. localSnapshots populates 236 accounts / 275 opportunities from the existing snapshot. No exceptions, no crashed orchestration.
+- Web: all 8 routes return 200 (`/`, `/accounts`, `/accounts/[id]`, `/admin/refresh`, `/forecast`, `/hygiene`, `/wow`, `/opportunities`). Drill-in HTML inspection confirmed: 4 expected sources render as grey "no data" pills (correct for the no-creds state), the Gainsight Tasks panel renders `(0)`, Source Links uses the grouped layout with the "📍 = anchored citation" hint visible. `/accounts` table renders the new "Data" column with grey dots in every row.
+- Build trap discovered + fixed: stale compiled `.js` / `.d.ts` files in the working tree (pre-existing, gitignored but present on disk from earlier `tsc -b` runs) were getting `COPY`'d into the Docker image first and shadowing the `.ts` sources at runtime. Cleaned with one `find … -delete`. Documented for the next dev who hits this.
+
+**Test count**: 73 (was 61) — +12 from `time.test.ts`.
+
+**Pending — the credentialed half of the smoke**: still needs `SALESFORCE_*` and `GLEAN_MCP_*` in worker env to verify the live data path turns the grey "no data" pills emerald and populates the Gainsight panel with real CTAs.
+
 ## Pending across the refactor (all credentials-blocked)
 
 | Item | What's needed |
@@ -146,3 +186,4 @@ The prompt's Section 2.1 assumed Glean's `app:cerebro` exposes Risk Category + R
 | PR-5 | 50 | + 13 Glean (5 context + 8 evidence) |
 | PR-6 | 50 | docs-only PR |
 | PR-7 | 61 | + 11 Gainsight mapper |
+| PR-8 | 73 | + 12 RelativeTime / isStale (apps/web) |

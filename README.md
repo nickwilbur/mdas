@@ -191,7 +191,7 @@ Reads Glean's `app:gainsight / type:calltoaction` documents (Gainsight CTAs / Ri
 ## Testing & CI
 
 ```sh
-npm test               # vitest: scoring + SF/Cerebro/Glean/Gainsight mappers (61 tests as of PR-7)
+npm test               # vitest: scoring + adapters + UI helpers (73 tests as of PR-8)
 npm run ci:guard       # read-only structural enforcement
 npm run lint           # tsc -b
 ```
