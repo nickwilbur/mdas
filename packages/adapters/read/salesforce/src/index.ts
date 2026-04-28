@@ -7,8 +7,22 @@
 // Read-only: only SOQL queries via /services/data/vXX.X/query and /search.
 // All HTTP routed through readOnlyGuard.
 
-import type { ReadAdapter, AdapterFetchResult, RefreshContext } from '@mdas/canonical';
-import { readOnlyGuard } from '../../_shared/src/index.js';
+import type {
+  CanonicalAccount,
+  ReadAdapter,
+  AdapterFetchResult,
+  RefreshContext,
+} from '@mdas/canonical';
+import { SalesforceClient, readSalesforceCredsFromEnv } from './client.js';
+import {
+  applyOpportunityChurnSummary,
+  groupWorkshopsByAccount,
+  mapAccount,
+  mapOpportunity,
+  type SfdcAccountRow,
+  type SfdcOpportunityRow,
+  type SfdcWorkshopRow,
+} from './mapper.js';
 
 export const isReadOnly: true = true;
 
@@ -65,83 +79,111 @@ FROM Workshop_Engagement__c
 WHERE Completion_Date__c = LAST_N_DAYS:365
 `;
 
-interface SfdcCreds {
-  clientId: string;
-  clientSecret: string;
-  refreshToken: string;
-  instanceUrl: string;
-}
-
-function readCreds(): SfdcCreds | null {
-  const e = process.env;
-  if (
-    !e.SALESFORCE_CLIENT_ID ||
-    !e.SALESFORCE_CLIENT_SECRET ||
-    !e.SALESFORCE_REFRESH_TOKEN ||
-    !e.SALESFORCE_INSTANCE_URL
-  ) return null;
-  return {
-    clientId: e.SALESFORCE_CLIENT_ID,
-    clientSecret: e.SALESFORCE_CLIENT_SECRET,
-    refreshToken: e.SALESFORCE_REFRESH_TOKEN,
-    instanceUrl: e.SALESFORCE_INSTANCE_URL,
-  };
-}
-
-async function getAccessToken(creds: SfdcCreds): Promise<string> {
-  const body = new URLSearchParams({
-    grant_type: 'refresh_token',
-    client_id: creds.clientId,
-    client_secret: creds.clientSecret,
-    refresh_token: creds.refreshToken,
-  });
-  // OAuth token endpoint: refresh_token grant. POST with no body inspection,
-  // routed via guard but the path matches Salesforce composite/sobjects allowlist? No — token endpoint is /services/oauth2/token.
-  // Token endpoint isn't a query/search; we explicitly use raw fetch here, which is the only POST exception
-  // and is documented to read no business data. We isolate it.
-  const r = await fetch(`${creds.instanceUrl}/services/oauth2/token`, {
-    method: 'POST',
-    body,
-  });
-  if (!r.ok) throw new Error(`Salesforce token refresh failed: ${r.status}`);
-  const j = (await r.json()) as { access_token: string };
-  return j.access_token;
-}
-
-async function soqlQuery(
-  creds: SfdcCreds,
-  token: string,
-  soql: string,
-): Promise<unknown[]> {
-  const url = `${creds.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`;
-  const r = await readOnlyGuard(url, {
-    headers: { Authorization: `Bearer ${token}` },
-    intent: 'salesforce:soql',
-  });
-  if (!r.ok) throw new Error(`SOQL failed: ${r.status} ${await r.text()}`);
-  const j = (await r.json()) as { records: unknown[]; done: boolean; nextRecordsUrl?: string };
-  return j.records;
-}
+/**
+ * Heuristic threshold above which the Workshop history query is escalated
+ * from REST to Bulk API 2.0. The Workshop_Engagement__c LAST_N_DAYS:365
+ * pull commonly returns several thousand rows; REST's 2,000-row default
+ * page would force pagination and slower wall-clock. Bulk 2.0 streams the
+ * full result set in a single CSV.
+ *
+ * Tuning: drop to 500 to force Bulk for any reasonably-sized historical
+ * pull during dev; raise to e.g. 2000 if Bulk's job-prep latency outweighs
+ * its bandwidth advantage in your tenant.
+ */
+const BULK_THRESHOLD = 1500;
 
 export const salesforceAdapter: ReadAdapter = {
   name: 'salesforce',
   source: 'salesforce',
   isReadOnly: true,
-  async fetch(_input: { franchise: string }, _ctx?: RefreshContext): Promise<Partial<AdapterFetchResult>> {
-    const creds = readCreds();
+  async fetch(
+    _input: { franchise: string },
+    ctx?: RefreshContext,
+  ): Promise<Partial<AdapterFetchResult>> {
+    const creds = readSalesforceCredsFromEnv();
     if (!creds) {
-      // Real adapter must not crash when creds are missing — return empty.
+      // Adapter is opt-in via env. Missing creds → return empty so the
+      // worker proceeds with localSnapshots + other adapters.
       return { accounts: [], opportunities: [] };
     }
-    const token = await getAccessToken(creds);
-    // Issue queries; map source records → canonical types.
-    // For v0 the mapping is deliberately stubbed: TODO once production access lands.
-    await soqlQuery(creds, token, SOQL_ACCOUNTS);
-    await soqlQuery(creds, token, SOQL_OPPS);
-    await soqlQuery(creds, token, SOQL_WORKSHOPS);
-    // The real mapping layer turns SFDC records into CanonicalAccount/CanonicalOpportunity.
-    // We return empty arrays until the mapping is wired so the rest of the app stays healthy.
-    return { accounts: [], opportunities: [] };
+
+    const refreshAt = ctx?.asOf ?? new Date();
+    const log = ctx?.logger;
+    const client = new SalesforceClient(creds);
+
+    // 1) Pull the three structured object queries. Accounts and Opps go
+    //    through REST (small enough). Workshops use REST with auto-paging
+    //    unless the count exceeds BULK_THRESHOLD — escalate transparently.
+    const [accountRows, oppRows, workshopRowsInitial] = await Promise.all([
+      client.query<SfdcAccountRow>(SOQL_ACCOUNTS),
+      client.query<SfdcOpportunityRow>(SOQL_OPPS),
+      client.query<SfdcWorkshopRow>(SOQL_WORKSHOPS),
+    ]);
+
+    let workshopRows: SfdcWorkshopRow[] = workshopRowsInitial;
+    // If REST's auto-pagination returned a large set, log it; if it would
+    // have been throttled by row caps we'd already have noticed at fetch
+    // time. Bulk 2.0 escalation is reserved for the (rare) case where
+    // initial counts indicate >BULK_THRESHOLD with active throttling.
+    if (workshopRows.length >= BULK_THRESHOLD) {
+      try {
+        log?.info('salesforce.bulkQuery.escalate', {
+          rows: workshopRows.length,
+          threshold: BULK_THRESHOLD,
+          sobject: 'Workshop_Engagement__c',
+        });
+        workshopRows = await client.bulkQuery<SfdcWorkshopRow>(SOQL_WORKSHOPS);
+      } catch (err) {
+        // Bulk failure is non-fatal — fall back to the REST results we
+        // already have. Logged for triage.
+        log?.warn('salesforce.bulkQuery.failed', {
+          error: (err as Error).message,
+          fallbackRows: workshopRows.length,
+        });
+      }
+    }
+
+    log?.info('salesforce.fetched', {
+      accounts: accountRows.length,
+      opportunities: oppRows.length,
+      workshops: workshopRows.length,
+    });
+
+    // 2) Map → canonical (partials).
+    const mapCtx = { instanceUrl: creds.instanceUrl, refreshAt };
+    const accountsByIdPartial = new Map<string, Partial<CanonicalAccount>>();
+    for (const row of accountRows) {
+      accountsByIdPartial.set(row.Id, mapAccount(row, mapCtx));
+    }
+
+    // 3) Apply opp-level Churn_Destription__c → account.churnReasonSummary
+    //    (the org keeps the field on Opportunity; canonical exposes it on
+    //    Account, so we project before producing the merged record set).
+    applyOpportunityChurnSummary(accountsByIdPartial, oppRows);
+
+    // 4) Group workshops onto accounts.
+    const workshopsByAccount = groupWorkshopsByAccount(workshopRows);
+    for (const [accountId, workshops] of workshopsByAccount) {
+      const acc = accountsByIdPartial.get(accountId);
+      if (acc) acc.workshops = workshops;
+    }
+
+    const opportunities = oppRows.map((row) => mapOpportunity(row, mapCtx));
+
+    // Cast to AdapterFetchResult is safe because the worker's
+    // mergeAdapterResults spreads partials onto the prior snapshot
+    // (see PR-1 architecture). Fields the partials don't set are
+    // preserved from localSnapshots / other adapters.
+    return {
+      accounts: Array.from(accountsByIdPartial.values()) as CanonicalAccount[],
+      opportunities: opportunities as AdapterFetchResult['opportunities'],
+    };
+  },
+  async healthCheck(_ctx?: RefreshContext): Promise<{ ok: boolean; details: string }> {
+    const creds = readSalesforceCredsFromEnv();
+    if (!creds) return { ok: false, details: 'SALESFORCE_* env vars not set' };
+    const client = new SalesforceClient(creds);
+    return client.healthCheck();
   },
 };
 
