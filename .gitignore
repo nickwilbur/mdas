@@ -16,6 +16,10 @@ test-results
 # keychain to make Zscaler-intercepted TLS work inside docker
 # containers. See README "Corporate TLS interception" section.
 .docker-ca.pem
+# Cascade-relay bridge fixture — contains real customer ARR / sentiment
+# / sentiment commentary pulled from Glean salescloud. Never commit.
+# See scripts/import-cascade-bridge.ts.
+seed/cascade-bridge.json
 # tsc --incremental build cache — per-developer, never commit
 **/*.tsbuildinfo
 **/*.d.ts

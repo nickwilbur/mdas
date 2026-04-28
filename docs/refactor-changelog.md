@@ -192,6 +192,85 @@ Two related architectural items, recorded together because they were forced by t
 - Worker boot probe correctly surfaces 4 ✗ rows: salesforce (env vars not set) + cerebro / gainsight / glean-mcp (token invalid)
 - Cleanup script reduced to a no-op on second run (idempotent)
 
+## PR-10 — Cascade-relay SF bridge (2026-04-28)
+
+**Goal**: unblock the demo without waiting on real `SALESFORCE_*` /
+`GLEAN_MCP_TOKEN` creds, while obeying the Salesforce-precedence rule
+established in PR-9.
+
+**What landed**:
+
+- `scripts/import-cascade-bridge.ts` — idempotent merger that reads
+  `seed/cascade-bridge.json` (gitignored real customer data) and
+  layers Salesforce-flavored fields onto the latest refresh's
+  `snapshot_account` rows: accountName, accountOwner, assignedCSE,
+  csCoverage, franchise, cseSentiment, cseSentimentLastUpdated,
+  cseSentimentCommentaryLastUpdated, allTimeARR, activeProductLines,
+  zuoraTenantId, isConfirmedChurn. Strips and replaces the prior
+  bridge sourceLink (label discriminator: "SFDC Account (via Glean)")
+  on every run. Marks `lastFetchedFromSource.salesforce` per touched
+  account. Re-scores + re-ranks all `account_view` rows.
+
+- `seed/cascade-bridge.json` — produced by Cascade by calling its own
+  `mcp2_search(app=salescloud)` (deterministic, snippet-rich) and
+  `mcp2_chat` in batches of 5–7 (efficient, structured JSON output).
+  Top 25 accounts by mock ARR + IBM Corporation = 26 accounts in the
+  initial pass. Easy to expand — re-run the script after each batch.
+
+**Verified end-to-end** (2026-04-28 21:14 UTC):
+
+| Metric | Before bridge | After bridge |
+|---|---|---|
+| Accounts with real SF provenance | 0 / 236 | 26 / 236 |
+| Bucket distribution | { Saveable Risk: 1, Confirmed Churn: 11, Healthy: 224 } | { Saveable Risk: 7, Confirmed Churn: 12, Healthy: 217 } |
+| CSE Sentiment distribution | (all mock-Green) | { Green: 223, Yellow: 4, Red: 7, Confirmed Churn: 2 } |
+| New Saveable Risk accounts (real Red) | n/a | Wowza, Tripwire, Bitly, Omnitracs, RealNetworks, Celartem |
+| New Confirmed Churn (real flag) | n/a | IBM Corporation (was mock-Green!) |
+
+**Headline data-quality fix**: IBM Corporation. Mock localSnapshots
+had it as Green / $1M ARR. Glean's salescloud index showed the actual
+SF state — `CSE Sentiment = Confirmed Churn`, ARR $29K, commentary
+`"Confirmed Churn. NS1 consolidating with IBM. Last year renewal was
+done to continue for an year"`, last modified 2025-07-07. Bridge
+corrected this in one merge.
+
+**Architecture notes**:
+
+- Bridge is a no-op the moment the worker's salesforce adapter
+  starts producing real data on subsequent refreshes. Real adapter
+  runs LAST in the orchestrator (PR-9 ordering) and overrides the
+  bridge fields on shared keys, so no precedence ambiguity.
+- Glean's `salescloud` is **Glean's index** of SF, not a live SOQL
+  query. It's typically minutes-to-hours stale and only contains
+  fields Glean was configured to index. Strictly better than
+  nothing, weaker than the Bulk API. Acceptable for the demo phase.
+- Bridge does NOT populate Cerebro fields (per the PR-9 policy that
+  killed the gdrive-spreadsheet bridge). Risk badge stays
+  `via fallback` until a non-spreadsheet source surfaces.
+- Bridge does NOT populate Gainsight tasks yet. Easy to add — just
+  another batch of `mcp2_search(app=gainsight)` calls and a fixture
+  field `gainsightTasks: GainsightTask[]`. Deferred until needed.
+
+**Trade-offs accepted**:
+
+- Customer count limited to the 26 in the fixture. The remaining 210
+  accounts still show mock localSnapshots data. UI clearly
+  discriminates with `lastFetchedFromSource.salesforce` (green dot)
+  vs absent (grey "no data" dot). Trivially expandable to all 236 in
+  follow-up Cascade sessions.
+- Fixture is hand-curated; values are accurate as of the moment
+  Cascade pulled them. Re-run the script after each batch update.
+
+**Verified**:
+
+- `npm test` 73/73, ci-guard 4/4, tsc clean
+- Import script runs in ~2s end-to-end against the live DB
+- Re-running the script with the same fixture is a no-op (idempotent
+  on `lastFetchedFromSource.salesforce` and SF-flavored field set)
+- UI: `/accounts` table now shows real account names, owners, and
+  sentiments for the top-25 plus IBM, with green SF dots in the
+  source column
+
 ## Pending across the refactor (all credentials-blocked)
 
 | Item | What's needed |

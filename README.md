@@ -250,6 +250,41 @@ GLEAN_MCP_BASE_URL=https://api.glean.com
 
 Reads Glean's `app:gainsight / type:calltoaction` documents (Gainsight CTAs / Risk tasks) and joins to canonical Account by case-insensitive name match. Populates `gainsightTasks` with up to 25 open-first CTAs per account. See the Gainsight section of `docs/integrations/glean.md` for the join rationale and field map.
 
+## Cascade-relay bridge (interim, until SF + Glean tokens land)
+
+While the worker waits on `SALESFORCE_*` + `GLEAN_MCP_TOKEN`, real
+Salesforce data can be bridged into the latest snapshot via Cascade's
+own Glean MCP integration (the same OAuth path Windsurf already uses,
+no service-account token required).
+
+The bridge respects the data-source precedence rules above:
+Salesforce-flavored fields (account name, owner, CSE sentiment, ARR,
+tenant ID, CS coverage, franchise, active product lines) override
+mock `localSnapshots` data; Glean-flavored fields (Gainsight CTAs,
+account plan links, recent meetings) only fill gaps. The bridge
+becomes a no-op the moment the worker's salesforce adapter starts
+producing data on its own.
+
+```sh
+# 1. Cascade interactively populates seed/cascade-bridge.json from
+#    mcp2_search(app=salescloud) + mcp2_chat. The fixture is
+#    gitignored — it contains real customer ARR + sentiment.
+# 2. Merge into the latest refresh's snapshot_account + re-score.
+npx tsx scripts/import-cascade-bridge.ts
+# Output:
+#   Fixture: 26 bridged accounts
+#   Merged: SF=26 Gainsight=0 (of 236 snapshot accounts)
+#   Re-scored 236 account_view rows
+#   Bucket distribution: { Confirmed Churn: 12, Healthy: 217,
+#                          Saveable Risk: 7 }
+```
+
+The script is **idempotent** — re-running with a refreshed fixture
+overwrites the SF-marked fields cleanly, leaving Cerebro/Gainsight
+provenance untouched. UI source dots correctly show
+`salesforce` (green) for bridged accounts and grey "no data" for
+the rest.
+
 ## Testing & CI
 
 ```sh
