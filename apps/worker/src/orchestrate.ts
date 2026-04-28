@@ -35,25 +35,38 @@ import { zuoraMcpAdapter } from '@mdas/adapter-zuora-mcp';
 import { gleanMcpAdapter } from '@mdas/adapter-glean-mcp';
 import { localSnapshotsAdapter } from '@mdas/adapter-local-snapshots';
 
-// Real adapters keyed by env-var name. When an adapter env is set to 'real',
-// it is included in the refresh pipeline. Otherwise it is omitted — there is
-// no mock fallback: data persists from the previous snapshot via
-// localSnapshotsAdapter (always run first as the baseline).
-const REAL_ADAPTERS: Record<string, ReadAdapter> = {
-  ADAPTER_SALESFORCE: salesforceAdapter,
-  ADAPTER_CEREBRO: cerebroGleanAdapter,
-  ADAPTER_GAINSIGHT: gainsightAdapter,
-  ADAPTER_STAIRCASE: staircaseGmailAdapter,
-  ADAPTER_ZUORA_MCP: zuoraMcpAdapter,
-  ADAPTER_GLEAN_MCP: gleanMcpAdapter,
-};
+// Adapter execution order matters: mergeAdapterResults() does a naive
+// last-write-wins spread, so adapters scheduled LATER override earlier
+// ones on shared canonical fields.
+//
+// Policy (see "Data sources & precedence" in README.md):
+//   1. localSnapshots is ALWAYS first as the baseline so unattended
+//      refreshes don't wipe state when no real source produces a record.
+//   2. Glean-backed enrichment adapters (cerebro, gainsight, glean-mcp)
+//      run mid-pipeline. They populate fields no other source surfaces
+//      (AI risk analysis, recent meetings, account plans, CTAs).
+//   3. Other secondary adapters (staircase, zuora-mcp) run after Glean
+//      enrichment but before SF.
+//   4. Salesforce runs LAST so its values override every other source
+//      on shared fields. Salesforce is the system of truth for
+//      account name, owner, CSE assignment, sentiment, opportunity
+//      stage/amount, etc.
+//
+// Adapters keyed by env-var name (set to 'real' to include in the
+// pipeline; anything else / unset → omitted, no mock fallback).
+// Order in this array determines execution order.
+const REAL_ADAPTERS: ReadonlyArray<readonly [string, ReadAdapter]> = [
+  ['ADAPTER_CEREBRO', cerebroGleanAdapter],
+  ['ADAPTER_GAINSIGHT', gainsightAdapter],
+  ['ADAPTER_GLEAN_MCP', gleanMcpAdapter],
+  ['ADAPTER_STAIRCASE', staircaseGmailAdapter],
+  ['ADAPTER_ZUORA_MCP', zuoraMcpAdapter],
+  ['ADAPTER_SALESFORCE', salesforceAdapter],
+];
 
 export function selectActiveAdapters(): ReadAdapter[] {
-  // Always start from the prior snapshot so unattended refreshes don't wipe
-  // data when no real source produces a record. Real adapters merged after
-  // override fields they own.
   const adapters: ReadAdapter[] = [localSnapshotsAdapter];
-  for (const [envKey, real] of Object.entries(REAL_ADAPTERS)) {
+  for (const [envKey, real] of REAL_ADAPTERS) {
     if ((process.env[envKey] ?? '').toLowerCase() === 'real') {
       adapters.push(real);
     }

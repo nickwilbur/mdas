@@ -130,32 +130,35 @@ docker compose exec -T worker node -e \
 # Expect: 401 (real response from upstream, NOT a TLS error).
 ```
 
-## Cascade-relay (bridge while real Glean tokens are pending)
+## Data sources & precedence
 
-The four real adapters (Salesforce, Cerebro, Gainsight, Glean-MCP) all need a
-dedicated service-account credential to run inside the worker. Until that
-token exists in `.env`, the UI shows grey "no data" pills.
+Two firm rules govern every adapter and merge step:
 
-To unblock UI demos, Cascade can pull data via its own Glean MCP integration
-(authenticated as the human user, the same way Windsurf is) and dump it as
-a JSON fixture under `seed/`, which a one-shot script then merges into the
-latest snapshot's account_view rows. Currently wired for Cerebro:
+1. **Salesforce is the system of truth.** When two adapters produce a
+   value for the same canonical field on the same account, Salesforce
+   wins. The orchestrator enforces this by running real adapters in
+   the order `localSnapshots → cerebro → gainsight → glean-mcp →
+   staircase → zuora-mcp → salesforce`, with a naive last-write-wins
+   merge — Salesforce, scheduled last, overrides every other source on
+   shared fields (account name, sentiment, owner, etc.).
 
-```sh
-# Cascade fetches the Cerebro spreadsheet via mcp2_read_document and
-# parses 197 accounts (with SFDC IDs) into seed/cerebro-snapshot.json.
-# Re-run the parser any time you want fresher data.
+2. **Glean is a backup and enrichment source, never primary.**
+   Use Glean (and its MCP server) for fields no other system surfaces:
+   AI risk analysis text, recent-meeting summaries, account-plan doc
+   links, Slack thread snippets, Gainsight CTAs (where Gainsight has
+   no direct API). Do **not** scrape spreadsheets discovered through
+   Glean as a substitute for a real source — `gdrive` documents may
+   appear in Glean search results but are explicitly out of scope as
+   data sources for this pipeline. The `cerebro-glean` adapter
+   already enforces this with `datasources: ['cerebro']` on every
+   query (the structured Cerebro corpus, not gdrive).
 
-# Then merge into the latest snapshot + re-score:
-npx tsx scripts/import-cerebro-fixture.ts
-# → "Merged Cerebro into 56 snapshot_account rows"
-# → "Bucket distribution after merge: { Saveable Risk: 38, ... }"
-```
-
-The fixture file `seed/cerebro-snapshot.json` is gitignored (real customer
-ARR + risk analysis text). The proper path remains the live cerebro-glean
-adapter inside the worker on every refresh, once a service-account Glean
-token lands. Until then this bridge keeps the UI demonstrating real data.
+The `cerebro-glean` adapter intentionally does **not** populate
+`cerebroRiskCategory` or `cerebroRiskAnalysis` because Glean's
+`cerebro` datasource does not expose those fields in `matchingFilters`.
+The UI handles this gracefully by labeling the risk badge `via fallback`
+(the count-of-true-booleans heuristic) until a non-spreadsheet source
+for Risk Category becomes available.
 
 ## Read-only guarantees
 

@@ -166,6 +166,32 @@ The UI was previously rendering only the canonical fields PR-1 introduced; the n
 
 **Pending — the credentialed half of the smoke**: still needs `SALESFORCE_*` and `GLEAN_MCP_*` in worker env to verify the live data path turns the grey "no data" pills emerald and populates the Gainsight panel with real CTAs.
 
+## PR-9 — data source precedence policy + spreadsheet-bridge revert
+
+**Commits**: `61cfd83..2ea0371` (infra), `9d8abc5` (bridge — REVERTED), `<this commit>` (revert + policy).
+
+Two related architectural items, recorded together because they were forced by the same conversation:
+
+**The infra fix run that exposed the precedence question.** PR-8 wrapped with the credentialed half of the smoke test still pending. While trying to unblock it I uncovered three real infra bugs (committed as `61cfd83`, see PR-8 changelog) and added a startup health probe (committed as `2ea0371`). The infra is now sound — `.env` propagates to the container, Zscaler's TLS interception is trusted, and on every boot the worker prints a clean per-adapter ✓/✗ verdict.
+
+**The spreadsheet-bridge experiment, then revert.** While the Glean service-account token was pending, I wrote a one-shot Cascade-relay (`9d8abc5`) that pulled the live "Cerebro Accounts with NASE" gdrive spreadsheet via Cascade's own Glean MCP integration, parsed 197 accounts into `seed/cerebro-snapshot.json`, and merged Cerebro Risk Category + AI risk analysis into the latest snapshot via SFDC-id join. This visibly populated the UI: 38 new Saveable Risk accounts surfaced, every drill-in showed real risk-analysis text. **The user then defined a firm rule prohibiting gdrive spreadsheets as data sources for this pipeline** — the bridge violated it. Reverted in this PR:
+
+- **Deleted**: `scripts/import-cerebro-fixture.ts`, `seed/cerebro-snapshot.json`, the README "Cascade-relay" section, and the `seed/*.json` patterns from `.gitignore`. The bridge data had already merged into two refresh runs' `snapshot_account` and `account_view` rows; a one-shot `scripts/cleanup-spreadsheet-bridge.ts` strips the gdrive sourceLink, nulls `cerebroRiskCategory`/`cerebroRiskAnalysis`, removes `lastFetchedFromSource['cerebro']`, and re-runs scoring on every affected refresh. Idempotent. Discardable in a few weeks once the affected refreshes age out of /wow.
+- **Result of cleanup**: risk source flipped back from `cerebro` (236 of 236) to `fallback` (236 of 236). Bucket distribution returned to baseline: 1 Saveable Risk, 11 Confirmed Churn, 224 Healthy. UI shows grey "no data" pills again — the correct surface until real adapter tokens land.
+
+**Two firm policy rules** now codified in README and reflected in the orchestrator:
+
+1. **Salesforce is the system of truth.** The orchestrator's adapter execution order was reversed: SF used to run first (and lose every shared-field merge to later adapters), now runs last so its values override every other source. New order: `localSnapshots → cerebro → gainsight → glean-mcp → staircase → zuora-mcp → salesforce`. `mergeAdapterResults()` is unchanged (naive last-write-wins spread); the change is in `selectActiveAdapters()`'s ordering of the `REAL_ADAPTERS` array.
+2. **Glean is a backup and enrichment source, never primary, and never via gdrive spreadsheets.** Use Glean for fields no other system surfaces — AI risk analysis text, recent meeting summaries, account plan doc links, Slack snippets, Gainsight CTAs (where Gainsight has no direct API). The `cerebro-glean` adapter already enforces the no-spreadsheet rule via `datasources: ['cerebro']` on every query (the structured Cerebro corpus, not gdrive). Documented in the adapter's header comment and in README "Data sources & precedence".
+
+**Side effect of the no-spreadsheet rule on Cerebro Risk Category**: Glean's `cerebro` datasource does not expose `Risk Category` or `Risk Analysis` in its `matchingFilters` for indexed Cerebro Health Risk pages. The adapter mapper acknowledges this at `mapper.ts:184-188` and intentionally leaves both fields null. Until a non-spreadsheet source for Risk Category exists, the UI's risk badge will show `via fallback` (the count-of-true-booleans heuristic) rather than `via cerebro`. The original PR-4.b design assumed a "Cerebro Risk Category passthrough from a canonical sheet" — that design is now obsolete. PR-4.b is closed without action.
+
+**Verified**:
+
+- `npm test` 73/73, ci-guard 4/4, tsc clean
+- Worker boot probe correctly surfaces 4 ✗ rows: salesforce (env vars not set) + cerebro / gainsight / glean-mcp (token invalid)
+- Cleanup script reduced to a no-op on second run (idempotent)
+
 ## Pending across the refactor (all credentials-blocked)
 
 | Item | What's needed |
