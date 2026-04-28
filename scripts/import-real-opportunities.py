@@ -1,5 +1,35 @@
 #!/usr/bin/env python3
 """
+DEPRECATED — kept as a fallback / dev escape hatch only.
+================================================================
+
+As of PR-3 (2026-04-28) the Salesforce adapter at
+`packages/adapters/read/salesforce` is the production-time source of
+Account / Opportunity / Workshop data. It runs inside the worker
+container, authenticates via OAuth refresh token, and calls SFDC
+directly (REST + Bulk 2.0) — no Python, no Glean read_document hops,
+no JSON-on-disk batches.
+
+This script is retained only because:
+
+  1. It seeded the early development database from Glean-batch JSON
+     dumps before the SF adapter was wired (preserved for repro of
+     bug reports and pre-PR-3 snapshots).
+
+  2. It is a viable manual fallback if the SF adapter is offline and
+     a forecast generation cannot wait — a developer can run
+     `sf data query --bulk` against `mdas-prod`, dump the JSON, and
+     pipe it through this script to seed a one-off `refresh_runs`
+     row. Paths in the script may need light edits before this works.
+
+Do NOT extend this script. New schema work goes into the
+TypeScript adapter / mapper. Drift between this script and the
+adapter is expected and intentional — the canonical truth lives in
+`packages/adapters/read/salesforce/src/{soql,mapper,client}.ts`.
+
+Original docstring follows.
+================================================================
+
 Import REAL Salesforce opportunity data (from Glean read_document batches) into snapshot_opportunity.
 
 Reads all *.json files in a directory (each is a Glean read_document response with multiple opps).

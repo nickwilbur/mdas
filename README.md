@@ -143,22 +143,45 @@ See the inline comments in each adapter for full SOQL and field mappings:
 
 ## Switching from mocks to real adapters
 
-Set per-adapter env vars to `real`:
+Each adapter is opt-in via an `ADAPTER_*` env var. Adapters return empty when their credentials are missing (no crashes), so adapters can be enabled one at a time without code changes.
+
+### Salesforce (PR-3)
 
 ```
 ADAPTER_SALESFORCE=real
-SALESFORCE_CLIENT_ID=...
-SALESFORCE_CLIENT_SECRET=...
-SALESFORCE_REFRESH_TOKEN=...
+SALESFORCE_CLIENT_ID=...               # Connected App client ID
+SALESFORCE_CLIENT_SECRET=...           # Connected App secret
+SALESFORCE_REFRESH_TOKEN=...           # OAuth refresh token (rotate as needed)
 SALESFORCE_INSTANCE_URL=https://zuora.my.salesforce.com
 ```
 
-Each real adapter returns `{}` if its credentials are missing — no crashes. Switch one adapter at a time without code changes.
+Runtime: `@jsforce/jsforce-node` REST + Bulk API 2.0. Workshop_Engagement__c queries auto-escalate to Bulk above 1500 rows. See `docs/integrations/salesforce.md` and `docs/field-map.md`.
+
+### Cerebro (via Glean) (PR-4)
+
+```
+ADAPTER_CEREBRO=real
+GLEAN_MCP_TOKEN=...
+GLEAN_MCP_BASE_URL=https://api.glean.com
+```
+
+Reads from Glean's `app:cerebro / type:healthrisk` documents — populates the 7 risk booleans + 16 sub-metrics. Risk Category and Risk Analysis are NOT in Glean's Cerebro index; the scoring layer's `RiskIdentifier { source: 'fallback' }` activates per Section 10. See `docs/integrations/cerebro.md`.
+
+### Glean account-context + evidence (PR-5)
+
+```
+ADAPTER_GLEAN_MCP=real
+GLEAN_MCP_TOKEN=...                    # same token as Cerebro
+GLEAN_MCP_BASE_URL=https://api.glean.com
+GLEAN_CONCURRENCY=5                    # optional, default 5
+```
+
+Reads gdrive (account plans / QBR / business reviews), googlecalendar, slack, and Staircase Gmail summaries (metadata-only — privacy guard) for every account in the prior snapshot. See `docs/integrations/glean.md` for the privacy rationale.
 
 ## Testing & CI
 
 ```sh
-npm test               # vitest unit tests for scoring + forecast
+npm test               # vitest: scoring + SF/Cerebro/Glean mappers (50 tests as of PR-5)
 npm run ci:guard       # read-only structural enforcement
 npm run lint           # tsc -b
 ```

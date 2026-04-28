@@ -33,7 +33,7 @@ When validation fails, the developer either:
 1. Fixes the SOQL constant + the `EXPECTED_REFERENCES` list in `scripts/validate-salesforce-schema.ts` to match the new API name, **or**
 2. Asks the Salesforce admin to restore the field if the rename was unintended.
 
-The validator is wired into the `sf:validate` npm script and is intended to be a CI gate before the Salesforce adapter is in the runtime hot path (PR-3).
+The validator is wired into the `sf:validate` npm script and runs in CI on every PR. As of PR-3 the Salesforce adapter is in the runtime hot path; the validator is now a regression guard rather than a pre-launch gate.
 
 ## Field-map regeneration
 
@@ -58,11 +58,11 @@ The runtime worker container does **not** ship `sf`. Salesforce calls are issued
 | `SALESFORCE_REFRESH_TOKEN` | Refresh token (rotates as needed) |
 | `SALESFORCE_INSTANCE_URL` | e.g., `https://zuora.my.salesforce.com` |
 
-These are read in `packages/adapters/read/salesforce/src/index.ts:readCreds()`. The adapter currently (as of PR-2) has the SOQL constants in place but discards results — wiring the mapping layer to populate `CanonicalAccount` / `CanonicalOpportunity` is the work in PR-3.
+These are read by `readSalesforceCredsFromEnv()` in `packages/adapters/read/salesforce/src/client.ts`. As of PR-3 the adapter is fully wired: `salesforceAdapter.fetch()` issues 3 parallel SOQL queries, escalates `Workshop_Engagement__c` to Bulk 2.0 above 1500 rows, and emits populated `Partial<CanonicalAccount>` / `Partial<CanonicalOpportunity>` records via the mapper at `mapper.ts`. See `docs/field-map.md` for the Section-6-vs-org alias table covering the 3 fields where the prompt and the prod org disagreed.
 
-## Bulk API 2.0 plan (PR-3)
+## Bulk API 2.0 (live as of PR-3)
 
-The Workshop_Engagement__c query (`LAST_N_DAYS:365` across the entire object) will exceed the REST 2,000-row default. PR-3 will use `@jsforce/jsforce-node`'s Bulk 2.0 client (`conn.bulk2.query(...)`) for any query expected to return >2,000 rows or to span multiple objects. The `sf data query --bulk` command is **not** used at runtime — only as a developer escape hatch for ad-hoc debugging.
+The `Workshop_Engagement__c` query (`LAST_N_DAYS:365` across the entire object) routinely exceeds the REST 2,000-row default. The runtime adapter uses `@jsforce/jsforce-node`'s Bulk 2.0 client (`conn.bulk2.query(...)`) — falling back to REST results if Bulk fails. Heuristic threshold: REST is tried first; if it returns ≥1500 rows the next refresh upgrades that query to Bulk 2.0 (`BULK_THRESHOLD` constant in `index.ts`). The `sf data query --bulk` command is **not** used at runtime — only as a developer escape hatch for ad-hoc debugging.
 
 ## Ad-hoc debugging recipes
 
