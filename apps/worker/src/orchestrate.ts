@@ -1,10 +1,13 @@
 // Refresh orchestrator: fetch → normalize → persist → score → diff → publish.
 import type {
   AccountView,
+  AdapterAuditLogger,
+  AdapterLogger,
   CanonicalAccount,
   CanonicalOpportunity,
   ChangeEvent,
   ReadAdapter,
+  RefreshContext,
 } from '@mdas/canonical';
 import {
   audit,
@@ -93,10 +96,44 @@ export interface RefreshResult {
   durationMs: number;
 }
 
+/**
+ * Build the RefreshContext threaded through every adapter call. Logger and
+ * audit are thin wrappers over console + @mdas/db for now; can be replaced
+ * with structured implementations without touching adapter code.
+ */
+function buildRefreshContext(refreshId: string, asOf: Date): RefreshContext {
+  const tag = (level: string) => (msg: string, meta?: Record<string, unknown>) => {
+    const line = meta
+      ? `[${level}] [refresh=${refreshId.slice(0, 8)}] ${msg} ${JSON.stringify(meta)}`
+      : `[${level}] [refresh=${refreshId.slice(0, 8)}] ${msg}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    else console.log(line);
+  };
+  const logger: AdapterLogger = {
+    info: tag('info'),
+    warn: tag('warn'),
+    error: tag('error'),
+  };
+  const auditLogger: AdapterAuditLogger = {
+    record: async (a, e, d) => {
+      await audit(a, e, { refreshId, ...d });
+    },
+  };
+  return {
+    refreshId,
+    asOf,
+    franchise: FRANCHISE,
+    logger,
+    audit: auditLogger,
+  };
+}
+
 export async function runRefresh(
   options: { actor?: string; injected?: MergedData } = {},
 ): Promise<RefreshResult> {
   const start = Date.now();
+  const startedAt = new Date(start);
   const adapters = selectAdapters();
   const sourceNames = adapters.map((a) => a.name);
 
@@ -104,6 +141,7 @@ export async function runRefresh(
     scoringVersion: 'v0.1.0', // TODO: Fix SCORING_VERSION import
     sources: sourceNames,
   });
+  const ctx = buildRefreshContext(refreshId, startedAt);
   await audit(options.actor ?? 'manual:nick', 'refresh.started', {
     refreshId,
     sources: sourceNames,
@@ -114,17 +152,30 @@ export async function runRefresh(
   const errorLog: { source: string; error: string }[] = [];
   const fetched = await Promise.all(
     adapters.map(async (a) => {
+      const adapterStart = Date.now();
       try {
         const r = await Promise.race([
-          a.fetch({ franchise: FRANCHISE }),
+          a.fetch({ franchise: FRANCHISE }, ctx),
           new Promise<Partial<MergedData>>((_, rej) =>
             setTimeout(() => rej(new Error('adapter timeout')), 25_000),
           ),
         ]);
         succeeded.push(a.name);
+        ctx.logger.info(`adapter.success`, {
+          source: a.source ?? a.name,
+          durationMs: Date.now() - adapterStart,
+          accounts: r.accounts?.length ?? 0,
+          opportunities: r.opportunities?.length ?? 0,
+        });
         return r;
       } catch (err) {
-        errorLog.push({ source: a.name, error: (err as Error).message });
+        const message = (err as Error).message;
+        errorLog.push({ source: a.name, error: message });
+        ctx.logger.error(`adapter.failure`, {
+          source: a.source ?? a.name,
+          durationMs: Date.now() - adapterStart,
+          error: message,
+        });
         return {} as Partial<MergedData>;
       }
     }),
