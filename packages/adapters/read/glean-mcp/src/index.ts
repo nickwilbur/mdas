@@ -3,14 +3,17 @@
 // Fallback for everything, including understanding what accounts and opportunities are in 'Expand 3'.
 // Used when Salesforce can't be reached or doesn't have the data.
 
-import type { ReadAdapter, AdapterFetchResult, CanonicalAccount, CanonicalOpportunity } from '@mdas/canonical';
+import type { ReadAdapter, AdapterFetchResult, RefreshContext } from '@mdas/canonical';
 
 export const isReadOnly: true = true;
 
 export const gleanMcpAdapter: ReadAdapter = {
   name: 'glean-mcp',
+  source: 'glean-mcp',
   isReadOnly: true,
-  async fetch({ franchise }): Promise<Partial<AdapterFetchResult>> {
+  async fetch(input: { franchise: string }, _ctx?: RefreshContext): Promise<Partial<AdapterFetchResult>> {
+    const { franchise } = input;
+    void franchise; // referenced in commented-out implementation below
     const token = process.env.GLEAN_MCP_TOKEN;
     const baseUrl = process.env.GLEAN_MCP_BASE_URL;
     if (!token || !baseUrl) return {};

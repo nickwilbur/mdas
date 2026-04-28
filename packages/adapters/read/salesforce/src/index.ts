@@ -7,7 +7,7 @@
 // Read-only: only SOQL queries via /services/data/vXX.X/query and /search.
 // All HTTP routed through readOnlyGuard.
 
-import type { ReadAdapter, AdapterFetchResult } from '@mdas/canonical';
+import type { ReadAdapter, AdapterFetchResult, RefreshContext } from '@mdas/canonical';
 import { readOnlyGuard } from '../../_shared/src/index.js';
 
 export const isReadOnly: true = true;
@@ -117,8 +117,9 @@ async function soqlQuery(
 
 export const salesforceAdapter: ReadAdapter = {
   name: 'salesforce',
+  source: 'salesforce',
   isReadOnly: true,
-  async fetch(): Promise<Partial<AdapterFetchResult>> {
+  async fetch(_input: { franchise: string }, _ctx?: RefreshContext): Promise<Partial<AdapterFetchResult>> {
     const creds = readCreds();
     if (!creds) {
       // Real adapter must not crash when creds are missing — return empty.

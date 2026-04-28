@@ -4,14 +4,15 @@
 // and merge into CanonicalAccount.recentMeetings as 'staircase' source.
 // Treat as supporting evidence, not a system of record.
 
-import type { ReadAdapter, AdapterFetchResult } from '@mdas/canonical';
+import type { ReadAdapter, AdapterFetchResult, RefreshContext } from '@mdas/canonical';
 
 export const isReadOnly: true = true;
 
 export const staircaseGmailAdapter: ReadAdapter = {
   name: 'staircase-gmail',
+  source: 'staircase',
   isReadOnly: true,
-  async fetch(): Promise<Partial<AdapterFetchResult>> {
+  async fetch(_input: { franchise: string }, _ctx?: RefreshContext): Promise<Partial<AdapterFetchResult>> {
     // Real impl: Gmail API users.messages.list with q="from:support@staircase.ai newer_than:7d",
     // body parser for the structured Staircase email template.
     // Stubbed for v0.

@@ -4,15 +4,16 @@
 // performance, but uses Gainsight Task records as the source of structured
 // next-action items (owner + dueDate), which Salesforce Opportunity does not have.
 
-import type { ReadAdapter, AdapterFetchResult } from '@mdas/canonical';
+import type { ReadAdapter, AdapterFetchResult, RefreshContext } from '@mdas/canonical';
 import { readOnlyGuard } from '../../_shared/src/index.js';
 
 export const isReadOnly: true = true;
 
 export const gainsightAdapter: ReadAdapter = {
   name: 'gainsight',
+  source: 'gainsight',
   isReadOnly: true,
-  async fetch(): Promise<Partial<AdapterFetchResult>> {
+  async fetch(_input: { franchise: string }, _ctx?: RefreshContext): Promise<Partial<AdapterFetchResult>> {
     if (!process.env.GLEAN_MCP_TOKEN || !process.env.GLEAN_MCP_BASE_URL) {
       return {};
     }

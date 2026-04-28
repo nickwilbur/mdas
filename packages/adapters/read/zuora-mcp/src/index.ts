@@ -4,7 +4,7 @@
 // Quota: 5,000 requests / tenant / month — rate-limit client-side.
 // Note: Zuora sandbox has no account data - used only for billing/revenue tooling.
 
-import type { ReadAdapter, AdapterFetchResult } from '@mdas/canonical';
+import type { ReadAdapter, AdapterFetchResult, RefreshContext } from '@mdas/canonical';
 import { RateLimiter, readOnlyGuard } from '../../_shared/src/index.js';
 
 export const isReadOnly: true = true;
@@ -13,8 +13,9 @@ const limiter = new RateLimiter(120, 60_000); // ~120/min cap (well under 5k/mo)
 
 export const zuoraMcpAdapter: ReadAdapter = {
   name: 'zuora-mcp',
+  source: 'zuora-mcp',
   isReadOnly: true,
-  async fetch(): Promise<Partial<AdapterFetchResult>> {
+  async fetch(_input: { franchise: string }, _ctx?: RefreshContext): Promise<Partial<AdapterFetchResult>> {
     const baseUrl = process.env.ZUORA_MCP_BASE_URL;
     const clientId = process.env.ZUORA_MCP_CLIENT_ID;
     const clientSecret = process.env.ZUORA_MCP_CLIENT_SECRET;

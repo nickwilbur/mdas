@@ -6,15 +6,16 @@
 //
 // In v0 with no real Cerebro deployment, this adapter returns no records.
 
-import type { ReadAdapter, AdapterFetchResult } from '@mdas/canonical';
+import type { ReadAdapter, AdapterFetchResult, RefreshContext } from '@mdas/canonical';
 import { readOnlyGuard } from '../../_shared/src/index.js';
 
 export const isReadOnly: true = true;
 
 export const cerebroGleanAdapter: ReadAdapter = {
   name: 'cerebro-glean',
+  source: 'cerebro',
   isReadOnly: true,
-  async fetch(): Promise<Partial<AdapterFetchResult>> {
+  async fetch(_input: { franchise: string }, _ctx?: RefreshContext): Promise<Partial<AdapterFetchResult>> {
     // Real implementation calls Glean MCP `search` against the Cerebro custom
     // data source for each Expand 3 account name and parses the document into
     // CanonicalAccount.cerebroRiskCategory / cerebroRiskAnalysis / cerebroRisks /
