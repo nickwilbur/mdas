@@ -1,18 +1,15 @@
-import { getAuditTail, getRecentRuns } from '@/lib/read-model';
-import { Card } from '@/components/ui';
+import { getAuditTail, getPerSourceFreshness, getRecentRuns } from '@/lib/read-model';
+import { Card, RelativeTime } from '@/components/ui';
 import { RefreshButton } from '@/components/RefreshButton';
 
 export const dynamic = 'force-dynamic';
 
 export default async function AdminRefreshPage() {
-  const runs = await getRecentRuns(20);
-  const audit = await getAuditTail(80);
-
-  // Compute per-source freshness from the most recent successful run.
-  const lastSuccess = runs.find((r) => r.status === 'success' || r.status === 'partial');
-  const sources = lastSuccess
-    ? (lastSuccess.sources_succeeded as string[])
-    : [];
+  const [runs, audit, freshness] = await Promise.all([
+    getRecentRuns(20),
+    getAuditTail(80),
+    getPerSourceFreshness(),
+  ]);
 
   return (
     <div className="space-y-4">
@@ -21,18 +18,27 @@ export default async function AdminRefreshPage() {
         <RefreshButton />
       </div>
 
-      <Card title="Source freshness">
-        {!lastSuccess ? (
-          <p className="text-sm text-gray-500">No successful runs yet.</p>
+      <Card title="Per-source freshness (last successful refresh)">
+        {freshness.perSource.length === 0 ? (
+          <p className="text-sm text-gray-500">
+            No per-source freshness recorded yet — either no successful runs, or
+            the snapshot rows pre-date the provenance refactor.
+          </p>
         ) : (
-          <ul className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
-            {sources.map((s) => (
-              <li key={s} className="rounded border border-gray-200 px-2 py-1">
-                <div className="text-xs text-gray-500">{s}</div>
-                <div>
-                  {lastSuccess.completed_at
-                    ? new Date(lastSuccess.completed_at).toLocaleString()
-                    : '—'}
+          <ul className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2 lg:grid-cols-3">
+            {freshness.perSource.map((s) => (
+              <li
+                key={s.source}
+                className="flex items-center justify-between rounded border border-gray-200 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="font-medium">{s.source}</div>
+                  <div className="text-xs text-gray-500">
+                    {s.accountsTouched} account{s.accountsTouched === 1 ? '' : 's'} enriched
+                  </div>
+                </div>
+                <div className="shrink-0 text-right text-xs text-gray-700">
+                  <RelativeTime iso={s.latest} />
                 </div>
               </li>
             ))}

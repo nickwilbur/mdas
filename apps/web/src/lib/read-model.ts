@@ -66,6 +66,49 @@ export async function getRecentRuns(limit = 20) {
   return listRefreshRuns(limit);
 }
 
+/**
+ * Aggregate per-source freshness across all accounts in the most recent
+ * successful run. Reads `payload->'lastFetchedFromSource'` from every
+ * snapshot_account row and returns the most recent timestamp per source
+ * plus the count of accounts that had data from that source.
+ *
+ * The previous implementation showed the run's completed_at for every
+ * source, which masked partial failures (e.g. SF ran fine, but Cerebro
+ * 401'd halfway through and only enriched 12/236 accounts). Now we
+ * surface that asymmetry directly.
+ */
+export async function getPerSourceFreshness(): Promise<{
+  refreshId: string | null;
+  perSource: { source: string; latest: string | null; accountsTouched: number }[];
+}> {
+  const run = await latestSuccessfulRun();
+  if (!run) return { refreshId: null, perSource: [] };
+  // jsonb_each_text yields (key, value) pairs from the freshness map.
+  // Aggregate per key across all account rows in this refresh.
+  const r = await query<{ source: string; latest: string | null; accounts_touched: string }>(
+    `
+    SELECT
+      kv.key                         AS source,
+      MAX(kv.value)                  AS latest,
+      COUNT(DISTINCT s.account_id)   AS accounts_touched
+    FROM snapshot_account s,
+         LATERAL jsonb_each_text(COALESCE(s.payload->'lastFetchedFromSource', '{}'::jsonb)) AS kv
+    WHERE s.refresh_id = $1
+    GROUP BY kv.key
+    ORDER BY kv.key
+    `,
+    [run.id],
+  );
+  return {
+    refreshId: run.id,
+    perSource: r.rows.map((row) => ({
+      source: row.source,
+      latest: row.latest,
+      accountsTouched: Number(row.accounts_touched),
+    })),
+  };
+}
+
 export async function getAuditTail(limit = 80) {
   return readAuditLog(limit);
 }
