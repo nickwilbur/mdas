@@ -178,10 +178,20 @@ GLEAN_CONCURRENCY=5                    # optional, default 5
 
 Reads gdrive (account plans / QBR / business reviews), googlecalendar, slack, and Staircase Gmail summaries (metadata-only — privacy guard) for every account in the prior snapshot. See `docs/integrations/glean.md` for the privacy rationale.
 
+### Gainsight (via Glean) (PR-7)
+
+```
+ADAPTER_GAINSIGHT=real
+GLEAN_MCP_TOKEN=...                    # same token as Cerebro / Glean
+GLEAN_MCP_BASE_URL=https://api.glean.com
+```
+
+Reads Glean's `app:gainsight / type:calltoaction` documents (Gainsight CTAs / Risk tasks) and joins to canonical Account by case-insensitive name match. Populates `gainsightTasks` with up to 25 open-first CTAs per account. See the Gainsight section of `docs/integrations/glean.md` for the join rationale and field map.
+
 ## Testing & CI
 
 ```sh
-npm test               # vitest: scoring + SF/Cerebro/Glean mappers (50 tests as of PR-5)
+npm test               # vitest: scoring + SF/Cerebro/Glean/Gainsight mappers (61 tests as of PR-7)
 npm run ci:guard       # read-only structural enforcement
 npm run lint           # tsc -b
 ```

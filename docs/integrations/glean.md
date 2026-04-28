@@ -6,7 +6,7 @@ Glean is the federation layer behind multiple MDAS adapters:
 |---|---|---|
 | `cerebro-glean` (PR-4) | `cerebro` (`type:healthrisk`) | `cerebroRisks`, `cerebroSubMetrics` |
 | `glean-mcp` (PR-5, this doc) | `gdrive`, `googlecalendar`, `slack`, `gmail` | `accountPlanLinks`, `recentMeetings` |
-| `gainsight` (planned) | `gainsight` | `gainsightTasks`, sentiment cross-check |
+| `gainsight` (PR-7) | `gainsight` (`type:calltoaction`) | `gainsightTasks` |
 
 All Glean-backed adapters share the `GleanClient` at `packages/adapters/read/_shared/src/glean.ts` for auth, pagination, in-memory per-refresh document caching, and read-only invariant enforcement.
 
@@ -72,6 +72,51 @@ The pool is implemented in `glean-mcp/src/index.ts::mapWithConcurrency()`. The `
 ## Read-only invariant
 
 `GleanClient` exposes only `search` / `searchAll` / `getDocuments` / `healthCheck`. All HTTP requests route through `readOnlyGuard`, which only permits Glean's `search`, `chat`, `getdocument`, and `documents` REST paths. CI guard `scripts/ci-guard.mjs` greps adapter source for write verbs (`glean_create_*`, `glean_update_*`, `glean_delete_*`, `glean_send_*`, `glean_post_*`, `glean_upsert_*`) — none exist.
+
+## Gainsight adapter (PR-7)
+
+Separate adapter at `packages/adapters/read/gainsight/`. Reads `app:gainsight` filtered to `type:calltoaction` (CTAs / Risk tasks). Single-sweep query (no per-account loop) — Glean's CTA corpus is small enough (~1k docs across the tenant).
+
+**Glean facets used** (from `matchingFilters`):
+
+| Glean facet | Mapped to |
+|---|---|
+| `gscompanyname` | account-name join key (after `normalizeName()`) |
+| `gscompanygsid` | not used (Gainsight internal ID, no SFDC mapping in Glean) |
+| `gsctaname` | `GainsightTask.title` |
+| `gsctaownername` | `GainsightTask.owner` |
+| `gsctapriority` | preserved in snippet, surfaced on the drill-in |
+| `gsctastatus` | `GainsightTask.status` (also drives `isOpen` for sort) |
+| `gsctatype` | preserved in snippet (Risk / Expansion / Onboarding / Lifecycle) |
+
+**Snippet fields** (parsed from `Label: value` lines in `doc.snippets`):
+
+- `Due Date: <ISO>` → `GainsightTask.dueDate`
+- `Created Date: <ISO>` → freshness stamp on `lastFetchedFromSource['gainsight']`
+- `Total Task Count` / `Closed Task Count` / `Percent Complete` — preserved as snippets
+
+### Cross-system join — name matching
+
+Glean's Gainsight connector exposes the Gainsight company GSID but **not** the SFDC Account ID. The adapter therefore joins via case-insensitive name match against the prior snapshot's `accountName`, with light normalization in `mapper.ts:normalizeName()`:
+
+- lowercase
+- strip trailing `, Inc.` / `, LLC` / `, Ltd.` / ` GmbH` / ` SA` / ` Corp.`
+- strip `.` and `,`
+- collapse repeated whitespace
+
+Unmatched CTAs are dropped and counted in the `gainsight.mapped { accountsUnmatched }` log line. If a future schema change adds `gssalesforceaccountid` to Glean's Gainsight facets, this code should be updated to prefer the structured key.
+
+### Sorting + cap
+
+Per matched account, CTAs are sorted (open first, then by due date ascending, nulls last) and capped at 25 entries to keep the canonical record bounded. The first CTA in this list is what the Account Drill-In's "Next Action" pill displays.
+
+### Activation
+
+```bash
+echo "ADAPTER_GAINSIGHT=real" >> .env
+echo "GLEAN_MCP_TOKEN=..." >> .env                # same token as the other Glean adapters
+echo "GLEAN_MCP_BASE_URL=https://api.glean.com" >> .env
+```
 
 ## Activation
 
