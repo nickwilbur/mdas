@@ -55,5 +55,64 @@ if (existsSync(readRoot)) {
   ok('All read adapters export isReadOnly: true.');
 }
 
+// 4) Adapter source must not call any write verb on a known SDK / CLI.
+// The patterns below match common write APIs:
+//   - jsforce: connection.create / .update / .upsert / .delete / .destroy
+//   - sf CLI: sf data create / update / upsert / delete / import
+//   - REST: composite/sobjects POST/PATCH/DELETE-shaped paths
+//   - Glean: any glean_* tool with a write verb prefix (none exist today)
+// To intentionally bypass on a single line, append `// ci-guard:allow`.
+//
+// We deliberately use substring checks (not AST) — false positives are rare
+// and a comment escape covers the legitimate edge case of mentioning a verb
+// in a code comment for documentation. Keep these patterns tight.
+const WRITE_PATTERNS = [
+  // jsforce / Node Salesforce SDKs (method calls on a connection or sobject)
+  /\b(?:connection|conn|sobject\([^)]*\)|sf|client)\s*\.\s*(create|update|upsert|destroy|delete)\s*\(/,
+  // sf CLI invocations
+  /\bsf\s+data\s+(create|update|upsert|delete|import)\b/,
+  // Salesforce REST methods that mutate (POST/PATCH/DELETE to /sobjects/ or composite)
+  /method\s*:\s*['"`](POST|PATCH|DELETE)['"`][^]*?\/(sobjects|composite)\b/i,
+  // Future-proof Glean MCP write tools (none today). Match snake_case create/update/delete/post/send tools.
+  /\bglean_(create|update|delete|post|send|upsert)_/,
+];
+
+function* walkFiles(dir) {
+  if (!existsSync(dir)) return;
+  for (const entry of readdirSync(dir)) {
+    if (entry === 'node_modules' || entry === '.next' || entry === 'dist' || entry.startsWith('.git')) continue;
+    const p = join(dir, entry);
+    let s;
+    try { s = statSync(p); } catch { continue; }
+    if (s.isDirectory()) {
+      yield* walkFiles(p);
+    } else if (p.endsWith('.ts') || p.endsWith('.js')) {
+      yield p;
+    }
+  }
+}
+
+const adapterRoot = join(process.cwd(), 'packages/adapters');
+let writeVerbHits = 0;
+for (const file of walkFiles(adapterRoot)) {
+  // Skip declaration files and the mock package (retired but still on disk).
+  if (file.endsWith('.d.ts')) continue;
+  if (file.includes('/adapters/mock/')) continue;
+  const src = readFileSync(file, 'utf8');
+  const lines = src.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.includes('ci-guard:allow')) continue;
+    for (const re of WRITE_PATTERNS) {
+      if (re.test(line)) {
+        fail(`Write-verb match in ${file}:${i + 1} — ${line.trim()}`);
+        writeVerbHits++;
+        break;
+      }
+    }
+  }
+}
+if (writeVerbHits === 0) ok('No write verbs detected in adapter source.');
+
 if (failed) process.exit(1);
 console.log('[ci-guard] All checks passed.');
