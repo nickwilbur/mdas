@@ -12,6 +12,14 @@ import { readOnlyGuard } from '../../_shared/src/index.js';
 
 export const isReadOnly: true = true;
 
+// Field-name source of truth: the actual `mdas-prod` org schema
+// (see packages/adapters/read/salesforce/generated/field-map.ts).
+// Where the prompt's Section 6 list disagrees with the org, the org wins.
+// Drifts resolved per option (c) on 2026-04-28; alias table will be
+// captured in docs/field-map.md (PR-6).
+//   Account.Churn_Destription__c    → moved to Opportunity (org schema)
+//   Opportunity.SC_Next_Steps__c    → renamed Opportunity.SE_Next_Steps__c
+//   Workshop_Engagement__c.Status   → renamed Workshop_Engagement__c.Status__c
 export const SOQL_ACCOUNTS = `
 SELECT
   Id, Name, X18_Digit_ID__c, Type, OwnerId, Assigned_CSE__c,
@@ -19,7 +27,7 @@ SELECT
   Total_ACV__c, All_Time_ARR_Billing__c, All_Time_ARR_Zephr__c,
   Business_Industry_Health__c, CSM_Sentiment_Commentary__c,
   CSE_Sentiment_Last_Modified__c, CSE_Sentiment_Commentary_Last_Modified__c,
-  Churn_Reason__c, Churn_Date__c, Churn_Destription__c,
+  Churn_Reason__c, Churn_Date__c,
   CS_Coverage__c,
   engagio__EngagementMinutesLast7Days__c,
   engagio__EngagementMinutesLast30Days__c,
@@ -39,10 +47,10 @@ SELECT
   fml_Forecast_Hedge_USD__c,
   fml_DerivedACVDelta_USD__c, Billing_ACV_Delta_USD__c, Revenue_ACV_Delta_USD__c, Zephr_ACV_Delta_USD__c,
   Known_Churn_USD__c,
-  FLM_Notes__c, SLM_Notes__c, SC_Next_Steps__c,
+  FLM_Notes__c, SLM_Notes__c, SE_Next_Steps__c,
   Sales_Engineer__c,
   Full_Churn_Notification_to_Owner_Date__c, Full_Churn_Final_Email_Sent_Date__c,
-  Churn_Downsell_Reason__c,
+  Churn_Downsell_Reason__c, Churn_Destription__c,
   Product_Line__c
 FROM Opportunity
 WHERE FranchisePicklist__c = 'Expand 3'
@@ -52,7 +60,7 @@ WHERE FranchisePicklist__c = 'Expand 3'
 `;
 
 export const SOQL_WORKSHOPS = `
-SELECT Id, Account__c, Engagement_Type__c, Status, Completion_Date__c
+SELECT Id, Account__c, Engagement_Type__c, Status__c, Completion_Date__c
 FROM Workshop_Engagement__c
 WHERE Completion_Date__c = LAST_N_DAYS:365
 `;

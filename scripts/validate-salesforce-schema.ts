@@ -54,7 +54,8 @@ const EXPECTED_REFERENCES: readonly ReferenceSet[] = [
       { apiName: 'CSE_Sentiment_Commentary_Last_Modified__c', expectedType: ['datetime', 'date'] },
       { apiName: 'Churn_Reason__c' },
       { apiName: 'Churn_Date__c', expectedType: ['date', 'datetime'] },
-      { apiName: 'Churn_Destription__c' }, // sic — actual SFDC API name
+      // Section 6 listed Churn_Destription__c here, but org schema has it
+      // on Opportunity. Mapped via the Opportunity reference set below.
       { apiName: 'CS_Coverage__c', expectedType: ['picklist', 'string'] },
       { apiName: 'engagio__EngagementMinutesLast7Days__c', expectedType: ['double', 'int'] },
       { apiName: 'engagio__EngagementMinutesLast30Days__c', expectedType: ['double', 'int'] },
@@ -91,11 +92,16 @@ const EXPECTED_REFERENCES: readonly ReferenceSet[] = [
       { apiName: 'Known_Churn_USD__c', expectedType: ['currency', 'double'] },
       { apiName: 'FLM_Notes__c' },
       { apiName: 'SLM_Notes__c' },
-      { apiName: 'SC_Next_Steps__c' },
+      // Section 6 spelled this SC_Next_Steps__c. Org has SE_Next_Steps__c
+      // (label "CSE Next Steps"). Resolved per option (c) — trust the org.
+      { apiName: 'SE_Next_Steps__c' },
       { apiName: 'Sales_Engineer__c', expectedType: ['reference'] },
       { apiName: 'Full_Churn_Notification_to_Owner_Date__c', expectedType: ['date', 'datetime'] },
       { apiName: 'Full_Churn_Final_Email_Sent_Date__c', expectedType: ['date', 'datetime'] },
       { apiName: 'Churn_Downsell_Reason__c' },
+      // Org has Churn_Destription__c on Opportunity (label "Churn Reason
+      // Summary"), not on Account as Section 6 stated.
+      { apiName: 'Churn_Destription__c' },
       { apiName: 'Product_Line__c' },
     ],
   },
@@ -105,7 +111,9 @@ const EXPECTED_REFERENCES: readonly ReferenceSet[] = [
       { apiName: 'Id' },
       { apiName: 'Account__c', expectedType: ['reference'] },
       { apiName: 'Engagement_Type__c', expectedType: ['picklist', 'string'] },
-      { apiName: 'Status', expectedType: ['picklist', 'string'] },
+      // Section 6 spelled this Status (standard Salesforce field). Org has
+      // it as Status__c (custom picklist). Resolved per option (c).
+      { apiName: 'Status__c', expectedType: ['picklist', 'string'] },
       { apiName: 'Completion_Date__c', expectedType: ['date', 'datetime'] },
     ],
   },
