@@ -271,6 +271,63 @@ corrected this in one merge.
   sentiments for the top-25 plus IBM, with green SF dots in the
   source column
 
+## PR-10b — Bridge expansion to 101/236 (2026-04-28)
+
+Same-session expansion of the cascade-bridge fixture from 26 → 101
+accounts (43% of the snapshot). Driven by 18 parallel `mcp2_chat`
+calls in batches of 6 over four rounds. Each successful chat returned
+clean JSON for ~6 accounts; some batches partially failed (Glean
+returning all-null when the agent's per-turn search budget was
+exhausted on tricky queries). Skipped any account with no SF owner
+or sentiment — UI shows those as grey "no data" rather than
+half-bridged.
+
+**Bucket evolution at each milestone**:
+
+| State | Confirmed Churn | Saveable Risk | Healthy |
+|---|---|---|---|
+| Post-cleanup (no bridge) | 11 | 1 | 224 |
+| PR-10 (26 bridged) | 12 | 7 | 217 |
+| PR-10b (101 bridged) | 16 | 29 | 191 |
+
+**CSE Sentiment after PR-10b**: Green 179, Yellow 21, Red 30, Confirmed Churn 6.
+
+**Notable real data corrections via the expansion**:
+- New England Newspapers, Inc. → Confirmed Churn (Zephr)
+- Kandji → Confirmed Churn (still Implementing)
+- ZenQMS → Confirmed Churn (Churned/Live)
+- ForeScout Technologies → Confirmed Churn (RevPro)
+- Quotit Corporation → Red, $3.8M ARR
+- Omni Technology Solutions → Red, $479K ARR
+- Bird.com (fka MessageBird) → Red, $200K ARR
+- Swing Education → Red, $293K ARR
+
+**Why not all 236**:
+
+Cascade-relay over `mcp2_chat` is **token-expensive on the orchestrator
+side**: each chat call returns ~150KB of internal Glean agent trace
+data (search steps, document reads, retrieval calls) wrapped around
+the final JSON. A single round of 5 parallel chats burns ~750KB of
+Cascade context. Running all 35 batches × 5 parallel = ~5MB of
+context, well past sustainable limits in a single session.
+
+**Recommended path forward**:
+
+1. **Real adapters** (PR-3 / PR-4 / PR-7) once `SALESFORCE_*` and
+   `GLEAN_MCP_TOKEN` land. The salesforce adapter runs LAST per the
+   PR-9 ordering and overrides this fixture cleanly on the next
+   refresh. Bridge becomes a no-op silently.
+2. **Continue the bridge in a new session** if the demo can't wait
+   for creds. The fixture is gitignored, idempotent, and append-only
+   — re-running `npx tsx scripts/import-cascade-bridge.ts` after
+   adding more entries Just Works. ~135 accounts remain.
+3. **Phases 2 + 3 deferred** (Gainsight CTAs, account plans, recent
+   meetings). The fixture schema in `scripts/import-cascade-bridge.ts`
+   already supports `gainsightTasks` and `gainsightCompanyUrl`;
+   adding `accountPlanLinks` and `recentMeetings` is a 5-line
+   schema extension. Both phases require ~236 `mcp2_search` calls
+   per source, deferred for the same context-budget reason.
+
 ## Pending across the refactor (all credentials-blocked)
 
 | Item | What's needed |
