@@ -1,5 +1,10 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["packages/**/src/**/*.ts", "apps/**/src/**/*.ts", "scripts/**/*.mjs"],
+  "include": ["packages/**/src/**/*.ts", "apps/worker/src/**/*.ts", "scripts/**/*.mjs"],
+  // apps/web is intentionally excluded: it has its own tsconfig.json with
+  // a Next.js-specific `@/*` baseUrl alias that the root tsconfig does not
+  // share. Next.js owns the type-check for that app via `next build` and
+  // `apps/web/tsconfig.json`. Including it here would re-flag every
+  // `import ... from '@/lib/...'` as unresolved.
   "exclude": ["node_modules", "**/dist", "**/.next"]
 }
