@@ -62,7 +62,7 @@ SELECT
   fml_DerivedACVDelta_USD__c, Billing_ACV_Delta_USD__c, Revenue_ACV_Delta_USD__c, Zephr_ACV_Delta_USD__c,
   Known_Churn_USD__c,
   FLM_Notes__c, SLM_Notes__c, SE_Next_Steps__c,
-  Sales_Engineer__c,
+  Sales_Engineer__c, Sales_Engineer__r.Name,
   Full_Churn_Notification_to_Owner_Date__c, Full_Churn_Final_Email_Sent_Date__c,
   Churn_Downsell_Reason__c, Churn_Destription__c,
   Product_Line__c

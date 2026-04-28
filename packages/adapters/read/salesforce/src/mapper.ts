@@ -79,6 +79,7 @@ export interface SfdcOpportunityRow extends SalesforceQueryRecord {
   SLM_Notes__c: string | null;
   SE_Next_Steps__c: string | null;
   Sales_Engineer__c: string | null;
+  Sales_Engineer__r: { Name: string | null } | null;
   Full_Churn_Notification_to_Owner_Date__c: string | null;
   Full_Churn_Final_Email_Sent_Date__c: string | null;
   Churn_Downsell_Reason__c: string | null;
@@ -230,7 +231,7 @@ export function mapOpportunity(
     slmNotes: row.SLM_Notes__c,
     scNextSteps: row.SE_Next_Steps__c,
     salesEngineer: row.Sales_Engineer__c
-      ? { id: row.Sales_Engineer__c, name: row.Sales_Engineer__c }
+      ? { id: row.Sales_Engineer__c, name: row.Sales_Engineer__r?.Name ?? row.Sales_Engineer__c }
       : null,
 
     fullChurnNotificationToOwnerDate: dateOnly(row.Full_Churn_Notification_to_Owner_Date__c),
