@@ -264,3 +264,30 @@ The schema validator caught three drifts between **the prompt's Section 6 list**
 I recommend **(c)** — the validator is already loud, and a one-time alias table preserves the audit trail without forcing a rename request that may have downstream impact you can evaluate separately.
 
 **State as of PR-2 commit**: validator currently fails for these three rows. PR-3 (runtime build) is **blocked on the resolution call** because the SOQL the adapter issues today references the same names Section 6 uses, and any of (a)/(b)/(c) requires editing the SOQL constants.
+
+**Resolved on 2026-04-28**: option (c) selected. SOQL constants and `EXPECTED_REFERENCES` updated to match the org. Validator now reports OK — 61 fields all present.
+
+---
+
+## PR-4 Cerebro Findings (2026-04-28)
+
+Investigated the prompt's Section 2.1 assumption ("Glean MCP search against Cerebro datasource yields Risk Category + Risk Analysis"). Verified via `mcp2_search` + `mcp2_read_document` that:
+
+| Field | In Glean's `app:cerebro`? |
+|---|---|
+| 7 risk booleans (Engagement / Expertise / LegacyTech / Pricing / Share / Suite / Utilization) | ✅ via `richDocumentData.facets.keywordFacets` |
+| Sub-metrics (Projected Billing Utilization %, Exec Meeting Count, Billing Product Share %, Orders API Usage %, etc.) | ✅ via `richDocumentData.facets.intFacets` |
+| Has-flags (ESA / Invoice Settlement / TAM / UNO etc.) | ✅ |
+| `crSalesforceAccountId` (join key) | ✅ |
+| `updateTime` (freshness stamp) | ✅ |
+| **Risk Category** (Low/Medium/High/Critical) | ❌ NOT in the index |
+| **Risk Analysis** (prose explanation) | ❌ NOT in the index |
+
+The two missing fields appear to live in a curated weekly Google Sheet (`Cerebro Accounts with NASE`) which is a separate retrieval path. PR-4 takes path (A): populate the booleans + sub-metrics that Glean does have, and let the existing scoring `RiskIdentifier { source: 'fallback' }` produce the visible Risk Category until a separate gdrive-sheet adapter (path B) lands. Section 10 of the prompt explicitly permits the fallback derivation when Cerebro data is missing.
+
+**Decision needed from Nick before path B lands**:
+1. Confirm the canonical sheet URL for `Cerebro Accounts with NASE` (or whichever sheet the data team treats as authoritative).
+2. Refresh cadence — weekly per the Dec 11 2025 launch note?
+3. Permission — is the sheet visible to the worker's Glean bearer credentials, or does it need explicit shareholder access?
+
+Path B is not blocking PR-5 (account-context + evidence) and can land after.
