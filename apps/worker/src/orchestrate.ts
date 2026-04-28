@@ -48,7 +48,7 @@ const REAL_ADAPTERS: Record<string, ReadAdapter> = {
   ADAPTER_GLEAN_MCP: gleanMcpAdapter,
 };
 
-function selectAdapters(): ReadAdapter[] {
+export function selectActiveAdapters(): ReadAdapter[] {
   // Always start from the prior snapshot so unattended refreshes don't wipe
   // data when no real source produces a record. Real adapters merged after
   // override fields they own.
@@ -134,7 +134,7 @@ export async function runRefresh(
 ): Promise<RefreshResult> {
   const start = Date.now();
   const startedAt = new Date(start);
-  const adapters = selectAdapters();
+  const adapters = selectActiveAdapters();
   const sourceNames = adapters.map((a) => a.name);
 
   const refreshId = await startRefreshRun({
