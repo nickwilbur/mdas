@@ -14,6 +14,16 @@ import {
 
 export const SCORING_VERSION = 'v0.1.0';
 
+// Composite Risk Score (v0.1 scaffold) — see ./risk-score.ts.
+// Audit ref: F-05 in docs/audit/01_findings.md.
+export {
+  computeRiskScore,
+  type RiskScore,
+  type RiskScoreBand,
+  type RiskScoreInputs,
+  type RiskScoreSignal,
+} from './risk-score.js';
+
 const DAY = 24 * 60 * 60 * 1000;
 
 function daysAgo(iso: string | null | undefined, ref = Date.now()): number {
