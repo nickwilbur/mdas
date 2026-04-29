@@ -58,3 +58,64 @@ jobs:
           curl -fsS http://localhost:3000/hygiene > /dev/null
           curl -fsS http://localhost:3000/admin/refresh > /dev/null
           kill $PID
+
+  # PR-B5 (F-20a): E2E smoke + axe-core a11y scan against the seeded
+  # stack. Runs after the unit-test job to gate merges on UI regressions.
+  # Browser binaries are cached between runs to avoid the 100MB chromium
+  # download every push.
+  e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mdas
+          POSTGRES_PASSWORD: mdas
+          POSTGRES_DB: mdas
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mdas -d mdas" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://mdas:mdas@localhost:5432/mdas
+      ADAPTER_SALESFORCE: mock
+      ADAPTER_CEREBRO: mock
+      ADAPTER_GAINSIGHT: mock
+      ADAPTER_STAIRCASE: mock
+      ADAPTER_ZUORA_MCP: mock
+      ADAPTER_GLEAN_MCP: mock
+      PLAYWRIGHT_BASE_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci || npm install
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Migrate + seed
+        run: npm run migrate && npm run seed
+      - name: Build web
+        run: npm --workspace apps/web run build
+      - name: Start web (background)
+        run: |
+          npm --workspace apps/web run start &
+          # Wait until /api/refresh/status equivalent (any 200) responds.
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:3000/ > /dev/null && break
+            sleep 1
+          done
+      - name: Playwright tests (smoke + a11y + hotkeys)
+        run: npm run e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "moduleResolution": "bundler"
+  },
+  // tests/e2e is a self-contained Playwright suite. The root
+  // `npm run lint` (tsc -b) explicitly does NOT reference this
+  // project — Playwright provides its own type-check at test time.
+  // This config exists so an IDE that auto-discovers tsconfigs has a
+  // working types environment for IntelliSense.
+  "include": ["./**/*.ts"]
+}

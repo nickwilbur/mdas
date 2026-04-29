@@ -20,9 +20,13 @@
     "seed": "node scripts/seed.mjs",
     "migrate": "node scripts/migrate.mjs",
     "sf:fieldmap": "tsx scripts/generate-sfdc-field-map.ts",
-    "sf:validate": "tsx scripts/validate-salesforce-schema.ts"
+    "sf:validate": "tsx scripts/validate-salesforce-schema.ts",
+    "e2e": "playwright test",
+    "e2e:install": "playwright install --with-deps chromium"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.2",
+    "@playwright/test": "^1.59.1",
     "@types/node": "^20.11.30",
     "@types/pg": "^8.20.0",
     "tsx": "^4.7.2",
