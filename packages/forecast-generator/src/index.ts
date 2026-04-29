@@ -395,7 +395,8 @@ export function generateWeeklyForecast(input: ForecastInput): string {
   const { current, next } = bucketByQuarter(input.views, input.asOfDate);
   const lines: string[] = [];
 
-  lines.push(`Expand 3 Quarterly Churn Forecast - ${input.asOfDate}`);
+  const today = new Date().toISOString().slice(0, 10);
+  lines.push(`Expand 3 Quarterly Churn Forecast - ${today}`);
   lines.push('');
 
   lines.push(
