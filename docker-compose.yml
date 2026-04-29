@@ -28,6 +28,20 @@ services:
       ADAPTER_STAIRCASE: ${ADAPTER_STAIRCASE:-mock}
       ADAPTER_ZUORA_MCP: ${ADAPTER_ZUORA_MCP:-mock}
       ADAPTER_GLEAN_MCP: ${ADAPTER_GLEAN_MCP:-mock}
+      # In-app Glean integration (server-side proxy in /api/glean/*).
+      # Web container needs these so the Next.js route handlers can
+      # call Glean's REST API on the user's behalf. Same values the
+      # worker uses; ${VAR-} keeps the var absent (not empty) when
+      # unset on the host so readGleanCredsFromEnv() returns null.
+      AUTH_MODE: ${AUTH_MODE:-none}
+      GLEAN_MCP_TOKEN: ${GLEAN_MCP_TOKEN-}
+      GLEAN_MCP_BASE_URL: ${GLEAN_MCP_BASE_URL-}
+      # Corporate TLS interception bundle (same rationale as the
+      # worker service below — Glean's *.glean.com endpoints often
+      # transit Zscaler in corp networks).
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS:-/etc/mdas-extra-ca.pem}
+    volumes:
+      - ./.docker-ca.pem:/etc/mdas-extra-ca.pem:ro
     depends_on:
       db:
         condition: service_healthy
