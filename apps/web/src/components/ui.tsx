@@ -228,20 +228,40 @@ export function FreshnessRow({
 }
 
 /**
- * Compact per-source data-completeness indicator: one small dot per
+ * Compact per-source data-completeness indicator: one small glyph per
  * `expectedSources` entry. Useful in tables where a full FreshnessRow
  * would be too tall.
  *
- *   - emerald : fresh data from this source (≤ 7d)
- *   - amber   : stale (> 7d)
- *   - red     : adapter reported a non-fatal error this refresh
- *   - gray    : source missing from `freshness` and `errors`
+ * Audit ref: F-07 in docs/audit/01_findings.md.
  *
- * Tooltip on each dot names the source and gives the relative time
- * (or the error message). Layout is a fixed-width grid so dot
- * positions are consistent across rows — the eye can scan a column
- * for "all-grey-third-dot" patterns.
+ * State conveyance is BOTH color AND shape so the indicator works for
+ * the ~8% of users with red/green color-blindness and screen readers:
+ *
+ *   - emerald ●  : fresh data from this source (≤ 7d)
+ *   - amber   ◐  : stale (> 7d)
+ *   - red     ✕  : adapter reported a non-fatal error this refresh
+ *   - gray    ○  : source missing from `freshness` and `errors`
+ *
+ * Each glyph is wrapped with role="img" + aria-label carrying the
+ * source name and the human-readable state, so a screen reader
+ * announces "salesforce, fresh" rather than nothing.
  */
+type SourceDotState = 'fresh' | 'stale' | 'error' | 'missing';
+
+const SOURCE_DOT_GLYPH: Record<SourceDotState, string> = {
+  fresh: '●',
+  stale: '◐',
+  error: '✕',
+  missing: '○',
+};
+
+const SOURCE_DOT_TONE: Record<SourceDotState, string> = {
+  fresh: 'text-emerald-600',
+  stale: 'text-amber-600',
+  error: 'text-red-600',
+  missing: 'text-gray-400',
+};
+
 export function SourceDots({
   freshness,
   errors,
@@ -252,28 +272,44 @@ export function SourceDots({
   expectedSources: AdapterSource[];
 }) {
   return (
-    <div className="inline-flex gap-0.5">
+    <div className="inline-flex gap-1">
       {expectedSources.map((source) => {
         const iso = freshness?.[source];
         const errMsg = errors?.[source];
-        let cls: string;
+        let state: SourceDotState;
+        let stateLabel: string;
         let title: string;
         if (errMsg) {
-          cls = 'bg-red-500';
+          state = 'error';
+          stateLabel = 'error';
           title = `${source}: error — ${errMsg}`;
         } else if (iso) {
-          cls = isStale(iso) ? 'bg-amber-400' : 'bg-emerald-500';
+          if (isStale(iso)) {
+            state = 'stale';
+            stateLabel = 'stale';
+          } else {
+            state = 'fresh';
+            stateLabel = 'fresh';
+          }
           title = `${source}: ${new Date(iso).toLocaleString()}`;
         } else {
-          cls = 'bg-gray-300';
+          state = 'missing';
+          stateLabel = 'no data';
           title = `${source}: no data this refresh`;
         }
         return (
           <span
             key={source}
             title={title}
-            className={clsx('inline-block h-2 w-2 rounded-full', cls)}
-          />
+            role="img"
+            aria-label={`${source}, ${stateLabel}`}
+            className={clsx(
+              'inline-block w-3 text-center text-xs font-bold leading-none',
+              SOURCE_DOT_TONE[state],
+            )}
+          >
+            {SOURCE_DOT_GLYPH[state]}
+          </span>
         );
       })}
     </div>
