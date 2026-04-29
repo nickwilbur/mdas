@@ -1,5 +1,11 @@
 import type { AccountView, ChangeEvent, SourceLink } from '@mdas/canonical';
 
+// PR-C3 — re-export Clari CSV + dark-account helpers from the public
+// surface of @mdas/forecast-generator.
+export { generateClariCsv, findDarkAccounts } from './clari-csv.js';
+export type { ClariCsvOptions, DarkAccount } from './clari-csv.js';
+import { findDarkAccounts } from './clari-csv.js';
+
 export interface ForecastInput {
   views: AccountView[];
   changeEvents: ChangeEvent[];
@@ -88,12 +94,23 @@ export function generateWeeklyForecast(input: ForecastInput): string {
   lines.push(`_Audience: ${audience}_`);
   lines.push('');
 
+  // PR-C3 / §4.7: surface dark-account count in the headline so the
+  // manager sees how much of the book has gone silent before reading
+  // anywhere else.
+  const darkAccounts = findDarkAccounts(views, { windowDays: 7 });
+  const darkARR = darkAccounts.reduce((s, d) => s + d.arr, 0);
+
   // Headline
   const wowMovement = events.length;
   const accountsMoved = new Set(events.map((e) => e.accountId)).size;
   lines.push(`## Headline`);
   lines.push(`- Outlook: Confirmed ${fmtUSD(confirmedSum)} / Most Likely ${fmtUSD(mostLikelySum)} / Hedge ${fmtUSD(hedgeSum)}`);
   lines.push(`- WoW movement: ${wowMovement} change events across ${accountsMoved} accounts`);
+  lines.push(
+    darkAccounts.length === 0
+      ? `- Dark accounts (no activity in 7d): none`
+      : `- Dark accounts (no activity in 7d): ${darkAccounts.length} accounts, ${fmtUSD(darkARR)} ARR exposed`,
+  );
   lines.push(`- Coverage to plan: _add manually if not in snapshot_`);
   lines.push('');
 
@@ -211,6 +228,16 @@ export function generateWeeklyForecast(input: ForecastInput): string {
     }
   }
   lines.push('');
+
+  // PR-C3 / §4.7: explicit Dark Accounts section listing the top 10
+  // by ARR-exposed. Empty section omitted to keep the doc tight.
+  if (darkAccounts.length > 0) {
+    lines.push(`## Dark Accounts (no signal in 7d)`);
+    for (const d of darkAccounts.slice(0, 10)) {
+      lines.push(`- **${d.accountName}** — ${d.reason}, ARR ${fmtUSD(d.arr)}`);
+    }
+    lines.push('');
+  }
 
   // Talk Track
   lines.push(`## Talk Track (4–6 bullets for 1:1)`);
