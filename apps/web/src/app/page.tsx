@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { getDashboardData } from '@/lib/read-model';
+import { getDashboardData, getWoWChangeEvents } from '@/lib/read-model';
 import {
   BucketBadge,
   Card,
@@ -11,17 +11,35 @@ import {
   fmtUSD,
 } from '@/components/ui';
 import { RefreshButton } from '@/components/RefreshButton';
+import { ActionQueue } from '@/components/ActionQueue';
+import { MovementsStrip } from '@/components/MovementsStrip';
 
 export const dynamic = 'force-dynamic';
 
+// Audit ref: F-04 in docs/audit/01_findings.md.
+//
+// Redesigned 2026-04-28 (PR-A9): the prior layout led with five
+// stat tiles and three bucket lists — a CFO-style snapshot. The persona
+// ask is "what changed in my book this week, and what do I need to do
+// about it?" The new layout reorders to: ActionQueue → MovementsStrip
+// → roll-up tiles → bucket lists. The roll-up data is preserved (not
+// removed) so muscle memory still works for managers who scroll past
+// the action items.
 export default async function DashboardPage() {
-  const { views, refreshId, startedAt } = await getDashboardData();
+  // Load both feeds in parallel so the ActionQueue can rank by
+  // movement-this-week without an extra database round trip.
+  const [{ views, refreshId, startedAt }, wow] = await Promise.all([
+    getDashboardData(),
+    getWoWChangeEvents(),
+  ]);
 
   if (!refreshId) {
     return (
       <div className="space-y-4">
         <h1 className="text-2xl font-semibold">No data yet</h1>
-        <p className="text-gray-700">Run <code>make seed</code> or click Refresh.</p>
+        <p className="text-gray-700">
+          Run <code>make seed</code> or click Refresh.
+        </p>
         <RefreshButton />
       </div>
     );
@@ -53,19 +71,49 @@ export default async function DashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <Link href="/forecast" className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium shadow-sm">
+          <Link
+            href="/forecast"
+            className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium shadow-sm"
+          >
             Generate Weekly Forecast Update
           </Link>
           <RefreshButton />
         </div>
       </div>
 
+      {/* PR-A9: Action queue is the new "first 10 seconds" answer. */}
+      <section aria-labelledby="action-queue-heading" className="space-y-2">
+        <div className="flex items-end justify-between">
+          <h2 id="action-queue-heading" className="text-lg font-semibold">
+            Your next 5 actions
+          </h2>
+          <Link href="/accounts" className="text-xs text-blue-700 hover:underline">
+            All accounts →
+          </Link>
+        </div>
+        <ActionQueue views={views} events={wow.events} limit={5} />
+      </section>
+
+      {/* PR-A9: Movements strip — compressed WoW so the manager sees the
+          "what changed" answer without leaving the page. */}
+      <MovementsStrip events={wow.events} prevId={wow.prevId} currId={wow.currId} />
+
+      {/* Roll-up tiles: same data as before, demoted below the new
+          attention-direction surfaces. */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <StatTile label="Accounts" value={totalAccounts} />
         <StatTile label="Total ATR" value={fmtUSD(totalATR)} />
         <StatTile label="ACV at Risk" value={fmtUSD(acvAtRisk)} />
-        <StatTile label="Risk: Critical/High" value={`${byRisk.Critical}/${byRisk.High}`} sub={`Med ${byRisk.Medium} • Low ${byRisk.Low}`} />
-        <StatTile label="Sentiment R/Y/G" value={`${bySent.Red}/${bySent.Yellow}/${bySent.Green}`} sub={`Churn ${bySent['Confirmed Churn']}`} />
+        <StatTile
+          label="Risk: Critical/High"
+          value={`${byRisk.Critical}/${byRisk.High}`}
+          sub={`Med ${byRisk.Medium} • Low ${byRisk.Low}`}
+        />
+        <StatTile
+          label="Sentiment R/Y/G"
+          value={`${bySent.Red}/${bySent.Yellow}/${bySent.Green}`}
+          sub={`Churn ${bySent['Confirmed Churn']}`}
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
