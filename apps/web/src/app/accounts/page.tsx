@@ -3,11 +3,33 @@ import { getDashboardData } from '@/lib/read-model';
 import { BucketBadge, RiskBadge, SentimentBadge, fmtUSD } from '@/components/ui';
 import { RefreshButton } from '@/components/RefreshButton';
 import { AccountsTable } from '@/components/AccountsTable';
+import { AccountFilters } from '@/components/AccountFilters';
 
 export const dynamic = 'force-dynamic';
 
-export default async function AccountsPage() {
+export default async function AccountsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ quarters?: string }>;
+}) {
+  const { quarters } = await searchParams;
   const { views } = await getDashboardData();
+
+  // Get unique fiscal quarters from opportunities
+  const fiscalQuarters = Array.from(
+    new Set(
+      views.flatMap(v => v.opportunities.map(o => o.closeQuarter))
+    )
+  ).sort();
+
+  // Filter by fiscal quarters if provided
+  const filteredViews = quarters
+    ? views.filter(v => {
+        const accountQuarters = new Set(v.opportunities.map(o => o.closeQuarter));
+        const selectedQuarters = quarters.split(',');
+        return selectedQuarters.some(q => accountQuarters.has(q));
+      })
+    : views;
 
   return (
     <div className="space-y-4">
@@ -16,17 +38,9 @@ export default async function AccountsPage() {
         <RefreshButton />
       </div>
 
-      <div className="flex items-center gap-2">
-        <label className="text-sm font-medium">Franchise:</label>
-        <select
-          disabled
-          className="rounded border border-gray-300 px-2 py-1 text-sm bg-gray-50"
-        >
-          <option>Expand 3</option>
-        </select>
-      </div>
+      <AccountFilters fiscalQuarters={fiscalQuarters} />
 
-      <AccountsTable views={views} />
+      <AccountsTable views={filteredViews} />
     </div>
   );
 }

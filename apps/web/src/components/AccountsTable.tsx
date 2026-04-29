@@ -37,7 +37,9 @@ type SortField =
   | 'hygiene'
   | 'lastSentimentUpdate'
   | 'data'
-  | 'salesforce';
+  | 'salesforce'
+  | 'closeDate'
+  | 'churnDate';
 
 interface AccountsTableProps {
   views: AccountView[];
@@ -47,6 +49,7 @@ export function AccountsTable({ views }: AccountsTableProps) {
   const [sortField, setSortField] = useState<SortField>('account');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [cseFilter, setCseFilter] = useState<Set<string>>(new Set());
+  const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(new Set());
 
   // Distinct CSE names for filter
   const filterOptions = useMemo(() => {
@@ -68,9 +71,26 @@ export function AccountsTable({ views }: AccountsTableProps) {
     });
   }, [views, cseFilter]);
 
+  // Group by bucket
+  const groupedViews = useMemo(() => {
+    const groups = {
+      'Confirmed Churn': [] as AccountView[],
+      'Saveable Risk': [] as AccountView[],
+      'Healthy': [] as AccountView[],
+    };
+    
+    filteredViews.forEach(v => {
+      if (groups[v.bucket] !== undefined) {
+        groups[v.bucket].push(v);
+      }
+    });
+    
+    return groups;
+  }, [filteredViews]);
+
   // Sort
-  const sortedViews = useMemo(() => {
-    const result = [...filteredViews];
+  const sortViews = (viewsToSort: AccountView[]) => {
+    const result = [...viewsToSort];
     result.sort((a, b) => {
       let aVal: string | number = 0;
       let bVal: string | number = 0;
@@ -123,13 +143,21 @@ export function AccountsTable({ views }: AccountsTableProps) {
           aVal = '';
           bVal = '';
           break;
+        case 'closeDate':
+          aVal = a.opportunities[0]?.closeDate ?? '';
+          bVal = b.opportunities[0]?.closeDate ?? '';
+          break;
+        case 'churnDate':
+          aVal = a.account.churnDate ?? '';
+          bVal = b.account.churnDate ?? '';
+          break;
       }
       if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
       if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
       return 0;
     });
     return result;
-  }, [filteredViews, sortField, sortDirection]);
+  };
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -140,14 +168,60 @@ export function AccountsTable({ views }: AccountsTableProps) {
     }
   };
 
-  const AccountRow = ({ v }: { v: AccountView }) => {
+  const handleSelectAccount = (accountId: string) => {
+    setSelectedAccounts(prev => {
+      const next = new Set(prev);
+      if (next.has(accountId)) {
+        next.delete(accountId);
+      } else {
+        next.add(accountId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectSection = (sectionViews: AccountView[]) => {
+    const sectionIds = new Set(sectionViews.map(v => v.account.accountId));
+    const allSelected = sectionIds.size > 0 && [...sectionIds].every(id => selectedAccounts.has(id));
+    
+    setSelectedAccounts(prev => {
+      const next = new Set(prev);
+      if (allSelected) {
+        sectionIds.forEach(id => next.delete(id));
+      } else {
+        sectionIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const AccountRow = ({ v, bucket }: { v: AccountView; bucket: string }) => {
     const acvDelta = v.opportunities.reduce((s, o) => s + (o.acvDelta ?? 0), 0);
     const sfLink = v.account.sourceLinks?.find((l) => l.source === 'salesforce');
     const url =
       sfLink?.url ?? `https://zuora.lightning.force.com/lightning/r/Account/${v.account.salesforceAccountId}/view`;
+    const isSelected = selectedAccounts.has(v.account.accountId);
+
+    // Get close date for Saveable Risk
+    const closeDate = bucket === 'Saveable Risk' 
+      ? v.opportunities[0]?.closeDate 
+      : null;
+    
+    // Get churn date for Confirmed Churn
+    const churnDate = bucket === 'Confirmed Churn'
+      ? v.account.churnDate
+      : null;
 
     return (
       <tr key={v.account.accountId} className="border-t border-gray-100 hover:bg-gray-50">
+        <td className="px-3 py-2">
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={() => handleSelectAccount(v.account.accountId)}
+            className="rounded border-gray-300"
+          />
+        </td>
         <td className="px-3 py-2 font-medium text-gray-700">{v.account.assignedCSE?.name ?? '—'}</td>
         <td className="px-3 py-2 font-medium">
           <Link href={`/accounts/${v.account.accountId}`} className="hover:underline">
@@ -164,6 +238,16 @@ export function AccountsTable({ views }: AccountsTableProps) {
         <td className="px-3 py-2 text-gray-700">
           {v.daysToRenewal == null ? '—' : `${v.daysToRenewal}d`}
         </td>
+        {bucket === 'Saveable Risk' && (
+          <td className="px-3 py-2 text-gray-700">
+            {closeDate ? new Date(closeDate).toLocaleDateString() : '—'}
+          </td>
+        )}
+        {bucket === 'Confirmed Churn' && (
+          <td className="px-3 py-2 text-gray-700">
+            {churnDate ? new Date(churnDate).toLocaleDateString() : '—'}
+          </td>
+        )}
         <td className="px-3 py-2 text-center">
           {v.hygiene.score === 0 ? (
             <span className="text-gray-400">0</span>
@@ -198,44 +282,85 @@ export function AccountsTable({ views }: AccountsTableProps) {
     onSort: handleSort,
   };
 
+  const SectionTable = ({ bucket, views: sectionViews }: { bucket: string; views: AccountView[] }) => {
+    const sortedSectionViews = sortViews(sectionViews);
+    const sectionIds = new Set(sectionViews.map(v => v.account.accountId));
+    const allSelected = sectionIds.size > 0 && [...sectionIds].every(id => selectedAccounts.has(id));
+
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">{bucket}</h2>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-500">{sectionViews.length} accounts</span>
+            <button
+              onClick={() => handleSelectSection(sectionViews)}
+              className="px-2 py-1 text-sm rounded border border-gray-300 hover:bg-gray-50"
+            >
+              {allSelected ? 'Deselect All' : 'Select All'}
+            </button>
+          </div>
+        </div>
+        <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-left text-xs uppercase text-gray-600">
+              <tr>
+                <th className="px-3 py-2 w-10">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={() => handleSelectSection(sectionViews)}
+                    className="rounded border-gray-300"
+                  />
+                </th>
+                <TableHeader<SortField> {...commonHeader} label="CSE" field="cse" />
+                <TableHeader<SortField> {...commonHeader} label="Account" field="account" />
+                <TableHeader<SortField> {...commonHeader} label="Bucket" field="bucket" />
+                <TableHeader<SortField> {...commonHeader} label="Risk" field="risk" />
+                <TableHeader<SortField> {...commonHeader} label="Sentiment" field="sentiment" />
+                <TableHeader<SortField> {...commonHeader} label="ATR" field="atr" align="right" />
+                <TableHeader<SortField> {...commonHeader} label="ACV Δ" field="acvDelta" align="right" />
+                <TableHeader<SortField> {...commonHeader} label="Renewal" field="renewal" />
+                {bucket === 'Saveable Risk' && (
+                  <TableHeader<SortField> {...commonHeader} label="Close Date" field="closeDate" />
+                )}
+                {bucket === 'Confirmed Churn' && (
+                  <TableHeader<SortField> {...commonHeader} label="Churn Date" field="churnDate" />
+                )}
+                <TableHeader<SortField> {...commonHeader} label="Hygiene" field="hygiene" align="center" />
+                <TableHeader<SortField> {...commonHeader} label="Last Sentiment Update" field="lastSentimentUpdate" />
+                <TableHeader<SortField>
+                  {...commonHeader}
+                  label="Data"
+                  field="data"
+                />
+                <TableHeader<SortField> {...commonHeader} label="Salesforce" />
+              </tr>
+            </thead>
+            <tbody>
+              {sortedSectionViews.map(v => <AccountRow key={v.account.accountId} v={v} bucket={bucket} />)}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
-      <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-left text-xs uppercase text-gray-600">
-            <tr>
-              <TableHeader<SortField>
-                {...commonHeader}
-                label="CSE"
-                field="cse"
-                filterOptions={filterOptions.cses}
-                selectedFilters={cseFilter}
-                onFilterChange={setCseFilter}
-              />
-              <TableHeader<SortField> {...commonHeader} label="Account" field="account" />
-              <TableHeader<SortField> {...commonHeader} label="Bucket" field="bucket" />
-              <TableHeader<SortField> {...commonHeader} label="Risk" field="risk" />
-              <TableHeader<SortField> {...commonHeader} label="Sentiment" field="sentiment" />
-              <TableHeader<SortField> {...commonHeader} label="ATR" field="atr" align="right" />
-              <TableHeader<SortField> {...commonHeader} label="ACV Δ" field="acvDelta" align="right" />
-              <TableHeader<SortField> {...commonHeader} label="Renewal" field="renewal" />
-              <TableHeader<SortField> {...commonHeader} label="Hygiene" field="hygiene" align="center" />
-              <TableHeader<SortField> {...commonHeader} label="Last Sentiment Update" field="lastSentimentUpdate" />
-              <TableHeader<SortField>
-                {...commonHeader}
-                label="Data"
-                field="data"
-              />
-              <TableHeader<SortField> {...commonHeader} label="Salesforce" />
-            </tr>
-          </thead>
-          <tbody>
-            {sortedViews.map(v => <AccountRow key={v.account.accountId} v={v} />)}
-          </tbody>
-        </table>
+      <div className="space-y-6">
+        {groupedViews['Confirmed Churn'].length > 0 && (
+          <SectionTable bucket="Confirmed Churn" views={groupedViews['Confirmed Churn']} />
+        )}
+        {groupedViews['Saveable Risk'].length > 0 && (
+          <SectionTable bucket="Saveable Risk" views={groupedViews['Saveable Risk']} />
+        )}
+        {groupedViews['Healthy'].length > 0 && (
+          <SectionTable bucket="Healthy" views={groupedViews['Healthy']} />
+        )}
       </div>
       <p className="text-xs text-gray-500">
-        Showing {sortedViews.length} of {views.length} accounts. Click headers to sort, use the funnel icon to filter by CSE.
+        Showing {filteredViews.length} of {views.length} accounts. Click headers to sort, use the funnel icon to filter by CSE, select quarters to filter by fiscal quarter.
       </p>
     </>
   );
