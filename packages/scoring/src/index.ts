@@ -14,6 +14,10 @@ import {
 
 export const SCORING_VERSION = 'v0.1.0';
 
+// PR-B2 — F-15: stable structural equality for the WoW diff.
+export { deepEqual } from './deep-equal.js';
+import { deepEqual } from './deep-equal.js';
+
 // Composite Risk Score (v0.1 scaffold) — see ./risk-score.ts.
 // Audit ref: F-05 in docs/audit/01_findings.md.
 export {
@@ -422,7 +426,8 @@ export function diffAccount(
   for (const [field, meta] of Object.entries(FIELD_LABELS)) {
     const o = (prev as unknown as Record<string, unknown>)[field];
     const n = (curr as unknown as Record<string, unknown>)[field];
-    if (JSON.stringify(o) !== JSON.stringify(n)) {
+    // PR-B2 — was JSON.stringify(o) !== JSON.stringify(n). See deep-equal.ts.
+    if (!deepEqual(o, n)) {
       events.push({
         accountId: curr.accountId,
         field,
@@ -484,7 +489,8 @@ export function diffOpportunity(
   for (const [field, meta] of Object.entries(OPP_FIELD_LABELS)) {
     const o = (prev as unknown as Record<string, unknown>)[field];
     const n = (curr as unknown as Record<string, unknown>)[field];
-    if (JSON.stringify(o) !== JSON.stringify(n)) {
+    // PR-B2 — was JSON.stringify(o) !== JSON.stringify(n). See deep-equal.ts.
+    if (!deepEqual(o, n)) {
       events.push({
         accountId: curr.accountId,
         opportunityId: curr.opportunityId,
