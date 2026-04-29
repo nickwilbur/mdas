@@ -2,20 +2,36 @@ import Link from 'next/link';
 import { getDashboardData } from '@/lib/read-model';
 import { Card } from '@/components/ui';
 import { HygieneFilters } from './HygieneClient';
+import { FiscalQuarterFilter } from '@/components/FiscalQuarterFilter';
+import { fiscalQuartersForAccount, parseQuartersParam } from '@/lib/fiscal';
 
 export const dynamic = 'force-dynamic';
 
 export default async function HygienePage({
   searchParams,
 }: {
-  searchParams: Promise<{ violationTypes?: string }>;
+  searchParams: Promise<{ violationTypes?: string; quarters?: string }>;
 }) {
-  const { violationTypes } = await searchParams;
-  const { views } = await getDashboardData();
+  const { violationTypes, quarters } = await searchParams;
+  const { views: allViews } = await getDashboardData();
 
-  // Extract unique violation types with counts
+  // 1. Apply fiscal quarter filter first (cross-page contract).
+  const selectedQuarters = parseQuartersParam(quarters);
+  const availableQuarterKeys = Array.from(
+    new Set(allViews.flatMap((v) => fiscalQuartersForAccount(v))),
+  );
+  const quarterFilteredViews =
+    selectedQuarters === null
+      ? allViews
+      : allViews.filter((v) => {
+          const ks = fiscalQuartersForAccount(v);
+          return ks.some((k) => selectedQuarters.has(k));
+        });
+
+  // 2. Then derive violation types from the quarter-filtered slice so
+  //    counts in the dropdown reflect the visible scope.
   const violationTypeMap = new Map<string, number>();
-  for (const v of views) {
+  for (const v of quarterFilteredViews) {
     for (const h of v.hygiene.violations) {
       const count = violationTypeMap.get(h.rule) ?? 0;
       violationTypeMap.set(h.rule, count + 1);
@@ -25,16 +41,16 @@ export default async function HygienePage({
     .map(([rule, count]) => ({ rule, count }))
     .sort((a, b) => b.count - a.count);
 
-  // Apply violation type filter
+  // 3. Apply violation type filter on top.
   const selectedViolationTypes = violationTypes
     ? new Set(violationTypes.split(',').filter(Boolean))
     : null;
 
   const filteredViews = selectedViolationTypes
-    ? views.filter((v) =>
+    ? quarterFilteredViews.filter((v) =>
         v.hygiene.violations.some((h) => selectedViolationTypes.has(h.rule))
       )
-    : views;
+    : quarterFilteredViews;
 
   const byCSE = new Map<string, { count: number; accounts: { id: string; name: string; n: number }[] }>();
   for (const v of filteredViews) {
@@ -62,7 +78,10 @@ export default async function HygienePage({
         <h1 className="text-2xl font-semibold">Hygiene Worklist</h1>
       </div>
 
-      <HygieneFilters violationOptions={violationOptions} />
+      <div className="flex flex-wrap items-center gap-4">
+        <FiscalQuarterFilter availableQuarterKeys={availableQuarterKeys} />
+        <HygieneFilters violationOptions={violationOptions} />
+      </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {cseEntries.map(([cse, r]) => (

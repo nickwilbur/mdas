@@ -14,6 +14,11 @@ import {
 import { RefreshButton } from '@/components/RefreshButton';
 import { ActionQueue } from '@/components/ActionQueue';
 import { MovementsStrip } from '@/components/MovementsStrip';
+import { FiscalQuarterFilter } from '@/components/FiscalQuarterFilter';
+import {
+  fiscalQuartersForAccount,
+  parseQuartersParam,
+} from '@/lib/fiscal';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,10 +31,15 @@ export const dynamic = 'force-dynamic';
 // → roll-up tiles → bucket lists. The roll-up data is preserved (not
 // removed) so muscle memory still works for managers who scroll past
 // the action items.
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ quarters?: string }>;
+}) {
+  const { quarters } = await searchParams;
   // Load both feeds in parallel so the ActionQueue can rank by
   // movement-this-week without an extra database round trip.
-  const [{ views, refreshId, startedAt }, wow] = await Promise.all([
+  const [{ views: allViews, refreshId, startedAt }, wow] = await Promise.all([
     getDashboardData(),
     getWoWChangeEvents(),
   ]);
@@ -45,6 +55,21 @@ export default async function DashboardPage() {
       </div>
     );
   }
+
+  // Apply fiscal quarter filter (URL-driven). Empty / "__none__" sentinel
+  // intentionally yields zero rows so the user sees their selection
+  // reflected literally rather than silently snapping back to all.
+  const selectedQuarters = parseQuartersParam(quarters);
+  const availableQuarterKeys = Array.from(
+    new Set(allViews.flatMap((v) => fiscalQuartersForAccount(v))),
+  );
+  const views =
+    selectedQuarters === null
+      ? allViews
+      : allViews.filter((v) => {
+          const ks = fiscalQuartersForAccount(v);
+          return ks.some((k) => selectedQuarters.has(k));
+        });
 
   const totalAccounts = views.length;
   const totalATR = views.reduce((s, v) => s + v.atrUSD, 0);
@@ -76,11 +101,13 @@ export default async function DashboardPage() {
             href="/forecast"
             className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium shadow-sm"
           >
-            Generate Weekly Forecast Update
+            Generate Quarterly Forecast Update
           </Link>
           <RefreshButton />
         </div>
       </div>
+
+      <FiscalQuarterFilter availableQuarterKeys={availableQuarterKeys} />
 
       {/* PR-A9: Movements strip — compressed WoW so the manager sees the
           "what changed" answer without leaving the page. */}

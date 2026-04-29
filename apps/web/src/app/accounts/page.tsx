@@ -1,29 +1,10 @@
 import { getDashboardData } from '@/lib/read-model';
 import { RefreshButton } from '@/components/RefreshButton';
 import { AccountsTable } from '@/components/AccountsTable';
-import { AccountFilters } from '@/components/AccountFilters';
-import { fiscalQuarterFromDate } from '@/lib/fiscal';
-import type { AccountView } from '@mdas/canonical';
+import { FiscalQuarterFilter } from '@/components/FiscalQuarterFilter';
+import { fiscalQuartersForAccount, parseQuartersParam } from '@/lib/fiscal';
 
 export const dynamic = 'force-dynamic';
-
-/**
- * Determine the fiscal quarter(s) an account belongs to for filtering.
- * - Confirmed Churn → use account.churnDate
- * - Saveable Risk / Healthy → use opportunity close dates
- */
-function quartersForAccount(v: AccountView): string[] {
-  if (v.bucket === 'Confirmed Churn') {
-    const fq = fiscalQuarterFromDate(v.account.churnDate);
-    return fq ? [fq.key] : [];
-  }
-  const keys = new Set<string>();
-  for (const o of v.opportunities) {
-    const fq = fiscalQuarterFromDate(o.closeDate);
-    if (fq) keys.add(fq.key);
-  }
-  return Array.from(keys);
-}
 
 export default async function AccountsPage({
   searchParams,
@@ -33,37 +14,18 @@ export default async function AccountsPage({
   const { quarters } = await searchParams;
   const { views } = await getDashboardData();
 
-  // Build the union of quarter keys across both axes (close date + churn date).
-  const quarterMap = new Map<string, string>();
-  for (const v of views) {
-    for (const k of quartersForAccount(v)) {
-      if (!quarterMap.has(k)) {
-        // Quarter keys are produced by fiscalQuarterFromDate(...).key
-        // which always emits "YYYY-Qn" (see lib/fiscal.ts:41), so the
-        // destructure is well-defined. Guard with `??` for the type
-        // checker; mismatches would also indicate a fiscal.ts bug worth
-        // catching loudly.
-        const [fy, q] = k.split('-');
-        quarterMap.set(k, `FY${(fy ?? '').slice(-2)} ${q ?? ''}`);
-      }
-    }
-  }
-  const quarterOptions = Array.from(quarterMap.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, label]) => ({ key, label }));
+  const availableQuarterKeys = Array.from(
+    new Set(views.flatMap((v) => fiscalQuartersForAccount(v))),
+  );
 
-  // Apply filter. Empty/missing param = all.
-  const selectedQuarters = quarters
-    ? new Set(quarters.split(',').filter(Boolean))
-    : null;
-
-  const filteredViews = selectedQuarters
-    ? views.filter((v) => {
-        const ks = quartersForAccount(v);
-        if (ks.length === 0) return false;
-        return ks.some((k) => selectedQuarters.has(k));
-      })
-    : views;
+  const selectedQuarters = parseQuartersParam(quarters);
+  const filteredViews =
+    selectedQuarters === null
+      ? views
+      : views.filter((v) => {
+          const ks = fiscalQuartersForAccount(v);
+          return ks.some((k) => selectedQuarters.has(k));
+        });
 
   return (
     <div className="space-y-4">
@@ -72,7 +34,7 @@ export default async function AccountsPage({
         <RefreshButton />
       </div>
 
-      <AccountFilters quarterOptions={quarterOptions} />
+      <FiscalQuarterFilter availableQuarterKeys={availableQuarterKeys} />
 
       <AccountsTable views={filteredViews} />
     </div>
