@@ -124,8 +124,21 @@ b53eaed  docs(audit): add Phase 1 audit docs (repo map, findings, plan, summary)
 
 ---
 
-## Open items requiring user decisions
+## User decisions (resolved 2026-04-28)
 
-1. **Q2 (Clari)** — input or output only? Determines whether the next phase replaces the Copy-Clari-CSV paste-flow with a direct write.
-2. **Q3 (Slack/Zoom adapters)** — direct, or stay through Glean MCP?
-3. **Phase 4 sequencing** — likely candidates: tighten Lighthouse budget after a week of LHCI data, virtualize `/accounts` if Profiler measurement justifies it, add a stakeholder-churn signal source if M&A data ingestion is feasible.
+| # | Question | Decision | Implication |
+|---|---|---|---|
+| Q2 | Clari direction | **Copy/paste only for now.** | The PR-C3 `Copy Clari CSV` flow is the canonical interaction; no direct-write Clari adapter is on the roadmap. Revisit only if the manual paste step becomes a bottleneck. |
+| Q3 | Slack / Zoom adapters | **Stay through Glean MCP.** | No direct Slack/Zoom adapters scheduled. The existing Glean-MCP-backed enrichment (recent meetings, account plan links, snippets) remains the only path. F-list items that would have needed direct connectors stay closed via Glean. |
+| Phase 4 | Next sequencing | **Defer for now.** | F-09 (virtualization), Lighthouse budget tightening, stakeholder-churn signal source — all stay deferred. Audit re-engagement is the natural trigger. |
+
+These decisions confirm the current Phase 1+2+3 deliverable as the engagement-complete state.
+
+## Items deliberately not on the roadmap (post-decisions)
+
+- **Direct Clari write** — out of scope until manager workflow demands it.
+- **Direct Slack / Zoom adapters** — out of scope; Glean MCP covers the use cases that motivated them.
+- **`apps/actions` write service** — already out of scope per the (c) hybrid decision.
+- **Stakeholder-churn / M&A data ingestion** — no source identified; signal remains weight-0 in the composite Risk Score.
+- **Multi-franchise generalization** (F-18) — `'Expand 3'` stays hard-coded until a second franchise is real.
+- **`/accounts` virtualization** (F-09) — gated on a real React Profiler measurement at production-like row counts.
