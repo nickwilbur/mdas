@@ -1,7 +1,12 @@
 // Worker process: listens for `refresh` notifications and runs the refresh pipeline.
+//
+// Logging is JSON on stdout/stderr (PR-B4) so a downstream collector
+// (e.g. CloudWatch or Loki) can index `refreshId`, `requestId`, `source`
+// without parsing brackets out of free-form text.
 import pg from 'pg';
 import { claimNextJob, completeJob, audit } from '@mdas/db';
 import { runRefresh, selectActiveAdapters } from './orchestrate.js';
+import { log } from './logger.js';
 
 const { Client } = pg;
 
@@ -16,11 +21,11 @@ const { Client } = pg;
  */
 async function logAdapterHealth(): Promise<void> {
   const adapters = selectActiveAdapters();
-  console.log(`[health] probing ${adapters.length} active adapter(s)`);
+  log.info('health.start', { adapterCount: adapters.length });
   await Promise.all(
     adapters.map(async (a) => {
       if (!a.healthCheck) {
-        console.log(`[health] ${a.name.padEnd(18)} -        (no probe defined)`);
+        log.info('health.skipped', { adapter: a.name, reason: 'no probe defined' });
         return;
       }
       const t0 = Date.now();
@@ -31,16 +36,19 @@ async function logAdapterHealth(): Promise<void> {
             setTimeout(() => rej(new Error('timeout after 5s')), 5_000),
           ),
         ]);
-        const dur = `${Date.now() - t0}ms`.padStart(6);
-        const mark = result.ok ? '\u2713' : '\u2717';
-        console.log(
-          `[health] ${a.name.padEnd(18)} ${mark} ${dur}  ${result.details}`,
-        );
+        log.info('health.probe', {
+          adapter: a.name,
+          ok: result.ok,
+          durationMs: Date.now() - t0,
+          details: result.details,
+        });
       } catch (err) {
-        const dur = `${Date.now() - t0}ms`.padStart(6);
-        console.log(
-          `[health] ${a.name.padEnd(18)} \u2717 ${dur}  ${(err as Error).message}`,
-        );
+        log.warn('health.probe', {
+          adapter: a.name,
+          ok: false,
+          durationMs: Date.now() - t0,
+          error: (err as Error).message,
+        });
       }
     }),
   );
@@ -67,7 +75,7 @@ async function main(): Promise<void> {
     }
   });
 
-  console.log('[worker] listening for refresh notifications');
+  log.info('worker.listening', {});
   // Hold the process open.
   await new Promise<void>(() => undefined);
 }
@@ -80,14 +88,26 @@ async function drain(): Promise<void> {
     while (true) {
       const job = await claimNextJob();
       if (!job) break;
-      console.log(`[worker] running job ${job.id}`);
+      // PR-B4: thread the job id as the request-id so every log line
+      // and audit row in the worker can be correlated to the originating
+      // /api/refresh POST. The web app already returns jobId to the
+      // browser, so the manager has the trace key in the URL/network log.
+      const jobLog = log.child({ jobId: job.id, requestId: job.id });
+      jobLog.info('job.start', {});
       try {
-        const result = await runRefresh({ actor: 'worker' });
+        const result = await runRefresh({ actor: 'worker', requestId: job.id });
         await completeJob(job.id, result.refreshId, 'success');
-        console.log(`[worker] job ${job.id} → ${result.status}, ${result.durationMs}ms`);
+        jobLog.info('job.complete', {
+          refreshId: result.refreshId,
+          status: result.status,
+          durationMs: result.durationMs,
+        });
       } catch (err) {
-        console.error(`[worker] job ${job.id} failed`, err);
-        await audit('worker', 'refresh.failed', { error: (err as Error).message });
+        jobLog.error('job.failed', { error: (err as Error).message });
+        await audit('worker', 'refresh.failed', {
+          requestId: job.id,
+          error: (err as Error).message,
+        });
         // Mark job failed without a refresh id.
         try {
           await completeJob(job.id, '00000000-0000-0000-0000-000000000000', 'failed');
@@ -102,6 +122,6 @@ async function drain(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err);
+  log.error('worker.fatal', { error: (err as Error).message });
   process.exit(1);
 });
