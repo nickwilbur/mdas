@@ -16,6 +16,7 @@ import { ActionQueue } from '@/components/ActionQueue';
 import { MovementsStrip } from '@/components/MovementsStrip';
 import { FiscalQuarterFilter } from '@/components/FiscalQuarterFilter';
 import {
+  fiscalQuarterFromDate,
   fiscalQuartersForAccount,
   parseQuartersParam,
 } from '@/lib/fiscal';
@@ -71,9 +72,37 @@ export default async function DashboardPage({
           return ks.some((k) => selectedQuarters.has(k));
         });
 
+  // When filtering by quarter, we must sum opportunity-level metrics
+  // (availableToRenewUSD) for opps that close in the selected quarter,
+  // not account-level totals (atrUSD) which span all quarters.
   const totalAccounts = views.length;
-  const totalATR = views.reduce((s, v) => s + v.atrUSD, 0);
-  const acvAtRisk = views.reduce((s, v) => s + v.acvAtRiskUSD, 0);
+  let totalATR = 0;
+  let acvAtRisk = 0;
+
+  if (selectedQuarters === null) {
+    // No quarter filter: use account-level totals as before
+    totalATR = views.reduce((s, v) => s + v.atrUSD, 0);
+    acvAtRisk = views.reduce((s, v) => s + v.acvAtRiskUSD, 0);
+  } else {
+    // Quarter filter: sum only the ATR from opps that close in selected quarters
+    for (const v of views) {
+      for (const o of v.opportunities) {
+        const fq = fiscalQuarterFromDate(o.closeDate);
+        if (fq && selectedQuarters.has(fq.key)) {
+          totalATR += (o.availableToRenewUSD ?? 0);
+          // For ACV at risk, use knownChurnUSD if set, otherwise estimate
+          // as the gap between ATR and forecastMostLikely
+          if (o.knownChurnUSD && o.knownChurnUSD > 0) {
+            acvAtRisk += o.knownChurnUSD;
+          } else {
+            const atr = o.availableToRenewUSD ?? 0;
+            const ml = o.forecastMostLikelyOverride ?? o.forecastMostLikely ?? atr;
+            acvAtRisk += Math.max(0, atr - ml);
+          }
+        }
+      }
+    }
+  }
 
   const byRisk = { Critical: 0, High: 0, Medium: 0, Low: 0, Unknown: 0 } as Record<string, number>;
   for (const v of views) byRisk[v.risk.level ?? 'Unknown']! += 1;
