@@ -1,37 +1,31 @@
 import { NextResponse } from 'next/server';
-import {
-  generateWeeklyForecast,
-  generateClariCsv,
-  findDarkAccounts,
-} from '@mdas/forecast-generator';
+import { generateWeeklyForecast } from '@mdas/forecast-generator';
 import { getDashboardData, getWoWChangeEvents } from '@/lib/read-model';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// PR-C3 (§4.7): the response now ships markdown + Clari-paste CSV
-// + dark-account summary in one round trip so the ForecastClient
-// can render all three without re-fetching.
+/**
+ * Generate the plaintext quarterly churn-forecast script.
+ *
+ * The previous markdown / Clari-CSV / dark-accounts tri-payload was
+ * scoped to the weekly forecast UX. The 2026-04-29 redesign reduces
+ * the surface to a single plaintext field aligned with the manager's
+ * existing churn-call template.
+ */
 export async function POST(req: Request): Promise<Response> {
   const body = (await req.json().catch(() => ({}))) as {
     asOfDate?: string;
-    audience?: string;
+    plan?: { currentQuarterUSD?: number; nextQuarterUSD?: number };
   };
   const { views } = await getDashboardData();
   const { events } = await getWoWChangeEvents();
   const asOfDate = body.asOfDate ?? new Date().toISOString().slice(0, 10);
-  const markdown = generateWeeklyForecast({
+  const text = generateWeeklyForecast({
     views,
     changeEvents: events,
     asOfDate,
-    audience: body.audience,
+    plan: body.plan,
   });
-  const clariCsv = generateClariCsv(views);
-  const darkAccounts = findDarkAccounts(views, { windowDays: 7 });
-  return NextResponse.json({
-    markdown,
-    clariCsv,
-    darkAccounts,
-    asOfDate,
-  });
+  return NextResponse.json({ text, asOfDate });
 }

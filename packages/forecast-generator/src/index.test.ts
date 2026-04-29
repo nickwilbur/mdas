@@ -1,18 +1,13 @@
-// Golden-file tests for generateWeeklyForecast.
+// Tests for the churn-call forecast generator.
 //
-// Audit ref: F-12 in docs/audit/01_findings.md.
-//
-// The forecast markdown is the artifact a manager pastes into Clari and
-// circulates to leadership; a silent regression in the headline section
-// or section ordering is high-cost. These tests pin the output shape
-// against a small but realistic input — one Confirmed Churn account,
-// one Saveable Risk account with WoW risk movement, one Healthy
-// upsell-Hot account, plus a churn-notice change event.
-//
-// To intentionally update the goldens, change the assertions below.
-// They're written as targeted toContain / toMatch checks rather than
-// a single full-string snapshot so a one-line cosmetic change doesn't
-// blow up every assertion at once.
+// The output is a plaintext script the CSE manager pastes into their
+// quarterly churn-call doc. These tests pin:
+//   1. Section ordering (Current Quarter then Next Quarter, with the
+//      template fields in the documented order).
+//   2. Plaintext-only invariants (no markdown links, no bold).
+//   3. Color band semantics (red / yellow / green).
+//   4. Plan / Flash / Gap / Total Risk / Hedge math.
+//   5. WoW +/- sign (improvement vs regression).
 import { describe, expect, it } from 'vitest';
 import type {
   AccountView,
@@ -23,6 +18,7 @@ import type {
 import { generateWeeklyForecast } from './index.js';
 
 const REFRESH_AT = '2026-04-28T18:00:00.000Z';
+const AS_OF = '2026-04-28'; // FY27 Q1 (Feb 2026 → Apr 2026)
 
 function mkAccount(overrides: Partial<CanonicalAccount> = {}): CanonicalAccount {
   return {
@@ -78,8 +74,8 @@ function mkOpportunity(
     type: 'Renewal',
     stageName: 'Qualification',
     stageNum: 2,
-    closeDate: '2026-09-30',
-    closeQuarter: 'Q3',
+    closeDate: '2026-04-15', // FY27 Q1 by default
+    closeQuarter: 'Q1',
     fiscalYear: 2027,
     acv: 100_000,
     availableToRenewUSD: 100_000,
@@ -124,166 +120,254 @@ function mkView(
   };
 }
 
-describe('generateWeeklyForecast', () => {
-  it('renders the documented section headers in order', () => {
+describe('generateWeeklyForecast (churn-call script)', () => {
+  it('renders Current Quarter then Next Quarter with all template fields', () => {
     const md = generateWeeklyForecast({
       views: [],
       changeEvents: [],
-      asOfDate: '2026-04-28',
+      asOfDate: AS_OF,
     });
-    const expectedSections = [
-      '## Headline',
-      '## Confirmed Churn — Movements This Week',
-      '## Saveable Risk — Movements This Week',
-      '## Upsell — Movements This Week',
-      '## CSE Hygiene Call-Outs',
-      '## Asks of Leadership',
-      '## Talk Track (4–6 bullets for 1:1)',
-      '## Source Evidence',
+    const expectedFields = [
+      'Current Quarter:',
+      'Churn/Downsell Plan:',
+      'Churn/Downsell Flash / Most Likely:',
+      'Gap to Plan:',
+      'Total Churn/Downsell Risk / Baseline:',
+      'Hedge:',
+      'Accounts to Close Gap:',
+      'Key Saves/Improvements to close the gap from Total Churn/Downsell risk to Flash:',
+      'Accounts in yellow - path to add hedge to the line:',
+      'Accounts in green - path to capture the existing hedge already in the line:',
+      'Week-over-week Changes - Improvements and increased risk:',
+      'Next Quarter:',
     ];
     let cursor = 0;
-    for (const section of expectedSections) {
-      const idx = md.indexOf(section, cursor);
-      expect(idx, `expected section ${section} after position ${cursor}`).toBeGreaterThan(-1);
-      cursor = idx + section.length;
+    for (const field of expectedFields) {
+      const idx = md.indexOf(field, cursor);
+      expect(idx, `expected ${field} after position ${cursor}`).toBeGreaterThan(
+        -1,
+      );
+      cursor = idx + field.length;
     }
   });
 
-  it('renders the title with the asOfDate and the audience', () => {
-    const md = generateWeeklyForecast({
-      views: [],
-      changeEvents: [],
-      asOfDate: '2026-04-28',
-      audience: 'My Leader',
-    });
-    expect(md).toContain('# Expand 3 Weekly Forecast Update — 2026-04-28');
-    expect(md).toContain('_Audience: My Leader_');
-  });
-
-  it('lists Confirmed Churn accounts with their churn USD and reason', () => {
-    const churnAcc = mkAccount({
+  it('emits plaintext only — no markdown links or bold', () => {
+    const acc = mkAccount({
       accountId: 'A1',
       accountName: 'Stenograph LLC',
+      sourceLinks: [
+        { label: 'Salesforce', url: 'https://sf.example/A1', source: 'salesforce' },
+      ],
       cseSentiment: 'Confirmed Churn',
       isConfirmedChurn: true,
-      churnReasonSummary: 'Consolidating with competitor',
     });
-    const churnOpp = mkOpportunity({
-      opportunityId: 'O1',
+    const opp = mkOpportunity({
       accountId: 'A1',
       knownChurnUSD: 250_000,
+      sourceLinks: [
+        { label: 'Renewal opp', url: 'https://sf.example/O1', source: 'salesforce' },
+      ],
     });
-    const view = mkView(churnAcc, [churnOpp], {
-      bucket: 'Confirmed Churn',
-    });
+    const view = mkView(acc, [opp], { bucket: 'Confirmed Churn' });
     const md = generateWeeklyForecast({
       views: [view],
       changeEvents: [],
-      asOfDate: '2026-04-28',
+      asOfDate: AS_OF,
     });
-    expect(md).toMatch(/\*\*Stenograph LLC\*\* — \$250,000, Consolidating with competitor/);
+    expect(md).not.toMatch(/\[.+\]\(http/); // markdown link [label](url)
+    expect(md).not.toContain('**'); // markdown bold
+    expect(md).toContain('Stenograph LLC');
   });
 
-  it('shows WoW risk movement for Saveable Risk accounts when an event exists', () => {
-    const acc = mkAccount({
-      accountId: 'A2',
-      accountName: 'Acme Corp',
-      cerebroRiskCategory: 'High',
-      cseSentiment: 'Yellow',
+  it('labels the current quarter using fiscal-quarter math', () => {
+    const md = generateWeeklyForecast({
+      views: [],
+      changeEvents: [],
+      asOfDate: '2026-04-28', // FY27 Q1
     });
-    const opp = mkOpportunity({ accountId: 'A2', scNextSteps: 'Schedule executive sync' });
+    expect(md).toContain('Current Quarter: FY27 Q1');
+    expect(md).toContain('Next Quarter: FY27 Q2');
+  });
+
+  it('rolls year boundary — Jan asOfDate sits in Q4 of prior FY', () => {
+    const md = generateWeeklyForecast({
+      views: [],
+      changeEvents: [],
+      asOfDate: '2027-01-10', // FY27 Q4
+    });
+    expect(md).toContain('Current Quarter: FY27 Q4');
+    expect(md).toContain('Next Quarter: FY28 Q1');
+  });
+
+  it('computes Flash from knownChurnUSD when provided', () => {
+    const acc = mkAccount({ accountName: 'Stenograph LLC', isConfirmedChurn: true });
+    const opp = mkOpportunity({ knownChurnUSD: 250_000, closeDate: '2026-04-15' });
+    const view = mkView(acc, [opp], { bucket: 'Confirmed Churn' });
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: \$250,000/);
+  });
+
+  it('computes Total Risk from ATR for saveable accounts', () => {
+    const acc = mkAccount({ accountName: 'Acme Corp' });
+    const opp = mkOpportunity({
+      availableToRenewUSD: 500_000,
+      forecastMostLikely: 500_000, // no churn baked in
+      closeDate: '2026-04-15',
+    });
     const view = mkView(acc, [opp], {
       bucket: 'Saveable Risk',
       risk: { level: 'High', source: 'cerebro', rationale: '' },
     });
-    const event: ChangeEvent = {
-      accountId: 'A2',
-      field: 'cerebroRiskCategory',
-      oldValue: 'Medium',
-      newValue: 'High',
-      occurredBetween: ['prev', 'curr'],
-      category: 'risk',
-      label: 'Cerebro Risk Category Medium → High',
-    };
-    const md = generateWeeklyForecast({
-      views: [view],
-      changeEvents: [event],
-      asOfDate: '2026-04-28',
-    });
-    expect(md).toContain('Risk Medium → High');
-    expect(md).toContain('Acme Corp');
-    expect(md).toContain('Schedule executive sync');
-  });
-
-  it('lists upsell Hot accounts in the Upsell section with their score', () => {
-    const acc = mkAccount({ accountId: 'A3', accountName: 'BetaCo' });
-    const opp = mkOpportunity({
-      opportunityId: 'O3',
-      accountId: 'A3',
-      type: 'Upsell',
-      acvDelta: 50_000,
-    });
-    const view = mkView(acc, [opp], {
-      upsell: { score: 80, band: 'Hot', signals: [] },
-    });
     const md = generateWeeklyForecast({
       views: [view],
       changeEvents: [],
-      asOfDate: '2026-04-28',
+      asOfDate: AS_OF,
     });
-    expect(md).toContain('BetaCo');
-    expect(md).toContain('upsell 80');
-    expect(md).toMatch(/ACV Δ \$50,000/);
+    expect(md).toMatch(/Total Churn\/Downsell Risk \/ Baseline: \$500,000/);
   });
 
-  it('rolls up Confirmed/Most-Likely/Hedge in the headline', () => {
-    const acc = mkAccount({ accountId: 'A4' });
-    const opp = mkOpportunity({
-      accountId: 'A4',
-      mostLikelyConfidence: 'Confirmed',
-      forecastMostLikely: 200_000,
-      forecastHedgeUSD: 50_000,
-    });
-    const view = mkView(acc, [opp]);
+  it('computes Gap to Plan when plan is provided', () => {
+    const acc = mkAccount();
+    const opp = mkOpportunity({ knownChurnUSD: 100_000, closeDate: '2026-04-15' });
+    const view = mkView(acc, [opp], { bucket: 'Confirmed Churn' });
     const md = generateWeeklyForecast({
       views: [view],
       changeEvents: [],
-      asOfDate: '2026-04-28',
+      asOfDate: AS_OF,
+      plan: { currentQuarterUSD: 250_000 },
     });
-    expect(md).toContain('Confirmed $200,000');
-    expect(md).toContain('Most Likely $200,000');
-    expect(md).toContain('Hedge $50,000');
+    // Flash $100k vs Plan $250k → -$150k (under plan = good)
+    expect(md).toMatch(/Gap to Plan: -\$150,000/);
   });
 
-  it('counts churn-notice events in the talk-track', () => {
-    const acc = mkAccount({ accountId: 'A5' });
-    const view = mkView(acc, [mkOpportunity({ accountId: 'A5' })]);
-    const event: ChangeEvent = {
-      accountId: 'A5',
-      opportunityId: 'O5',
-      field: 'fullChurnNotificationToOwnerDate',
-      oldValue: null,
-      newValue: '2026-04-25',
-      occurredBetween: ['prev', 'curr'],
-      category: 'churn-notice',
-      label: 'Renewal: Churn notice submitted',
-    };
-    const md = generateWeeklyForecast({
-      views: [view],
-      changeEvents: [event],
-      asOfDate: '2026-04-28',
-    });
-    expect(md).toContain('New churn notices submitted: 1.');
-  });
-
-  it('emits "None." for empty buckets so the section never silently disappears', () => {
+  it('emits [fill in] placeholders when Plan is not provided', () => {
     const md = generateWeeklyForecast({
       views: [],
       changeEvents: [],
-      asOfDate: '2026-04-28',
+      asOfDate: AS_OF,
     });
-    // All four account-list sections should explicitly note absence.
-    const noneCount = (md.match(/^- None\.$/gm) ?? []).length;
-    expect(noneCount).toBeGreaterThanOrEqual(4);
+    expect(md).toContain('Churn/Downsell Plan: [fill in]');
+    expect(md).toContain('Gap to Plan: [fill in once Plan is set]');
+  });
+
+  it('classifies accounts into red / yellow / green by risk + sentiment', () => {
+    const red = mkView(
+      mkAccount({ accountId: 'R', accountName: 'Red Co', cseSentiment: 'Red' }),
+      [mkOpportunity({ accountId: 'R', availableToRenewUSD: 200_000, forecastMostLikely: 0, closeDate: '2026-04-15' })],
+      {
+        bucket: 'Saveable Risk',
+        risk: { level: 'Critical', source: 'cerebro', rationale: '' },
+      },
+    );
+    const yellow = mkView(
+      mkAccount({ accountId: 'Y', accountName: 'Yellow Co', cseSentiment: 'Yellow' }),
+      [mkOpportunity({ accountId: 'Y', availableToRenewUSD: 100_000, forecastMostLikely: 50_000, closeDate: '2026-04-15' })],
+      {
+        bucket: 'Saveable Risk',
+        risk: { level: 'Medium', source: 'cerebro', rationale: '' },
+      },
+    );
+    const green = mkView(
+      mkAccount({ accountId: 'G', accountName: 'Green Co' }),
+      [mkOpportunity({ accountId: 'G', forecastHedgeUSD: 75_000, closeDate: '2026-04-15' })],
+    );
+    const md = generateWeeklyForecast({
+      views: [red, yellow, green],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    // Red Co should appear under "Accounts in red - risk trending"
+    const redIdx = md.indexOf('Accounts in red - risk trending');
+    const yellowIdx = md.indexOf('Accounts in yellow - path to add hedge');
+    const greenIdx = md.indexOf('Accounts in green - path to capture');
+    expect(md.slice(redIdx, yellowIdx)).toContain('Red Co');
+    expect(md.slice(yellowIdx, greenIdx)).toContain('Yellow Co');
+    expect(md.slice(greenIdx)).toContain('Green Co');
+  });
+
+  it('shows + for risk improvement and - for risk regression in WoW', () => {
+    const acc = mkAccount({ accountId: 'A2', accountName: 'Better Co' });
+    const view = mkView(acc, [mkOpportunity({ accountId: 'A2', closeDate: '2026-04-15' })], {
+      bucket: 'Saveable Risk',
+    });
+    const improved: ChangeEvent = {
+      accountId: 'A2',
+      field: 'cerebroRiskCategory',
+      oldValue: 'High',
+      newValue: 'Low',
+      occurredBetween: ['p', 'c'],
+      category: 'risk',
+      label: 'Risk High → Low',
+    };
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [improved],
+      asOfDate: AS_OF,
+    });
+    expect(md).toMatch(/\+ Better Co - Risk High → Low/);
+  });
+
+  it('flags churn-notice events as regressions (-)', () => {
+    const acc = mkAccount({ accountId: 'A3', accountName: 'New Churn Co' });
+    const view = mkView(acc, [mkOpportunity({ accountId: 'A3', closeDate: '2026-04-15' })]);
+    const churnEvent: ChangeEvent = {
+      accountId: 'A3',
+      opportunityId: 'O3',
+      field: 'fullChurnNotificationToOwnerDate',
+      oldValue: null,
+      newValue: '2026-04-25',
+      occurredBetween: ['p', 'c'],
+      category: 'churn-notice',
+      label: 'Churn notice',
+    };
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [churnEvent],
+      asOfDate: AS_OF,
+    });
+    expect(md).toMatch(/- New Churn Co - Churn notice submitted/);
+  });
+
+  it('omits hygiene call-outs entirely (leadership lens)', () => {
+    const md = generateWeeklyForecast({
+      views: [],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).not.toContain('Hygiene');
+    expect(md).not.toContain('hygiene');
+  });
+
+  it('partitions opportunities into the correct quarter by closeDate', () => {
+    const accCurrent = mkAccount({ accountId: 'AC', accountName: 'Current Co' });
+    const oppCurrent = mkOpportunity({
+      accountId: 'AC',
+      knownChurnUSD: 100_000,
+      closeDate: '2026-04-15', // FY27 Q1
+    });
+    const accNext = mkAccount({ accountId: 'AN', accountName: 'Next Co' });
+    const oppNext = mkOpportunity({
+      accountId: 'AN',
+      knownChurnUSD: 200_000,
+      closeDate: '2026-06-15', // FY27 Q2
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(accCurrent, [oppCurrent], { bucket: 'Confirmed Churn' }),
+        mkView(accNext, [oppNext], { bucket: 'Confirmed Churn' }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    const currIdx = md.indexOf('Current Quarter');
+    const nextIdx = md.indexOf('Next Quarter');
+    const currSection = md.slice(currIdx, nextIdx);
+    const nextSection = md.slice(nextIdx);
+    expect(currSection).toMatch(/Flash \/ Most Likely: \$100,000/);
+    expect(nextSection).toMatch(/Flash \/ Most Likely: \$200,000/);
   });
 });

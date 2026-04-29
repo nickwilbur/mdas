@@ -1,62 +1,62 @@
 'use client';
-import { useState } from 'react';
-import { fiscalQuarterFromDate, type FiscalQuarter } from '@/lib/fiscal';
 
-interface DarkAccount {
-  accountId: string;
-  accountName: string;
-  daysSinceLastSignal: number;
-  reason: string;
-  arr: number;
-}
+// Quarterly Churn Forecast generator UI.
+//
+// Output is a plaintext script the CSE manager pastes into Slack /
+// email — no markdown, no links, no rich formatting. The manager fills
+// in the optional Plan dollar amounts (leadership-set targets) before
+// generating so Gap to Plan is computed; otherwise placeholders ship.
+import { useState } from 'react';
+import {
+  currentFiscalQuarter,
+  rollingFiscalQuarters,
+  type FiscalQuarter,
+} from '@/lib/fiscal';
 
 interface ForecastResponse {
-  markdown: string;
-  clariCsv: string;
-  darkAccounts: DarkAccount[];
+  text: string;
   asOfDate: string;
 }
 
-// Generate available quarters (current quarter + next 3 quarters)
-function generateAvailableQuarters(): FiscalQuarter[] {
-  const quarters: FiscalQuarter[] = [];
-  const today = new Date();
-  
-  // Start from current quarter and go forward 3 quarters
-  for (let i = 0; i < 4; i++) {
-    const date = new Date(today);
-    date.setMonth(date.getMonth() + (i * 3));
-    const fq = fiscalQuarterFromDate(date.toISOString());
-    if (fq) quarters.push(fq);
-  }
-  
-  return quarters;
+// Anchor date for the selected quarter (start of quarter, used by the
+// API to bucket opps into Current vs Next). Q1 = Feb, Q2 = May, etc.
+function quarterStartIso(fq: FiscalQuarter): string {
+  const monthByQ: Record<number, number> = { 1: 1, 2: 4, 3: 7, 4: 10 };
+  const month = monthByQ[fq.q];
+  if (month === undefined) return new Date().toISOString().slice(0, 10);
+  // FY{N} starts Feb of (N-1).
+  const year = fq.fy - 1;
+  return new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
 }
 
 export function ForecastClient() {
-  const availableQuarters = generateAvailableQuarters();
-  const currentQuarter = fiscalQuarterFromDate(new Date().toISOString());
-  const [selectedQuarter, setSelectedQuarter] = useState<FiscalQuarter | null>(currentQuarter);
-  const [audience, setAudience] = useState('My Leader + Sales Leadership + CS Leadership');
+  // Show today + the next 4 quarters; manager rarely needs to look back.
+  const availableQuarters = rollingFiscalQuarters(0, 4);
+  const today = currentFiscalQuarter();
+  const [selectedKey, setSelectedKey] = useState<string>(today.key);
+  const [planCurrentUSD, setPlanCurrentUSD] = useState<string>('');
+  const [planNextUSD, setPlanNextUSD] = useState<string>('');
   const [response, setResponse] = useState<ForecastResponse | null>(null);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const selectedQuarter =
+    availableQuarters.find((q) => q.key === selectedKey) ?? today;
 
   async function generate() {
-    if (!selectedQuarter) return;
     setBusy(true);
     try {
-      // Convert fiscal quarter to as-of date (start of quarter)
-      // Q1: Feb 1, Q2: May 1, Q3: Aug 1, Q4: Nov 1
-      const monthMap: Record<number, number> = { 1: 1, 2: 4, 3: 7, 4: 10 }; // 0-indexed months
-      const month = monthMap[selectedQuarter.q];
-      if (month === undefined) return;
-      const year = selectedQuarter.fy - 1; // FY starts in Feb of previous calendar year
-      const asOfDate = new Date(year, month, 1).toISOString().slice(0, 10);
+      const asOfDate = quarterStartIso(selectedQuarter);
+      const plan: { currentQuarterUSD?: number; nextQuarterUSD?: number } = {};
+      const cur = parseUSD(planCurrentUSD);
+      const nxt = parseUSD(planNextUSD);
+      if (cur != null) plan.currentQuarterUSD = cur;
+      if (nxt != null) plan.nextQuarterUSD = nxt;
 
       const r = await fetch('/api/forecast', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ asOfDate, audience }),
+        body: JSON.stringify({ asOfDate, plan }),
       });
       const j = (await r.json()) as ForecastResponse;
       setResponse(j);
@@ -65,94 +65,109 @@ export function ForecastClient() {
     }
   }
 
-  function copy(text: string) {
-    void navigator.clipboard.writeText(text);
+  async function copyAll() {
+    if (!response?.text) return;
+    await navigator.clipboard.writeText(response.text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   }
 
-  function download(content: string, ext: string, mime: string) {
-    const blob = new Blob([content], { type: mime });
+  function download() {
+    if (!response?.text) return;
+    const blob = new Blob([response.text], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `expand-3-forecast-${selectedQuarter?.label ?? 'quarter'}.${ext}`;
+    a.download = `churn-forecast-${selectedQuarter.label.replace(/\s+/g, '-')}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   }
 
-  const markdown = response?.markdown ?? '';
-  const clariCsv = response?.clariCsv ?? '';
-  const darkAccounts = response?.darkAccounts ?? [];
-  const fmtUSD = (n: number) =>
-    n === 0 ? '$0' : `$${Math.round(n).toLocaleString('en-US')}`;
+  const text = response?.text ?? '';
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-white p-4">
-        <label className="text-sm">
-          <div className="text-xs text-gray-500">Fiscal Quarter</div>
-          <select
-            value={selectedQuarter?.key ?? ''}
-            onChange={(e) => {
-              const fq = availableQuarters.find((q) => q.key === e.target.value);
-              setSelectedQuarter(fq ?? null);
-            }}
-            className="rounded border border-gray-300 px-2 py-1"
+      <div className="rounded-lg border border-gray-200 bg-white p-4">
+        <p className="mb-3 text-sm text-gray-600">
+          Generates a plaintext churn-call script covering the selected
+          quarter and the following quarter. Paste directly into Slack
+          or email — no formatting required. Plan amounts are optional;
+          leave blank to ship a fillable placeholder.
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="text-sm">
+            <div className="text-xs text-gray-500">Anchor on Quarter</div>
+            <select
+              value={selectedKey}
+              onChange={(e) => setSelectedKey(e.target.value)}
+              className="rounded border border-gray-300 px-2 py-1"
+            >
+              {availableQuarters.map((fq) => (
+                <option key={fq.key} value={fq.key}>
+                  {fq.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-sm">
+            <div className="text-xs text-gray-500">
+              Plan — Current Quarter ($, optional)
+            </div>
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder="e.g. 250000"
+              value={planCurrentUSD}
+              onChange={(e) => setPlanCurrentUSD(e.target.value)}
+              className="rounded border border-gray-300 px-2 py-1"
+            />
+          </label>
+          <label className="text-sm">
+            <div className="text-xs text-gray-500">
+              Plan — Next Quarter ($, optional)
+            </div>
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder="e.g. 300000"
+              value={planNextUSD}
+              onChange={(e) => setPlanNextUSD(e.target.value)}
+              className="rounded border border-gray-300 px-2 py-1"
+            />
+          </label>
+          <button
+            onClick={generate}
+            disabled={busy}
+            className="rounded bg-black px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
-            {availableQuarters.map((fq) => (
-              <option key={fq.key} value={fq.key}>
-                {fq.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex-1 text-sm">
-          <div className="text-xs text-gray-500">Audience</div>
-          <input type="text" value={audience} onChange={(e) => setAudience(e.target.value)} className="w-full rounded border border-gray-300 px-2 py-1" />
-        </label>
-        <button onClick={generate} disabled={busy} className="rounded bg-black px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
-          {busy ? 'Generating…' : 'Generate Update'}
-        </button>
-        <button onClick={() => copy(markdown)} disabled={!markdown} className="rounded border border-gray-300 px-3 py-2 text-sm disabled:opacity-50">
-          Copy Markdown
-        </button>
-        <button onClick={() => download(markdown, 'md', 'text/markdown')} disabled={!markdown} className="rounded border border-gray-300 px-3 py-2 text-sm disabled:opacity-50">
-          Download .md
-        </button>
-        {/* PR-C3 / §4.7: Clari-paste CSV one-click flow. The Copy
-            button is preferred because manager workflow is paste-into-
-            Clari; download is the fallback. */}
-        <button onClick={() => copy(clariCsv)} disabled={!clariCsv} className="rounded border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-800 disabled:opacity-50">
-          Copy Clari CSV
-        </button>
-        <button onClick={() => download(clariCsv, 'csv', 'text/csv')} disabled={!clariCsv} className="rounded border border-gray-300 px-3 py-2 text-sm disabled:opacity-50">
-          Download .csv
-        </button>
+            {busy ? 'Generating…' : 'Generate Script'}
+          </button>
+          <button
+            onClick={copyAll}
+            disabled={!text}
+            className="rounded border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-800 disabled:opacity-50"
+          >
+            {copied ? 'Copied!' : 'Copy Script'}
+          </button>
+          <button
+            onClick={download}
+            disabled={!text}
+            className="rounded border border-gray-300 px-3 py-2 text-sm disabled:opacity-50"
+          >
+            Download .txt
+          </button>
+        </div>
       </div>
 
-      {darkAccounts.length > 0 ? (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
-          <div className="font-semibold text-amber-900">
-            Dark accounts: {darkAccounts.length} ({fmtUSD(darkAccounts.reduce((s, d) => s + d.arr, 0))} ARR exposed)
-          </div>
-          <ul className="mt-1 ml-5 list-disc text-amber-800">
-            {darkAccounts.slice(0, 5).map((d) => (
-              <li key={d.accountId}>
-                <a href={`/accounts/${d.accountId}`} className="underline hover:text-amber-900">
-                  {d.accountName}
-                </a>{' '}
-                — {d.reason}, ARR {fmtUSD(d.arr)}
-              </li>
-            ))}
-            {darkAccounts.length > 5 ? (
-              <li className="text-amber-700">…and {darkAccounts.length - 5} more (see markdown).</li>
-            ) : null}
-          </ul>
-        </div>
-      ) : null}
-
-      <pre className="min-h-[400px] whitespace-pre-wrap rounded-lg border border-gray-200 bg-white p-4 font-mono text-sm">
-        {markdown || '— click Generate Update to render —'}
+      <pre className="min-h-[480px] whitespace-pre-wrap rounded-lg border border-gray-200 bg-white p-4 font-mono text-sm">
+        {text || '— click Generate Script to render —'}
       </pre>
     </div>
   );
+}
+
+function parseUSD(raw: string): number | null {
+  if (!raw.trim()) return null;
+  const n = Number(raw.replace(/[$,\s]/g, ''));
+  return Number.isFinite(n) ? n : null;
 }

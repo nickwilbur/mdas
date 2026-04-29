@@ -1,270 +1,401 @@
-import type { AccountView, ChangeEvent, SourceLink } from '@mdas/canonical';
+import type { AccountView, CanonicalOpportunity, ChangeEvent } from '@mdas/canonical';
+import { fiscalQuarterFromDate, fiscalQuarterLabel } from './fiscal.js';
 
 // PR-C3 — re-export Clari CSV + dark-account helpers from the public
 // surface of @mdas/forecast-generator.
 export { generateClariCsv, findDarkAccounts } from './clari-csv.js';
 export type { ClariCsvOptions, DarkAccount } from './clari-csv.js';
-import { findDarkAccounts } from './clari-csv.js';
 
 export interface ForecastInput {
   views: AccountView[];
   changeEvents: ChangeEvent[];
-  asOfDate: string; // ISO YYYY-MM-DD
-  audience?: string; // default 'My Leader + Sales Leadership + CS Leadership'
+  /** ISO YYYY-MM-DD; the quarter containing this date is "current". */
+  asOfDate: string;
+  /** Free-text — included for compatibility with the old API. */
+  audience?: string;
+  /**
+   * Optional managerial input. When provided, the generator computes
+   * Gap to Plan; otherwise a `[fill in]` placeholder is emitted so
+   * leadership knows the field is intentionally blank.
+   */
+  plan?: { currentQuarterUSD?: number; nextQuarterUSD?: number };
 }
 
 const fmtUSD = (n: number) =>
   n === 0 ? '$0' : `$${Math.round(n).toLocaleString('en-US')}`;
 
-function findChange(events: ChangeEvent[], accountId: string, field: string) {
-  return events.find((e) => e.accountId === accountId && e.field === field);
+const fmtSignedUSD = (n: number) => {
+  if (n === 0) return '$0';
+  const abs = Math.abs(Math.round(n)).toLocaleString('en-US');
+  return n > 0 ? `+$${abs}` : `-$${abs}`;
+};
+
+interface QuarterBucket {
+  label: string;
+  key: string;
+  /**
+   * Opportunity rows whose closeDate falls in this quarter, paired with
+   * their parent account for downstream lookups.
+   */
+  rows: { view: AccountView; opp: CanonicalOpportunity }[];
 }
 
-function sourceFootnote(view: AccountView): string {
-  const links: SourceLink[] = [
-    ...view.account.sourceLinks,
-    ...view.opportunities.flatMap((o) => o.sourceLinks),
-  ];
-  if (links.length === 0) return `_${view.account.accountName}_`;
-  const md = links
-    .slice(0, 6)
-    .map((l) => `[${l.label}](${l.url})`)
-    .join(' • ');
-  return `**${view.account.accountName}** — ${md}`;
-}
-
-export function generateWeeklyForecast(input: ForecastInput): string {
-  const audience =
-    input.audience ?? 'My Leader + Sales Leadership + CS Leadership';
-  const views = input.views;
-  const events = input.changeEvents;
-
-  const confirmedChurn = views.filter((v) => v.bucket === 'Confirmed Churn');
-  const saveable = views.filter((v) => v.bucket === 'Saveable Risk');
-  const upsellHotActive = views
-    .filter((v) => v.upsell.band === 'Hot' || v.upsell.band === 'Active')
-    .sort((a, b) => b.upsell.score - a.upsell.score);
-
-  const confirmedSum = views
-    .flatMap((v) => v.opportunities)
-    .filter((o) => o.mostLikelyConfidence === 'Confirmed')
-    .reduce((s, o) => s + (o.forecastMostLikelyOverride ?? o.forecastMostLikely ?? 0), 0);
-  const mostLikelySum = views
-    .flatMap((v) => v.opportunities)
-    .reduce((s, o) => s + (o.forecastMostLikelyOverride ?? o.forecastMostLikely ?? 0), 0);
-  const hedgeSum = views
-    .flatMap((v) => v.opportunities)
-    .reduce((s, o) => s + (o.forecastHedgeUSD ?? 0), 0);
-
-  // Hygiene rollup per CSE
-  const cseRollup = new Map<
-    string,
-    { stale: number; missingNext: number; noWorkshop: number; topAccounts: string[] }
-  >();
-  for (const v of views) {
-    const cse = v.account.assignedCSE?.name ?? 'Unassigned';
-    const r =
-      cseRollup.get(cse) ?? {
-        stale: 0,
-        missingNext: 0,
-        noWorkshop: 0,
-        topAccounts: [],
-      };
-    for (const x of v.hygiene.violations) {
-      if (x.rule === 'stale_sentiment_commentary') r.stale++;
-      if (x.rule === 'missing_next_action') r.missingNext++;
-      if (x.rule === 'no_workshop_logged') r.noWorkshop++;
-    }
-    if (v.hygiene.score > 0 && r.topAccounts.length < 3) {
-      r.topAccounts.push(v.account.accountName);
-    }
-    cseRollup.set(cse, r);
+function bucketByQuarter(
+  views: AccountView[],
+  asOfDate: string,
+): { current: QuarterBucket; next: QuarterBucket } {
+  const todayFq = fiscalQuarterFromDate(asOfDate);
+  if (!todayFq) {
+    // Should not happen — asOfDate is a controlled input — but emit
+    // empty buckets rather than crash.
+    return {
+      current: { label: 'Current Quarter', key: '', rows: [] },
+      next: { label: 'Next Quarter', key: '', rows: [] },
+    };
   }
+  // Anchor "next quarter" by adding ~3 months to asOfDate. We use UTC
+  // arithmetic to avoid DST drift around February (FY boundary).
+  const d = new Date(`${asOfDate}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + 3);
+  const nextFq = fiscalQuarterFromDate(d.toISOString());
 
-  // Churn-notice events (this week)
-  const churnNoticeEvents = events.filter(
-    (e) => e.category === 'churn-notice',
+  const current: QuarterBucket = {
+    label: fiscalQuarterLabel(todayFq.key),
+    key: todayFq.key,
+    rows: [],
+  };
+  const next: QuarterBucket = {
+    label: nextFq ? fiscalQuarterLabel(nextFq.key) : 'Next Quarter',
+    key: nextFq?.key ?? '',
+    rows: [],
+  };
+
+  for (const v of views) {
+    for (const o of v.opportunities) {
+      const fq = fiscalQuarterFromDate(o.closeDate);
+      if (!fq) continue;
+      if (fq.key === current.key) current.rows.push({ view: v, opp: o });
+      else if (fq.key === next.key) next.rows.push({ view: v, opp: o });
+    }
+  }
+  return { current, next };
+}
+
+/**
+ * Net forecast value for an opportunity.
+ *  - Renewals / Churn: forecastMostLikely is what we EXPECT to keep,
+ *    so the loss = ATR - forecastMostLikely (or knownChurnUSD if set).
+ *  - For this churn-call view we surface the LOSS as a positive
+ *    dollar number ("$X churn risk").
+ */
+function churnAmount(opp: CanonicalOpportunity): number {
+  if (opp.knownChurnUSD && opp.knownChurnUSD > 0) return opp.knownChurnUSD;
+  const atr = opp.availableToRenewUSD ?? 0;
+  const ml = opp.forecastMostLikelyOverride ?? opp.forecastMostLikely ?? atr;
+  return Math.max(0, atr - ml);
+}
+
+/** "Flash" = most-likely churn for the quarter (sum of churnAmount). */
+function flashChurn(rows: QuarterBucket['rows']): number {
+  return rows.reduce((s, r) => s + churnAmount(r.opp), 0);
+}
+
+/**
+ * "Total Risk / Baseline" = full ATR exposed across confirmed + saveable
+ * accounts in the quarter (worst case, before saves).
+ */
+function totalRisk(rows: QuarterBucket['rows']): number {
+  return rows
+    .filter(
+      (r) =>
+        r.view.bucket === 'Confirmed Churn' ||
+        r.view.bucket === 'Saveable Risk',
+    )
+    .reduce((s, r) => s + (r.opp.availableToRenewUSD ?? 0), 0);
+}
+
+/** "Hedge" = sum of forecastHedgeUSD (upside / cushion). */
+function hedge(rows: QuarterBucket['rows']): number {
+  return rows.reduce((s, r) => s + (r.opp.forecastHedgeUSD ?? 0), 0);
+}
+
+/** Map account → CSE-set color band. Centralized so red/yellow/green
+ *  semantics stay identical across both quarter sections. */
+function colorBand(view: AccountView): 'red' | 'yellow' | 'green' {
+  // Confirmed Churn or Critical/High risk + Red sentiment → red.
+  // Sentiment Yellow or Medium risk → yellow.
+  // Otherwise (Green sentiment, Low risk, no signal) → green.
+  if (
+    view.bucket === 'Confirmed Churn' ||
+    view.risk.level === 'Critical' ||
+    view.risk.level === 'High' ||
+    view.account.cseSentiment === 'Red'
+  ) {
+    return 'red';
+  }
+  if (view.risk.level === 'Medium' || view.account.cseSentiment === 'Yellow') {
+    return 'yellow';
+  }
+  return 'green';
+}
+
+/**
+ * Pull a one-line "what's needed to secure" summary from the data the
+ * CSE already captured. Order of preference:
+ *   1. opp.scNextSteps (most actionable)
+ *   2. account.churnReasonSummary (for confirmed churn)
+ *   3. risk rationale
+ *   4. literal "[fill in next step]" placeholder so the manager edits
+ */
+function whatIsNeeded(view: AccountView, opp: CanonicalOpportunity): string {
+  const next = opp.scNextSteps?.split('\n')[0]?.trim();
+  if (next) return next.slice(0, 160);
+  const churn = view.account.churnReasonSummary?.trim();
+  if (view.bucket === 'Confirmed Churn' && churn) return churn.slice(0, 160);
+  const rationale = view.risk.rationale?.trim();
+  if (rationale) return rationale.slice(0, 160);
+  return '[fill in next step]';
+}
+
+/**
+ * Top N saveable / red accounts in the quarter ordered by dollar
+ * exposure. Returns one row per account (de-duplicated when an account
+ * has multiple opps in the same quarter, taking the largest).
+ */
+function topAccountsToCloseGap(
+  rows: QuarterBucket['rows'],
+  band: 'red' | 'yellow' | 'green',
+  limit = 5,
+): { view: AccountView; opp: CanonicalOpportunity; usd: number }[] {
+  const seen = new Map<
+    string,
+    { view: AccountView; opp: CanonicalOpportunity; usd: number }
+  >();
+  for (const r of rows) {
+    if (colorBand(r.view) !== band) continue;
+    const usd =
+      band === 'green'
+        ? r.opp.forecastHedgeUSD ?? 0
+        : churnAmount(r.opp) || (r.opp.availableToRenewUSD ?? 0);
+    if (usd <= 0) continue;
+    const prev = seen.get(r.view.account.accountId);
+    if (!prev || usd > prev.usd) {
+      seen.set(r.view.account.accountId, { view: r.view, opp: r.opp, usd });
+    }
+  }
+  return Array.from(seen.values())
+    .sort((a, b) => b.usd - a.usd)
+    .slice(0, limit);
+}
+
+/**
+ * Week-over-week changes scoped to the quarter's accounts. Risk and
+ * sentiment movements are translated into +/- per template:
+ *   '+' = improvement (risk down, sentiment up, churn rescinded)
+ *   '-' = regression (risk up, new churn notice, sentiment down)
+ */
+interface WowSummary {
+  accountName: string;
+  sign: '+' | '-';
+  detail: string;
+}
+
+const RISK_RANK: Record<string, number> = {
+  Low: 1,
+  Medium: 2,
+  High: 3,
+  Critical: 4,
+};
+const SENT_RANK: Record<string, number> = {
+  Green: 3,
+  Yellow: 2,
+  Red: 1,
+  'Confirmed Churn': 0,
+};
+
+function wowChanges(
+  rows: QuarterBucket['rows'],
+  events: ChangeEvent[],
+): WowSummary[] {
+  const accountIds = new Set(rows.map((r) => r.view.account.accountId));
+  const nameById = new Map(
+    rows.map((r) => [r.view.account.accountId, r.view.account.accountName]),
+  );
+  const out = new Map<string, WowSummary>(); // accountId → summary
+
+  for (const e of events) {
+    if (!accountIds.has(e.accountId)) continue;
+    const name = nameById.get(e.accountId) ?? e.accountId;
+
+    if (e.field === 'cerebroRiskCategory') {
+      const oldR = RISK_RANK[String(e.oldValue)] ?? 0;
+      const newR = RISK_RANK[String(e.newValue)] ?? 0;
+      if (newR === oldR) continue;
+      const sign: '+' | '-' = newR < oldR ? '+' : '-';
+      out.set(e.accountId, {
+        accountName: name,
+        sign,
+        detail: `Risk ${e.oldValue ?? '∅'} → ${e.newValue ?? '∅'}`,
+      });
+    } else if (e.field === 'cseSentiment') {
+      const oldS = SENT_RANK[String(e.oldValue)] ?? 0;
+      const newS = SENT_RANK[String(e.newValue)] ?? 0;
+      if (newS === oldS) continue;
+      const sign: '+' | '-' = newS > oldS ? '+' : '-';
+      out.set(e.accountId, {
+        accountName: name,
+        sign,
+        detail: `Sentiment ${e.oldValue ?? '∅'} → ${e.newValue ?? '∅'}`,
+      });
+    } else if (e.category === 'churn-notice') {
+      out.set(e.accountId, {
+        accountName: name,
+        sign: '-',
+        detail: 'Churn notice submitted',
+      });
+    }
+  }
+  // Stable order: regressions first (leadership wants the bad news),
+  // then improvements; alphabetical within each.
+  return Array.from(out.values()).sort((a, b) => {
+    if (a.sign !== b.sign) return a.sign === '-' ? -1 : 1;
+    return a.accountName.localeCompare(b.accountName);
+  });
+}
+
+/**
+ * Render one of the two quarter sections. Plain text — no markdown
+ * links, bold, or footnotes — because the artifact is pasted into
+ * Slack / email as the body of a churn forecast call.
+ */
+function renderQuarterSection(
+  bucket: QuarterBucket,
+  events: ChangeEvent[],
+  planUSD: number | undefined,
+  isCurrent: boolean,
+): string[] {
+  const lines: string[] = [];
+  const flash = flashChurn(bucket.rows);
+  const total = totalRisk(bucket.rows);
+  const hedgeUSD = hedge(bucket.rows);
+
+  lines.push(`${isCurrent ? 'Current Quarter' : 'Next Quarter'}: ${bucket.label}`);
+  lines.push(`Churn/Downsell Plan: ${planUSD != null ? fmtUSD(planUSD) : '[fill in]'}`);
+  lines.push(`Churn/Downsell Flash / Most Likely: ${fmtUSD(flash)}`);
+  lines.push(
+    `Gap to Plan: ${planUSD != null ? fmtSignedUSD(flash - planUSD) : '[fill in once Plan is set]'}`,
+  );
+  lines.push(`Total Churn/Downsell Risk / Baseline: ${fmtUSD(total)}`);
+  lines.push(`Hedge: ${fmtUSD(hedgeUSD)}`);
+
+  // "Accounts to Close Gap" — biggest red exposures (where saves move
+  // the needle most) followed by the largest hedge in green.
+  const gapAccounts = [
+    ...topAccountsToCloseGap(bucket.rows, 'red', 3),
+    ...topAccountsToCloseGap(bucket.rows, 'yellow', 2),
+  ].slice(0, 5);
+  lines.push(`Accounts to Close Gap:`);
+  if (gapAccounts.length === 0) {
+    lines.push(`  - None identified`);
+  } else {
+    for (const r of gapAccounts) {
+      lines.push(`  - ${r.view.account.accountName} (${fmtUSD(r.usd)})`);
+    }
+  }
+  lines.push('');
+
+  lines.push(
+    `Key Saves/Improvements to close the gap from Total Churn/Downsell risk to Flash:`,
   );
 
-  // Build per-account WoW summaries for saveable/upsell sections
+  // Red — risk trending; current quarter only per the template ("Accounts in red - risk trending" appears in current quarter section).
+  if (isCurrent) {
+    const reds = topAccountsToCloseGap(bucket.rows, 'red', 5);
+    lines.push(`Accounts in red - risk trending:`);
+    if (reds.length === 0) lines.push(`  - None`);
+    for (const r of reds) {
+      lines.push(
+        `  - ${r.view.account.accountName} (${fmtUSD(r.usd)}) - ${whatIsNeeded(r.view, r.opp)}`,
+      );
+    }
+  }
+
+  const yellows = topAccountsToCloseGap(bucket.rows, 'yellow', 5);
+  lines.push(`Accounts in yellow - path to add hedge to the line:`);
+  if (yellows.length === 0) lines.push(`  - None`);
+  for (const r of yellows) {
+    lines.push(
+      `  - ${r.view.account.accountName} (${fmtUSD(r.usd)}) - ${whatIsNeeded(r.view, r.opp)}`,
+    );
+  }
+
+  const greens = topAccountsToCloseGap(bucket.rows, 'green', 5);
+  lines.push(`Accounts in green - path to capture the existing hedge already in the line:`);
+  if (greens.length === 0) lines.push(`  - None`);
+  for (const r of greens) {
+    lines.push(
+      `  - ${r.view.account.accountName} (${fmtUSD(r.usd)}) - ${whatIsNeeded(r.view, r.opp)}`,
+    );
+  }
+  lines.push('');
+
+  // Week-over-week
+  const wow = wowChanges(bucket.rows, events);
+  lines.push(`Week-over-week Changes - Improvements and increased risk:`);
+  if (wow.length === 0) {
+    lines.push(`  - No movement this week`);
+  } else {
+    for (const w of wow) {
+      lines.push(`  ${w.sign} ${w.accountName} - ${w.detail}`);
+    }
+  }
+  lines.push('');
+
+  return lines;
+}
+
+/**
+ * Generate the churn-call forecast script.
+ *
+ * Audience: CSE manager → leadership (plaintext, paste-ready).
+ *
+ * Design constraints (per 2026-04-29 user feedback):
+ *   - Plaintext only. No markdown links, bold, or footnotes — the
+ *     downstream surface is a Slack/email plaintext field.
+ *   - Lens: CSE manager. Do not surface hygiene call-outs or coaching
+ *     prompts; leadership doesn't act on those. Focus exclusively on
+ *     revenue (churn risk, churn prevention, saves, hedges).
+ *   - Two quarters: the quarter containing asOfDate, then the next.
+ *   - Template structure follows the manager's existing script
+ *     verbatim: Plan / Flash / Gap / Total Risk / Hedge / Accounts to
+ *     Close Gap / Key Saves (red/yellow/green) / WoW changes.
+ */
+export function generateWeeklyForecast(input: ForecastInput): string {
+  const { current, next } = bucketByQuarter(input.views, input.asOfDate);
   const lines: string[] = [];
 
-  lines.push(`# Expand 3 Weekly Forecast Update — ${input.asOfDate}`);
-  lines.push('');
-  lines.push(`_Audience: ${audience}_`);
+  lines.push(`Expand 3 Quarterly Churn Forecast - ${input.asOfDate}`);
   lines.push('');
 
-  // PR-C3 / §4.7: surface dark-account count in the headline so the
-  // manager sees how much of the book has gone silent before reading
-  // anywhere else.
-  const darkAccounts = findDarkAccounts(views, { windowDays: 7 });
-  const darkARR = darkAccounts.reduce((s, d) => s + d.arr, 0);
-
-  // Headline
-  const wowMovement = events.length;
-  const accountsMoved = new Set(events.map((e) => e.accountId)).size;
-  lines.push(`## Headline`);
-  lines.push(`- Outlook: Confirmed ${fmtUSD(confirmedSum)} / Most Likely ${fmtUSD(mostLikelySum)} / Hedge ${fmtUSD(hedgeSum)}`);
-  lines.push(`- WoW movement: ${wowMovement} change events across ${accountsMoved} accounts`);
   lines.push(
-    darkAccounts.length === 0
-      ? `- Dark accounts (no activity in 7d): none`
-      : `- Dark accounts (no activity in 7d): ${darkAccounts.length} accounts, ${fmtUSD(darkARR)} ARR exposed`,
+    ...renderQuarterSection(
+      current,
+      input.changeEvents,
+      input.plan?.currentQuarterUSD,
+      true,
+    ),
   );
-  lines.push(`- Coverage to plan: _add manually if not in snapshot_`);
-  lines.push('');
+  lines.push(
+    ...renderQuarterSection(
+      next,
+      input.changeEvents,
+      input.plan?.nextQuarterUSD,
+      false,
+    ),
+  );
 
-  // Confirmed Churn
-  lines.push(`## Confirmed Churn — Movements This Week`);
-  if (confirmedChurn.length === 0) {
-    lines.push(`- None.`);
-  } else {
-    for (const v of confirmedChurn) {
-      const churnUSD = v.opportunities.reduce(
-        (s, o) => s + (o.knownChurnUSD ?? 0),
-        0,
-      );
-      const reason =
-        v.account.churnReasonSummary ??
-        v.account.churnReason ??
-        v.opportunities.find((o) => o.churnDownsellReason)?.churnDownsellReason ??
-        '_no reason captured_';
-      const links = v.account.sourceLinks
-        .slice(0, 2)
-        .map((l) => `[${l.label}](${l.url})`)
-        .join(' • ');
-      lines.push(`- **${v.account.accountName}** — ${fmtUSD(churnUSD)}, ${reason}${links ? ' (' + links + ')' : ''}`);
-    }
-  }
-  lines.push('');
-
-  // Saveable Risk
-  lines.push(`## Saveable Risk — Movements This Week`);
-  if (saveable.length === 0) {
-    lines.push(`- None.`);
-  } else {
-    for (const v of saveable) {
-      const riskChange = findChange(events, v.account.accountId, 'cerebroRiskCategory');
-      const sentChange = findChange(events, v.account.accountId, 'cseSentiment');
-      const riskStr = riskChange
-        ? `Risk ${riskChange.oldValue ?? '∅'} → ${riskChange.newValue ?? '∅'}`
-        : `Risk ${v.risk.level}`;
-      const sentStr = sentChange
-        ? `Sentiment ${sentChange.oldValue ?? '∅'} → ${sentChange.newValue ?? '∅'}`
-        : `Sentiment ${v.account.cseSentiment ?? '∅'}`;
-      const next =
-        v.opportunities.map((o) => o.scNextSteps).find((x) => !!x?.trim()) ??
-        '_no next step captured_';
-      const link = v.account.sourceLinks[0];
-      const linkStr = link ? ` ([${link.label}](${link.url}))` : '';
-      lines.push(
-        `- **${v.account.accountName}** — ${riskStr}, ${sentStr}, ATR ${fmtUSD(v.atrUSD)}, Next: ${String(next).split('\n')[0]?.slice(0, 140)}${linkStr}`,
-      );
-    }
-  }
-  lines.push('');
-
-  // Upsell
-  lines.push(`## Upsell — Movements This Week`);
-  if (upsellHotActive.length === 0) {
-    lines.push(`- None.`);
-  } else {
-    for (const v of upsellHotActive.slice(0, 8)) {
-      const opp =
-        v.opportunities.find((o) => ['Upsell', 'Cross-Sell'].includes(o.type)) ??
-        v.opportunities[0];
-      if (!opp) continue;
-      const stageEv = events.find(
-        (e) => e.opportunityId === opp.opportunityId && e.field === 'stageName',
-      );
-      const stageStr = stageEv
-        ? `stage ${stageEv.oldValue} → ${stageEv.newValue}`
-        : `stage ${opp.stageName}`;
-      const ws = v.account.workshops
-        .filter(
-          (w) =>
-            w.workshopDate &&
-            Date.now() - Date.parse(w.workshopDate) <= 7 * 86400 * 1000,
-        )
-        .map((w) => w.workshopDate!.slice(0, 10))[0];
-      lines.push(
-        `- **${v.account.accountName}** — ${opp.opportunityName} ${stageStr}, ACV Δ ${fmtUSD(opp.acvDelta ?? 0)}${ws ? `, workshop ${ws}` : ''} (upsell ${v.upsell.score})`,
-      );
-    }
-  }
-  lines.push('');
-
-  // CSE Hygiene Call-Outs
-  lines.push(`## CSE Hygiene Call-Outs`);
-  if (cseRollup.size === 0) {
-    lines.push(`- None.`);
-  } else {
-    for (const [cse, r] of cseRollup) {
-      if (r.stale + r.missingNext + r.noWorkshop === 0) continue;
-      lines.push(
-        `- @${cse}: ${r.stale} stale sentiment, ${r.missingNext} missing next action, ${r.noWorkshop} no workshop → top accounts: ${r.topAccounts.join(', ') || '_n/a_'}`,
-      );
-    }
-  }
-  lines.push('');
-
-  // Asks of Leadership
-  lines.push(`## Asks of Leadership`);
-  const asks = saveable
-    .filter((v) => v.risk.level === 'Critical' || v.risk.level === 'High')
-    .slice(0, 5);
-  if (asks.length === 0) {
-    lines.push(`- None this week.`);
-  } else {
-    for (const v of asks) {
-      const noExec =
-        v.account.cerebroSubMetrics?.['Executive Meeting Count (90d)'] === 0;
-      const ask = noExec
-        ? 'exec sponsor / leadership meeting'
-        : 'pricing or commercial review';
-      lines.push(
-        `- **${v.account.accountName}** — ${ask} (ATR ${fmtUSD(v.atrUSD)}, ${v.risk.level} risk).`,
-      );
-    }
-  }
-  lines.push('');
-
-  // PR-C3 / §4.7: explicit Dark Accounts section listing the top 10
-  // by ARR-exposed. Empty section omitted to keep the doc tight.
-  if (darkAccounts.length > 0) {
-    lines.push(`## Dark Accounts (no signal in 7d)`);
-    for (const d of darkAccounts.slice(0, 10)) {
-      lines.push(`- **${d.accountName}** — ${d.reason}, ARR ${fmtUSD(d.arr)}`);
-    }
-    lines.push('');
-  }
-
-  // Talk Track
-  lines.push(`## Talk Track (4–6 bullets for 1:1)`);
-  const talkBullets: string[] = [];
-  if (saveable.length)
-    talkBullets.push(`Top saveable: ${saveable.slice(0, 3).map((v) => v.account.accountName).join(', ')}.`);
-  if (confirmedChurn.length)
-    talkBullets.push(`Confirmed churn this period: ${confirmedChurn.map((v) => v.account.accountName).join(', ')}.`);
-  if (upsellHotActive.length)
-    talkBullets.push(`Upsell motion: ${upsellHotActive.slice(0, 3).map((v) => v.account.accountName).join(', ')}.`);
-  if (churnNoticeEvents.length)
-    talkBullets.push(`New churn notices submitted: ${churnNoticeEvents.length}.`);
-  const totalHygiene = views.reduce((s, v) => s + v.hygiene.score, 0);
-  talkBullets.push(`Hygiene: ${totalHygiene} rule violations across ${views.filter((v) => v.hygiene.score > 0).length} accounts.`);
-  talkBullets.push(`Outlook ${fmtUSD(mostLikelySum)} most likely; ${fmtUSD(hedgeSum)} hedge.`);
-  for (const b of talkBullets.slice(0, 6)) lines.push(`- ${b}`);
-  lines.push('');
-
-  // Source Evidence
-  lines.push(`## Source Evidence`);
-  const cited = new Set<string>();
-  for (const v of [...confirmedChurn, ...saveable, ...upsellHotActive.slice(0, 8)]) {
-    if (cited.has(v.account.accountId)) continue;
-    cited.add(v.account.accountId);
-    lines.push(`- ${sourceFootnote(v)}`);
-  }
-  lines.push('');
-
-  return lines.join('\n');
+  return lines.join('\n').trimEnd() + '\n';
 }
+
+/** New name; same function — for callers that want the explicit intent. */
+export const generateChurnCallScript = generateWeeklyForecast;
