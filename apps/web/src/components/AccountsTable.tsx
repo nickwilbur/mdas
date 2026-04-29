@@ -12,6 +12,7 @@ import {
   fmtUSD,
 } from '@/components/ui';
 import { TableHeader, type SortDirection } from '@/components/TableHeader';
+import { useGlobalHotkeys, HotkeysHelp } from '@/components/useGlobalHotkeys';
 import type { AccountView, AdapterSource } from '@mdas/canonical';
 
 // Order matters — this is the left-to-right dot order in every row,
@@ -50,6 +51,9 @@ export function AccountsTable({ views }: AccountsTableProps) {
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [cseFilter, setCseFilter] = useState<Set<string>>(new Set());
   const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(new Set());
+  // PR-A7: free-text search (account name) gated by `/` hotkey.
+  const [search, setSearch] = useState('');
+  const { helpOpen, closeHelp } = useGlobalHotkeys();
 
   // Distinct CSE names for filter
   const filterOptions = useMemo(() => {
@@ -64,12 +68,14 @@ export function AccountsTable({ views }: AccountsTableProps) {
 
   // Apply filters
   const filteredViews = useMemo(() => {
+    const q = search.trim().toLowerCase();
     return views.filter((v) => {
       const cseName = v.account.assignedCSE?.name ?? 'Unassigned';
       if (cseFilter.size > 0 && !cseFilter.has(cseName)) return false;
+      if (q && !v.account.accountName.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [views, cseFilter]);
+  }, [views, cseFilter, search]);
 
   // Group by bucket
   const groupedViews = useMemo(() => {
@@ -213,13 +219,24 @@ export function AccountsTable({ views }: AccountsTableProps) {
       : null;
 
     return (
-      <tr key={v.account.accountId} className="border-t border-gray-100 hover:bg-gray-50">
+      <tr
+        key={v.account.accountId}
+        // PR-A7: tabIndex + data-hotkey-row makes the row focusable for j/k
+        // navigation. Focus styling uses the standard browser outline so
+        // we don't depend on a custom focus ring.
+        tabIndex={-1}
+        data-hotkey-row
+        className="border-t border-gray-100 hover:bg-gray-50 focus:bg-blue-50 focus:outline-none"
+      >
         <td className="px-3 py-2">
           <input
             type="checkbox"
             checked={isSelected}
             onChange={() => handleSelectAccount(v.account.accountId)}
             className="rounded border-gray-300"
+            // F-10: per-row checkbox needs an accessible name so screen
+            // readers announce "Select Acme Corp" rather than just "checkbox".
+            aria-label={`Select ${v.account.accountName}`}
           />
         </td>
         <td className="px-3 py-2 font-medium text-gray-700">{v.account.assignedCSE?.name ?? '—'}</td>
@@ -311,6 +328,7 @@ export function AccountsTable({ views }: AccountsTableProps) {
                     checked={allSelected}
                     onChange={() => handleSelectSection(sectionViews)}
                     className="rounded border-gray-300"
+                    aria-label={`Select all in ${bucket}`}
                   />
                 </th>
                 <TableHeader<SortField> {...commonHeader} label="CSE" field="cse" />
@@ -348,6 +366,23 @@ export function AccountsTable({ views }: AccountsTableProps) {
 
   return (
     <>
+      <div className="flex items-center gap-3">
+        <label className="sr-only" htmlFor="accounts-search">
+          Search accounts
+        </label>
+        <input
+          id="accounts-search"
+          data-hotkey-search
+          type="search"
+          placeholder="Search accounts (press /)"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-64 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+        />
+        <span className="text-xs text-gray-500">
+          Press <kbd className="rounded border border-gray-300 bg-gray-50 px-1 py-0.5 text-[10px]">?</kbd> for shortcuts
+        </span>
+      </div>
       <div className="space-y-6">
         {groupedViews['Confirmed Churn'].length > 0 && (
           <SectionTable bucket="Confirmed Churn" views={groupedViews['Confirmed Churn']} />
@@ -362,6 +397,7 @@ export function AccountsTable({ views }: AccountsTableProps) {
       <p className="text-xs text-gray-500">
         Showing {filteredViews.length} of {views.length} accounts. Click headers to sort, use the funnel icon to filter by CSE, select quarters to filter by fiscal quarter.
       </p>
+      <HotkeysHelp open={helpOpen} onClose={closeHelp} />
     </>
   );
 }
