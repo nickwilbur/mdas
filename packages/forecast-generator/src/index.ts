@@ -173,10 +173,7 @@ function topAccountsToCloseGap(
   >();
   for (const r of rows) {
     if (colorBand(r.view) !== band) continue;
-    const usd =
-      band === 'green'
-        ? r.opp.forecastHedgeUSD ?? 0
-        : churnAmount(r.opp) || (r.opp.availableToRenewUSD ?? 0);
+    const usd = r.opp.acv ?? 0;
     if (usd <= 0) continue;
     const prev = seen.get(r.view.account.accountId);
     if (!prev || usd > prev.usd) {
@@ -288,18 +285,42 @@ function renderQuarterSection(
   lines.push(`Total Churn/Downsell Risk / Baseline: ${fmtUSD(total)}`);
   lines.push(`Hedge: ${fmtUSD(hedgeUSD)}`);
 
+  // "Accounts with Hedge" — accounts with forecastHedgeUSD > 0
+  const hedgeAccounts: { view: AccountView; opp: CanonicalOpportunity; usd: number }[] = [];
+  const hedgeSeen = new Map<string, { view: AccountView; opp: CanonicalOpportunity; usd: number }>();
+  for (const r of bucket.rows) {
+    const hedgeUSD = r.opp.forecastHedgeUSD ?? 0;
+    if (hedgeUSD <= 0) continue;
+    const prev = hedgeSeen.get(r.view.account.accountId);
+    if (!prev || hedgeUSD > prev.usd) {
+      hedgeSeen.set(r.view.account.accountId, { view: r.view, opp: r.opp, usd: hedgeUSD });
+    }
+  }
+  const sortedHedgeAccounts = Array.from(hedgeSeen.values())
+    .sort((a, b) => b.usd - a.usd)
+    .slice(0, 5);
+  lines.push(`Accounts with Hedge: ${fmtUSD(hedgeUSD)}`);
+  if (sortedHedgeAccounts.length === 0) {
+    lines.push(`  - None identified`);
+  } else {
+    for (const r of sortedHedgeAccounts) {
+      lines.push(`  - ${r.view.account.accountName} (${fmtUSD(r.usd)}) - ${r.opp.closeDate}`);
+    }
+  }
+
   // "Accounts to Close Gap" — biggest red exposures (where saves move
   // the needle most) followed by the largest hedge in green.
   const gapAccounts = [
     ...topAccountsToCloseGap(bucket.rows, 'red', 3),
     ...topAccountsToCloseGap(bucket.rows, 'yellow', 2),
   ].slice(0, 5);
-  lines.push(`Accounts to Close Gap:`);
+  const totalGapACV = gapAccounts.reduce((sum, r) => sum + r.usd, 0);
+  lines.push(`Accounts to Close Gap: ${fmtUSD(totalGapACV)}`);
   if (gapAccounts.length === 0) {
     lines.push(`  - None identified`);
   } else {
     for (const r of gapAccounts) {
-      lines.push(`  - ${r.view.account.accountName} (${fmtUSD(r.usd)})`);
+      lines.push(`  - ${r.view.account.accountName} (${fmtUSD(r.usd)}) - ${r.opp.closeDate}`);
     }
   }
   lines.push('');
