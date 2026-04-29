@@ -16,6 +16,7 @@ import {
   fmtUSD,
 } from '@/components/ui';
 import { RiskScoreExplainer } from '@/components/RiskScoreExplainer';
+import { AccountGleanButton } from '@/components/AccountGleanButton';
 import type { AdapterSource } from '@mdas/canonical';
 
 // Sources we expect to have run for an Expand 3 account when adapters
@@ -96,7 +97,12 @@ export default async function AccountPage({
       </div>
       <div className="flex items-end justify-between">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold">{a.accountName}</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-semibold">{a.accountName}</h1>
+            {!isExec && (
+              <AccountGleanButton accountName={a.accountName} />
+            )}
+          </div>
           <div className="flex items-center gap-2 text-sm">
             <BucketBadge bucket={v.bucket} />
             <RiskBadge level={v.risk.level} source={v.risk.source} />

@@ -1,6 +1,13 @@
 # Glean Integration
 
-Glean is the federation layer behind multiple MDAS adapters:
+Glean has two distinct roles in MDAS:
+
+1. **Worker-side enrichment** (offline): adapters that pull Glean data into the snapshot DB during a refresh. Documented in the Adapter table below.
+2. **In-app live access** (web app): the `/glean` page, the cmd-K command bar, and the per-account "Search Glean" button. Implemented in `apps/web/src/app/api/glean/*` + `apps/web/src/components/Glean*`.
+
+Both share the same `GleanClient` at `packages/adapters/read/_shared/src/glean.ts` and route every HTTP call through `readOnlyGuard`. Auth posture for the in-app side is controlled by `AUTH_MODE` — see "In-app usage" below.
+
+## Adapter map
 
 | Adapter | Datasources used | Populates |
 |---|---|---|
@@ -126,6 +133,66 @@ echo "GLEAN_MCP_TOKEN=..." >> .env
 echo "GLEAN_MCP_BASE_URL=https://api.glean.com" >> .env
 docker compose up -d --build worker
 ```
+
+## In-app usage (Next.js web app)
+
+The web app exposes Glean as a first-class navigation target. Three surfaces:
+
+| Surface | Path / trigger | What it does |
+|---|---|---|
+| Glean workspace | `/glean` (top nav) | Two tabs — **Search** (filtered by datasource preset) and **Ask Glean** (the assistant, with citations). |
+| Command bar | `⌘K` / `Ctrl+K` from anywhere | Compact search overlay. Auto-focuses, pickers close on result click. Only registered when the status badge says Glean is reachable. |
+| Account drill-in | "Search Glean" button next to the account name | Opens the command bar pre-filled with `accountName`. |
+
+All three call the same server-side proxy routes:
+
+| Route | Glean endpoint | Notes |
+|---|---|---|
+| `POST /api/glean/search` | `/rest/api/v1/search` | Datasource presets → `requestOptions.datasourcesFilter`. |
+| `POST /api/glean/chat` | `/rest/api/v1/chat` | Buffered (non-streaming). Returns `{reply, citations}`. |
+| `POST /api/glean/document` | `/rest/api/v1/getdocument` | Capped at 5 URLs/call. Used by the search panel's "Preview" button. |
+| `GET  /api/glean/health` | `/rest/api/v1/search` (1-doc probe) | Drives the "Glean connected" badge in the top nav. |
+
+### Why a server proxy and not a browser-direct fetch?
+
+1. The Glean bearer token has broad read access — keeping it server-side is non-negotiable.
+2. Glean's REST API does not advertise CORS for arbitrary origins; the browser fetch would be blocked.
+3. Centralizes `readOnlyGuard` + `intent` tagging in one place per Section 2.6 of the refactor prompt.
+
+### Auth posture (`AUTH_MODE` env var)
+
+#### Option A — `AUTH_MODE=none` (default, ships today)
+
+Reuses the same `GLEAN_MCP_TOKEN` the worker uses. Single-user / localhost. Token never leaves the Node process. Results respect *that token's* Glean permissions (i.e. yours, since you minted the token from your Okta-SSO'd Glean session). Anyone else running the app would see your Glean view — fine for local-first MDAS, never deploy multi-user this way.
+
+```bash
+echo "AUTH_MODE=none" >> .env             # explicit; or omit (default)
+echo "GLEAN_MCP_TOKEN=..." >> .env
+echo "GLEAN_MCP_BASE_URL=https://yourtenant-be.glean.com" >> .env
+npm --workspace apps/web run dev
+```
+
+Verify: top-right of the app should show `Glean connected ⌘K`.
+
+#### Option B — `AUTH_MODE=okta` (per-user OAuth, scaffold today)
+
+Each authenticated user signs into MDAS with their Okta identity, which is exchanged for a per-user Glean access token. Results respect *that user's* Glean permissions. Required for any multi-user deployment.
+
+**Status: SCAFFOLD ONLY.** With `AUTH_MODE=okta` set, `/api/glean/*` returns HTTP 501 with the admin checklist in the body, and `/api/auth/okta` returns the same checklist as JSON. This is intentional — a half-wired NextAuth flow silently produces 401s; an explicit 501 is loud and actionable.
+
+To finish wiring Option B:
+
+1. **Okta admin** — register MDAS as an OIDC Web app with PKCE.
+   - Sign-in redirect: `<APP_URL>/api/auth/callback/okta`
+   - Sign-out redirect: `<APP_URL>/`
+   - Grant types: Authorization Code + Refresh Token
+   - Provides: `OKTA_ISSUER`, `OKTA_CLIENT_ID`, `OKTA_CLIENT_SECRET`.
+2. **Glean admin** — enable OAuth-mediated user-scoped access tokens for the new Okta client (Glean → Admin → Authentication → OAuth → "Allow on-behalf-of token issuance"). Grant the read scopes the worker uses today.
+3. **MDAS engineer** — install `next-auth`, replace `apps/web/src/app/api/auth/okta/route.ts` with a NextAuth `[...nextauth]/route.ts` using the Okta provider (store `access_token` in JWT), and update `apps/web/src/lib/auth.ts::resolveGleanCredsForRequest` to pull the per-user token off the session instead of `GLEAN_MCP_TOKEN`.
+
+Until step 3 lands, leave `AUTH_MODE=none`. The non-admin user path: ask the Okta admin to file the registration ticket, ship Option A locally in the meantime.
+
+## Worker activation
 
 After a refresh, verify in Postgres:
 

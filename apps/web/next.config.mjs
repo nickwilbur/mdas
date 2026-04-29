@@ -16,6 +16,12 @@ const withBundleAnalyzer = bundleAnalyzer({
 const nextConfig = {
   output: 'standalone',
   experimental: { typedRoutes: false },
-  transpilePackages: ['@mdas/canonical', '@mdas/db', '@mdas/scoring', '@mdas/forecast-generator'],
+  transpilePackages: [
+    '@mdas/adapter-shared',
+    '@mdas/canonical',
+    '@mdas/db',
+    '@mdas/scoring',
+    '@mdas/forecast-generator',
+  ],
 };
 export default withBundleAnalyzer(nextConfig);

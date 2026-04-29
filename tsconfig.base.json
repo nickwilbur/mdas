@@ -20,6 +20,8 @@
       "@mdas/scoring": ["packages/scoring/src/index.ts"],
       "@mdas/forecast-generator": ["packages/forecast-generator/src/index.ts"],
       "@mdas/db": ["packages/db/src/index.ts"],
+      "@mdas/adapter-shared": ["packages/adapters/read/_shared/src/index.ts"],
+      "@mdas/adapter-shared/glean": ["packages/adapters/read/_shared/src/glean.ts"],
       "@mdas/adapters-mock": ["packages/adapters/mock/src/index.ts"],
       "@mdas/adapter-salesforce": ["packages/adapters/read/salesforce/src/index.ts"],
       "@mdas/adapter-cerebro-glean": ["packages/adapters/read/cerebro-glean/src/index.ts"],

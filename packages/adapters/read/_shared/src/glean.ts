@@ -75,6 +75,70 @@ export interface GleanReadDocumentResponse {
   documents?: GleanDocument[];
 }
 
+// ---------------------------------------------------------------------------
+// Chat (assistant) types — POST /rest/api/v1/chat
+//
+// Glean's assistant returns a `messages: ChatMessage[]` stream where each
+// message has a list of `fragments` (text or citation references).
+// We surface the minimum shape needed for in-app rendering: the assembled
+// assistant text plus parallel citation metadata.
+// ---------------------------------------------------------------------------
+export interface GleanChatCitation {
+  /** The cited document's title, when Glean attaches one. */
+  title?: string;
+  /** The cited document's URL — clickable in the UI. */
+  url?: string;
+  /** The cited document's datasource (e.g. 'gdrive'). */
+  datasource?: string;
+  /** Optional snippet that anchored the citation. */
+  snippet?: string;
+  /** Stable identifier Glean returns for trace/feedback. */
+  citationId?: string;
+}
+
+export interface GleanChatMessage {
+  /** 'USER' | 'GLEAN_AI' | 'SYSTEM' — Glean's role enum. */
+  author?: string;
+  /** Concatenation of all text fragments returned by Glean. */
+  text: string;
+  /** Citations extracted from `messageReferences` / fragment doc refs. */
+  citations: GleanChatCitation[];
+}
+
+export interface GleanChatRequestMessage {
+  author?: 'USER' | 'GLEAN_AI' | 'SYSTEM';
+  fragments: { text: string }[];
+}
+
+export interface GleanChatOptions {
+  /** Conversation so far, oldest first. The last message is typically USER. */
+  messages: GleanChatRequestMessage[];
+  /** When true, ask Glean for a stream — we currently buffer and return text. */
+  stream?: boolean;
+  /** Optional chat session id to thread follow-ups. */
+  chatId?: string;
+}
+
+export interface GleanChatResponse {
+  /** Full conversation echoed back including the new assistant reply. */
+  messages?: Array<{
+    author?: string;
+    fragments?: Array<{
+      text?: string;
+      citation?: {
+        sourceDocument?: GleanDocument;
+        sourceFile?: GleanDocument;
+      };
+    }>;
+    citations?: Array<{
+      sourceDocument?: GleanDocument;
+      sourceFile?: GleanDocument;
+      snippet?: { text?: string };
+    }>;
+  }>;
+  chatId?: string;
+}
+
 export class GleanClient {
   private readonly baseUrl: string;
   private readonly headers: Record<string, string>;
@@ -169,6 +233,75 @@ export class GleanClient {
     return urls
       .map((u) => this.docCache.get(u))
       .filter((d): d is GleanDocument => d !== undefined);
+  }
+
+  /**
+   * POST /rest/api/v1/chat — Glean Assistant. Returns an assembled
+   * assistant reply plus deduped citation metadata. We intentionally do
+   * not stream today: Next.js route handlers for in-app use buffer the
+   * full reply and return JSON (simpler client; assistant replies are
+   * small enough to not need SSE for the MVP).
+   */
+  async chat(opts: GleanChatOptions): Promise<GleanChatMessage> {
+    const body: Record<string, unknown> = {
+      messages: opts.messages,
+      stream: opts.stream ?? false,
+    };
+    if (opts.chatId) body.chatId = opts.chatId;
+
+    const r = await readOnlyGuard(`${this.baseUrl}/rest/api/v1/chat`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify(body),
+      intent: 'glean:chat',
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`Glean chat failed: ${r.status} ${text}`);
+    }
+    const parsed = (await r.json()) as GleanChatResponse;
+
+    // Find the last GLEAN_AI message (Glean echoes the full conversation).
+    const all = parsed.messages ?? [];
+    const reply = [...all].reverse().find((m) => m.author === 'GLEAN_AI') ?? all[all.length - 1];
+    if (!reply) return { author: 'GLEAN_AI', text: '', citations: [] };
+
+    const text = (reply.fragments ?? [])
+      .map((f) => f.text ?? '')
+      .join('')
+      .trim();
+
+    // Citations can show up either inline on fragments or aggregated on
+    // the message. Collect both, then dedupe by URL.
+    const seen = new Map<string, GleanChatCitation>();
+    const pushDoc = (
+      doc: GleanDocument | undefined,
+      snippet: string | undefined,
+    ): void => {
+      if (!doc?.url) return;
+      if (seen.has(doc.url)) return;
+      seen.set(doc.url, {
+        url: doc.url,
+        title: doc.title,
+        datasource: doc.datasource,
+        citationId: doc.citationId,
+        snippet,
+      });
+    };
+    for (const frag of reply.fragments ?? []) {
+      pushDoc(frag.citation?.sourceDocument, undefined);
+      pushDoc(frag.citation?.sourceFile, undefined);
+    }
+    for (const cite of reply.citations ?? []) {
+      pushDoc(cite.sourceDocument, cite.snippet?.text);
+      pushDoc(cite.sourceFile, cite.snippet?.text);
+    }
+
+    return {
+      author: reply.author ?? 'GLEAN_AI',
+      text,
+      citations: Array.from(seen.values()),
+    };
   }
 
   async healthCheck(): Promise<{ ok: boolean; details: string }> {

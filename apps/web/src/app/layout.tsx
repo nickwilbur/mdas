@@ -1,6 +1,7 @@
 import './globals.css';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
+import { GleanStatusBadge } from '@/components/GleanStatusBadge';
 
 export const metadata = {
   title: 'MDAS — Expand 3',
@@ -14,6 +15,7 @@ const NAV = [
   { href: '/wow', label: 'WoW' },
   { href: '/hygiene', label: 'Hygiene' },
   { href: '/forecast', label: 'Forecast' },
+  { href: '/glean', label: 'Glean' },
   { href: '/admin/data-quality', label: 'Data Quality' },
   { href: '/admin/refresh', label: 'Refresh' },
 ];
@@ -34,6 +36,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                 </Link>
               ))}
             </nav>
+            <div className="ml-auto">
+              <GleanStatusBadge />
+            </div>
           </div>
         </header>
         <main className="mx-auto w-full px-6 py-6">{children}</main>
