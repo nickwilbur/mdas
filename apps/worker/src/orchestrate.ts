@@ -76,6 +76,40 @@ export function selectActiveAdapters(): ReadAdapter[] {
 
 const FRANCHISE = 'Expand 3';
 
+// PR-B3 — F-17: per-adapter timeout, configurable via env.
+//
+// Today's adapters fetch in batch (one SOQL/MCP query per franchise),
+// not per-account, so the meaningful unit of soft-cap is the adapter
+// invocation. The existing hardcoded 25_000ms cap was per-deploy with
+// no override; in production we've seen the Glean MCP adapter exceed
+// 25s on cold-start days, which silently caused the whole pipeline to
+// fall back to localSnapshots for that source.
+//
+// Now:
+//   - `ADAPTER_TIMEOUT_MS` (default 25000) sets the global cap.
+//   - `ADAPTER_TIMEOUT_MS_<UPPERCASE_SOURCE>` overrides per source
+//     (e.g. `ADAPTER_TIMEOUT_MS_GLEAN_MCP=60000`).
+//   - On timeout we emit a distinct "timed out after Nms" error string
+//     (instead of generic "adapter timeout") so the partial-success
+//     surface introduced in PR-A4 can render "salesforce timed out
+//     after 25000ms" rather than a vague "failed".
+const DEFAULT_ADAPTER_TIMEOUT_MS = 25_000;
+
+function adapterTimeoutMs(source: string): number {
+  const envKey = `ADAPTER_TIMEOUT_MS_${source.toUpperCase().replace(/-/g, '_')}`;
+  const override = process.env[envKey];
+  if (override) {
+    const n = Number(override);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  const global = process.env.ADAPTER_TIMEOUT_MS;
+  if (global) {
+    const n = Number(global);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_ADAPTER_TIMEOUT_MS;
+}
+
 interface MergedData {
   accounts: CanonicalAccount[];
   opportunities: CanonicalOpportunity[];
@@ -198,11 +232,19 @@ export async function runRefresh(
   const fetched = await Promise.all(
     adapters.map(async (a) => {
       const adapterStart = Date.now();
+      // PR-B3: per-adapter timeout, env-configurable. See adapterTimeoutMs.
+      const timeoutMs = adapterTimeoutMs(a.source ?? a.name);
       try {
         const r = await Promise.race([
           a.fetch({ franchise: FRANCHISE }, ctx),
           new Promise<Partial<MergedData>>((_, rej) =>
-            setTimeout(() => rej(new Error('adapter timeout')), 25_000),
+            // Descriptive error message so PR-A4's partial-success surface
+            // can show "salesforce timed out after 25000ms" instead of
+            // a generic "failed".
+            setTimeout(
+              () => rej(new Error(`timed out after ${timeoutMs}ms`)),
+              timeoutMs,
+            ),
           ),
         ]);
         succeeded.push(a.name);
