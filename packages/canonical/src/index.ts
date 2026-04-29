@@ -205,7 +205,10 @@ export const isConfirmedChurn = (
 ): boolean =>
   a.cseSentiment === 'Confirmed Churn' ||
   opps.some(
-    (o) => !!o.fullChurnNotificationToOwnerDate || !!o.fullChurnFinalEmailSentDate,
+    (o) =>
+      !!o.fullChurnNotificationToOwnerDate ||
+      !!o.fullChurnFinalEmailSentDate ||
+      (o.knownChurnUSD !== null && o.knownChurnUSD > 0),
   );
 
 // ---------- Adapter contract ----------
