@@ -82,19 +82,6 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      {/* PR-A9: Action queue is the new "first 10 seconds" answer. */}
-      <section aria-labelledby="action-queue-heading" className="space-y-2">
-        <div className="flex items-end justify-between">
-          <h2 id="action-queue-heading" className="text-lg font-semibold">
-            Your next 5 actions
-          </h2>
-          <Link href="/accounts" className="text-xs text-blue-700 hover:underline">
-            All accounts →
-          </Link>
-        </div>
-        <ActionQueue views={views} events={wow.events} limit={5} />
-      </section>
-
       {/* PR-A9: Movements strip — compressed WoW so the manager sees the
           "what changed" answer without leaving the page. */}
       <MovementsStrip events={wow.events} prevId={wow.prevId} currId={wow.currId} />
@@ -172,6 +159,19 @@ export default async function DashboardPage() {
           </ul>
         </Card>
       </div>
+
+      {/* PR-A9: Action queue moved to bottom per user feedback */}
+      <section aria-labelledby="action-queue-heading" className="space-y-2">
+        <div className="flex items-end justify-between">
+          <h2 id="action-queue-heading" className="text-lg font-semibold">
+            Your next 5 actions
+          </h2>
+          <Link href="/accounts" className="text-xs text-blue-700 hover:underline">
+            All accounts →
+          </Link>
+        </div>
+        <ActionQueue views={views} events={wow.events} limit={5} />
+      </section>
     </div>
   );
 }

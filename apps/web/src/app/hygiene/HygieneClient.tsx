@@ -2,39 +2,33 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { fiscalQuarterLabel, fiscalQuarterFromDate } from '@/lib/fiscal';
 
-interface QuarterOption {
-  key: string;
-  label: string;
+interface ViolationTypeOption {
+  rule: string;
+  count: number;
 }
 
-export function AccountFilters({ quarterOptions }: { quarterOptions: QuarterOption[] }) {
+export function HygieneFilters({ violationOptions }: { violationOptions: ViolationTypeOption[] }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const param = searchParams.get('quarters') ?? '';
+  const param = searchParams.get('violationTypes') ?? '';
   const selected = useMemo(
     () => new Set(param ? param.split(',').filter(Boolean) : []),
     [param]
   );
-  const allKeys = useMemo(() => quarterOptions.map((o) => o.key), [quarterOptions]);
-  const isAll = selected.size === 0 || selected.size === allKeys.length;
+  const allRules = useMemo(() => violationOptions.map((o) => o.rule), [violationOptions]);
+  
+  // Default to top 3 violation types if nothing selected
+  const defaultRules = useMemo(() => {
+    if (selected.size > 0) return selected;
+    return new Set(violationOptions.slice(0, 3).map((o) => o.rule));
+  }, [selected, violationOptions]);
+  
+  const isAll = selected.size === 0 || selected.size === allRules.length;
   const allActive = selected.size === 0; // empty == all (default)
-
-  // Auto-default to today's quarter on first visit if no selection
-  useEffect(() => {
-    if (param === '' && allKeys.length > 0) {
-      const todayQuarter = fiscalQuarterFromDate(new Date().toISOString());
-      if (todayQuarter && allKeys.includes(todayQuarter.key)) {
-        const params = new URLSearchParams(searchParams.toString());
-        params.set('quarters', todayQuarter.key);
-        router.replace(`/accounts?${params.toString()}`, { scroll: false });
-      }
-    }
-  }, [param, allKeys, searchParams, router]);
 
   // close on outside click
   useEffect(() => {
@@ -50,19 +44,18 @@ export function AccountFilters({ quarterOptions }: { quarterOptions: QuarterOpti
 
   const updateSelection = (next: Set<string>) => {
     const params = new URLSearchParams(searchParams.toString());
-    if (next.size === 0 || next.size === allKeys.length) {
-      params.delete('quarters');
+    if (next.size === 0 || next.size === allRules.length) {
+      params.delete('violationTypes');
     } else {
-      params.set('quarters', Array.from(next).sort().join(','));
+      params.set('violationTypes', Array.from(next).sort().join(','));
     }
-    router.push(`/accounts?${params.toString()}`, { scroll: false });
+    router.push(`/hygiene?${params.toString()}`, { scroll: false });
   };
 
-  const toggle = (key: string) => {
-    // expand "all" (empty) into explicit set when user starts narrowing
-    const base = allActive ? new Set(allKeys) : new Set(selected);
-    if (base.has(key)) base.delete(key);
-    else base.add(key);
+  const toggle = (rule: string) => {
+    const base = allActive ? new Set(allRules) : new Set(selected);
+    if (base.has(rule)) base.delete(rule);
+    else base.add(rule);
     updateSelection(base);
   };
 
@@ -70,25 +63,21 @@ export function AccountFilters({ quarterOptions }: { quarterOptions: QuarterOpti
   const clearAll = () => updateSelection(new Set(['__none__'])); // sentinel: nothing matches
 
   const triggerLabel = (() => {
-    if (allActive) return 'All Quarters';
+    if (allActive) return 'All Violation Types';
     if (selected.size === 0) return 'None';
     if (selected.size === 1) {
-      // selected.size === 1 guarantees at least one element; the type
-      // narrows under noUncheckedIndexedAccess only with an explicit
-      // fallback. Empty string would render as "FY ", which is visibly
-      // wrong and surfaces a mis-keyed selection rather than swallowing it.
       const only = [...selected][0] ?? '';
-      return fiscalQuarterLabel(only);
+      return only;
     }
-    if (selected.size === allKeys.length) return 'All Quarters';
-    const sortedSel = allKeys.filter((k) => selected.has(k));
-    if (sortedSel.length <= 2) return sortedSel.map(fiscalQuarterLabel).join(', ');
-    return `${sortedSel.slice(0, 2).map(fiscalQuarterLabel).join(', ')} +${sortedSel.length - 2}`;
+    if (selected.size === allRules.length) return 'All Violation Types';
+    const sortedSel = allRules.filter((r) => selected.has(r));
+    if (sortedSel.length <= 2) return sortedSel.join(', ');
+    return `${sortedSel.slice(0, 2).join(', ')} +${sortedSel.length - 2}`;
   })();
 
   return (
     <div className="flex items-center gap-2" ref={containerRef}>
-      <label className="text-sm font-medium text-gray-700">Fiscal Quarter:</label>
+      <label className="text-sm font-medium text-gray-700">Violation Type:</label>
       <div className="relative">
         <button
           type="button"
@@ -98,7 +87,7 @@ export function AccountFilters({ quarterOptions }: { quarterOptions: QuarterOpti
           aria-expanded={open}
         >
           <span className="text-gray-900">{triggerLabel}</span>
-          {!allActive && selected.size > 0 && selected.size < allKeys.length && (
+          {!allActive && selected.size > 0 && selected.size < allRules.length && (
             <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs font-medium text-blue-700">
               {selected.size}
             </span>
@@ -114,7 +103,7 @@ export function AccountFilters({ quarterOptions }: { quarterOptions: QuarterOpti
         </button>
 
         {open && (
-          <div className="absolute left-0 z-20 mt-1 w-64 rounded-md border border-gray-200 bg-white shadow-lg">
+          <div className="absolute left-0 z-20 mt-1 w-80 rounded-md border border-gray-200 bg-white shadow-lg">
             <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2">
               <button
                 type="button"
@@ -132,24 +121,25 @@ export function AccountFilters({ quarterOptions }: { quarterOptions: QuarterOpti
               </button>
             </div>
             <ul className="max-h-72 overflow-y-auto py-1" role="listbox">
-              {quarterOptions.map((opt) => {
-                const checked = allActive || selected.has(opt.key);
+              {violationOptions.map((opt) => {
+                const checked = allActive || selected.has(opt.rule);
                 return (
-                  <li key={opt.key}>
+                  <li key={opt.rule}>
                     <label className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-gray-50">
                       <input
                         type="checkbox"
                         checked={checked}
-                        onChange={() => toggle(opt.key)}
+                        onChange={() => toggle(opt.rule)}
                         className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
-                      <span className="text-gray-900">{opt.label}</span>
+                      <span className="flex-1 text-gray-900">{opt.rule}</span>
+                      <span className="text-xs text-gray-500">({opt.count})</span>
                     </label>
                   </li>
                 );
               })}
-              {quarterOptions.length === 0 && (
-                <li className="px-3 py-2 text-sm text-gray-500">No quarters available</li>
+              {violationOptions.length === 0 && (
+                <li className="px-3 py-2 text-sm text-gray-500">No violation types available</li>
               )}
             </ul>
           </div>

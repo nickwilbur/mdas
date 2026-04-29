@@ -1,5 +1,6 @@
 'use client';
 import { useState } from 'react';
+import { fiscalQuarterFromDate, type FiscalQuarter } from '@/lib/fiscal';
 
 interface DarkAccount {
   accountId: string;
@@ -16,16 +17,42 @@ interface ForecastResponse {
   asOfDate: string;
 }
 
+// Generate available quarters (current quarter + next 3 quarters)
+function generateAvailableQuarters(): FiscalQuarter[] {
+  const quarters: FiscalQuarter[] = [];
+  const today = new Date();
+  
+  // Start from current quarter and go forward 3 quarters
+  for (let i = 0; i < 4; i++) {
+    const date = new Date(today);
+    date.setMonth(date.getMonth() + (i * 3));
+    const fq = fiscalQuarterFromDate(date.toISOString());
+    if (fq) quarters.push(fq);
+  }
+  
+  return quarters;
+}
+
 export function ForecastClient() {
-  const today = new Date().toISOString().slice(0, 10);
-  const [asOfDate, setAsOfDate] = useState(today);
+  const availableQuarters = generateAvailableQuarters();
+  const currentQuarter = fiscalQuarterFromDate(new Date().toISOString());
+  const [selectedQuarter, setSelectedQuarter] = useState<FiscalQuarter | null>(currentQuarter);
   const [audience, setAudience] = useState('My Leader + Sales Leadership + CS Leadership');
   const [response, setResponse] = useState<ForecastResponse | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function generate() {
+    if (!selectedQuarter) return;
     setBusy(true);
     try {
+      // Convert fiscal quarter to as-of date (start of quarter)
+      // Q1: Feb 1, Q2: May 1, Q3: Aug 1, Q4: Nov 1
+      const monthMap: Record<number, number> = { 1: 1, 2: 4, 3: 7, 4: 10 }; // 0-indexed months
+      const month = monthMap[selectedQuarter.q];
+      if (month === undefined) return;
+      const year = selectedQuarter.fy - 1; // FY starts in Feb of previous calendar year
+      const asOfDate = new Date(year, month, 1).toISOString().slice(0, 10);
+
       const r = await fetch('/api/forecast', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -47,7 +74,7 @@ export function ForecastClient() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `expand-3-forecast-${asOfDate}.${ext}`;
+    a.download = `expand-3-forecast-${selectedQuarter?.label ?? 'quarter'}.${ext}`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -62,8 +89,21 @@ export function ForecastClient() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-white p-4">
         <label className="text-sm">
-          <div className="text-xs text-gray-500">As-of date</div>
-          <input type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} className="rounded border border-gray-300 px-2 py-1" />
+          <div className="text-xs text-gray-500">Fiscal Quarter</div>
+          <select
+            value={selectedQuarter?.key ?? ''}
+            onChange={(e) => {
+              const fq = availableQuarters.find((q) => q.key === e.target.value);
+              setSelectedQuarter(fq ?? null);
+            }}
+            className="rounded border border-gray-300 px-2 py-1"
+          >
+            {availableQuarters.map((fq) => (
+              <option key={fq.key} value={fq.key}>
+                {fq.label}
+              </option>
+            ))}
+          </select>
         </label>
         <label className="flex-1 text-sm">
           <div className="text-xs text-gray-500">Audience</div>
