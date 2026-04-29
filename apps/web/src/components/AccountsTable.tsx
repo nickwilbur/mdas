@@ -14,7 +14,13 @@ import {
 } from '@/components/ui';
 import { TableHeader, type SortDirection } from '@/components/TableHeader';
 import { useGlobalHotkeys, HotkeysHelp } from '@/components/useGlobalHotkeys';
+import { useLocalStorage, setSerializer } from '@/components/useLocalStorage';
 import type { AccountView, AdapterSource } from '@mdas/canonical';
+
+// PR-C5: per-user persistence keys. Versioned so a future shape change
+// (e.g. SortField gains a value) can bump the version and discard old
+// stored state cleanly.
+const LS_PREFIX = 'mdas.accounts.v1.';
 
 // Order matters — this is the left-to-right dot order in every row,
 // matching the four real adapters wired in PR-3..PR-7. Keep in sync
@@ -48,12 +54,27 @@ interface AccountsTableProps {
 }
 
 export function AccountsTable({ views }: AccountsTableProps) {
-  const [sortField, setSortField] = useState<SortField>('account');
-  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
-  const [cseFilter, setCseFilter] = useState<Set<string>>(new Set());
+  // PR-C5: persist filter + sort + search per browser. selectedAccounts
+  // is intentionally NOT persisted — selections are ephemeral and
+  // restoring them across sessions would surprise the user.
+  const [sortField, setSortField] = useLocalStorage<SortField>(
+    `${LS_PREFIX}sortField`,
+    'account',
+  );
+  const [sortDirection, setSortDirection] = useLocalStorage<SortDirection>(
+    `${LS_PREFIX}sortDirection`,
+    'asc',
+  );
+  const [cseFilter, setCseFilter] = useLocalStorage<Set<string>>(
+    `${LS_PREFIX}cseFilter`,
+    new Set<string>(),
+    setSerializer as never,
+  );
   const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(new Set());
-  // PR-A7: free-text search (account name) gated by `/` hotkey.
-  const [search, setSearch] = useState('');
+  // PR-A7: free-text search (account name) gated by `/` hotkey. PR-C5
+  // persists it so a manager who comes back to /accounts mid-search
+  // doesn't have to retype.
+  const [search, setSearch] = useLocalStorage<string>(`${LS_PREFIX}search`, '');
   const { helpOpen, closeHelp } = useGlobalHotkeys();
 
   // Distinct CSE names for filter
