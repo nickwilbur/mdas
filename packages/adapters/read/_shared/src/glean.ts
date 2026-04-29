@@ -147,7 +147,18 @@ export class GleanClient {
   private readonly docCache = new Map<string, GleanDocument>();
 
   constructor(creds: GleanCredentials) {
-    this.baseUrl = creds.baseUrl.replace(/\/$/, '');
+    // Normalize the base URL to the REST API root.
+    //
+    // Operators often set GLEAN_MCP_BASE_URL to the MCP transport
+    // endpoint (e.g. `https://zuora-be.glean.com/mcp/default`) because
+    // that's what the Glean MCP server documentation hands out. The
+    // REST client we use here appends `/rest/api/v1/...` and would
+    // 404/401 against an MCP path. Strip any trailing `/mcp/<name>`
+    // (or bare `/mcp`) plus any trailing slash so the same env var
+    // works for both transports without forcing a rename.
+    this.baseUrl = creds.baseUrl
+      .replace(/\/mcp(\/[^/]*)?\/?$/, '')
+      .replace(/\/$/, '');
     this.headers = {
       'content-type': 'application/json',
       authorization: `Bearer ${creds.token}`,
