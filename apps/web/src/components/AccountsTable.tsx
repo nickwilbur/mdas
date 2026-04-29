@@ -11,6 +11,7 @@ import {
   SourceDots,
   fmtUSD,
 } from '@/components/ui';
+import { TableHeader, type SortDirection } from '@/components/TableHeader';
 import type { AccountView, AdapterSource } from '@mdas/canonical';
 
 // Order matters — this is the left-to-right dot order in every row,
@@ -24,59 +25,130 @@ const EXPECTED_SOURCES: AdapterSource[] = [
   'glean-mcp',
 ];
 
+type SortField =
+  | 'cse'
+  | 'account'
+  | 'bucket'
+  | 'risk'
+  | 'sentiment'
+  | 'atr'
+  | 'acvDelta'
+  | 'renewal'
+  | 'hygiene'
+  | 'lastSentimentUpdate'
+  | 'data'
+  | 'salesforce';
+
 interface AccountsTableProps {
   views: AccountView[];
 }
 
 export function AccountsTable({ views }: AccountsTableProps) {
-  const [groupBy, setGroupBy] = useState<'none' | 'cse'>('cse');
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [sortField, setSortField] = useState<SortField>('account');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [cseFilter, setCseFilter] = useState<Set<string>>(new Set());
 
-  const toggleGroup = (cseName: string) => {
-    setExpandedGroups(prev => {
-      const next = new Set(prev);
-      if (next.has(cseName)) {
-        next.delete(cseName);
-      } else {
-        next.add(cseName);
-      }
-      return next;
+  // Distinct CSE names for filter
+  const filterOptions = useMemo(() => {
+    const cses = new Set<string>();
+    views.forEach((v) => {
+      cses.add(v.account.assignedCSE?.name ?? 'Unassigned');
     });
+    return {
+      cses: Array.from(cses).sort().map((v) => ({ value: v, label: v })),
+    };
+  }, [views]);
+
+  // Apply filters
+  const filteredViews = useMemo(() => {
+    return views.filter((v) => {
+      const cseName = v.account.assignedCSE?.name ?? 'Unassigned';
+      if (cseFilter.size > 0 && !cseFilter.has(cseName)) return false;
+      return true;
+    });
+  }, [views, cseFilter]);
+
+  // Sort
+  const sortedViews = useMemo(() => {
+    const result = [...filteredViews];
+    result.sort((a, b) => {
+      let aVal: string | number = 0;
+      let bVal: string | number = 0;
+      switch (sortField) {
+        case 'cse':
+          aVal = a.account.assignedCSE?.name ?? 'Unassigned';
+          bVal = b.account.assignedCSE?.name ?? 'Unassigned';
+          break;
+        case 'account':
+          aVal = a.account.accountName;
+          bVal = b.account.accountName;
+          break;
+        case 'bucket':
+          aVal = a.bucket;
+          bVal = b.bucket;
+          break;
+        case 'risk':
+          aVal = a.risk.level ?? '';
+          bVal = b.risk.level ?? '';
+          break;
+        case 'sentiment':
+          aVal = a.account.cseSentiment ?? '';
+          bVal = b.account.cseSentiment ?? '';
+          break;
+        case 'atr':
+          aVal = a.atrUSD;
+          bVal = b.atrUSD;
+          break;
+        case 'acvDelta':
+          aVal = a.opportunities.reduce((s, o) => s + (o.acvDelta ?? 0), 0);
+          bVal = b.opportunities.reduce((s, o) => s + (o.acvDelta ?? 0), 0);
+          break;
+        case 'renewal':
+          aVal = a.daysToRenewal ?? 99999;
+          bVal = b.daysToRenewal ?? 99999;
+          break;
+        case 'hygiene':
+          aVal = a.hygiene.score;
+          bVal = b.hygiene.score;
+          break;
+        case 'lastSentimentUpdate':
+          aVal = a.account.cseSentimentCommentaryLastUpdated ?? '';
+          bVal = b.account.cseSentimentCommentaryLastUpdated ?? '';
+          break;
+        case 'data':
+          aVal = '';
+          bVal = '';
+          break;
+        case 'salesforce':
+          aVal = '';
+          bVal = '';
+          break;
+      }
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return result;
+  }, [filteredViews, sortField, sortDirection]);
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
   };
 
-  const { groupedData, cseNames } = useMemo(() => {
-    if (groupBy === 'none') {
-      return { groupedData: null, cseNames: [] };
-    }
-
-    // Group by CSE
-    const groups = new Map<string, AccountView[]>();
-    const names = new Set<string>();
-
-    views.forEach(v => {
-      const cseName = v.account.assignedCSE?.name ?? 'Unassigned';
-      names.add(cseName);
-      if (!groups.has(cseName)) {
-        groups.set(cseName, []);
-      }
-      groups.get(cseName)!.push(v);
-    });
-
-    return {
-      groupedData: groups,
-      cseNames: Array.from(names).sort()
-    };
-  }, [views, groupBy]);
-
-  const AccountRow = ({ v, showCSE }: { v: AccountView; showCSE: boolean }) => {
+  const AccountRow = ({ v }: { v: AccountView }) => {
     const acvDelta = v.opportunities.reduce((s, o) => s + (o.acvDelta ?? 0), 0);
+    const sfLink = v.account.sourceLinks?.find((l) => l.source === 'salesforce');
+    const url =
+      sfLink?.url ?? `https://zuora.lightning.force.com/lightning/r/Account/${v.account.salesforceAccountId}/view`;
 
     return (
       <tr key={v.account.accountId} className="border-t border-gray-100 hover:bg-gray-50">
-        {showCSE && (
-          <td className="px-3 py-2 text-gray-700 font-medium">{v.account.assignedCSE?.name ?? '—'}</td>
-        )}
-        <td className="px-3 py-2 text-gray-500">{v.priorityRank}</td>
+        <td className="px-3 py-2 font-medium text-gray-700">{v.account.assignedCSE?.name ?? '—'}</td>
         <td className="px-3 py-2 font-medium">
           <Link href={`/accounts/${v.account.accountId}`} className="hover:underline">
             {v.account.accountName}
@@ -111,79 +183,60 @@ export function AccountsTable({ views }: AccountsTableProps) {
             expectedSources={EXPECTED_SOURCES}
           />
         </td>
+        <td className="px-3 py-2">
+          <a href={url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+            View
+          </a>
+        </td>
       </tr>
     );
   };
 
-  const CSEColumn = () => <th className="px-3 py-2">CSE</th>;
+  const commonHeader = {
+    sortField,
+    sortDirection,
+    onSort: handleSort,
+  };
 
   return (
     <>
-      {/* Group by selector */}
-      <div className="flex items-center gap-2">
-        <label className="text-sm font-medium">Group by:</label>
-        <select
-          value={groupBy}
-          onChange={(e) => setGroupBy(e.target.value as 'none' | 'cse')}
-          className="rounded border border-gray-300 px-2 py-1 text-sm"
-        >
-          <option value="none">None</option>
-          <option value="cse">CSE</option>
-        </select>
-      </div>
-
       <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase text-gray-600">
             <tr>
-              <CSEColumn />
-              <th className="px-3 py-2">#</th>
-              <th className="px-3 py-2">Account</th>
-              <th className="px-3 py-2">Bucket</th>
-              <th className="px-3 py-2">Risk</th>
-              <th className="px-3 py-2">Sentiment</th>
-              <th className="px-3 py-2 text-right">ATR</th>
-              <th className="px-3 py-2 text-right">ACV Δ</th>
-              <th className="px-3 py-2">Renewal</th>
-              <th className="px-3 py-2 text-center">Hygiene</th>
-              <th className="px-3 py-2">Last Sentiment Update</th>
-              <th className="px-3 py-2" title="Per-source data freshness: SF / Cerebro / Gainsight / Glean">
-                Data
-              </th>
+              <TableHeader<SortField>
+                {...commonHeader}
+                label="CSE"
+                field="cse"
+                filterOptions={filterOptions.cses}
+                selectedFilters={cseFilter}
+                onFilterChange={setCseFilter}
+              />
+              <TableHeader<SortField> {...commonHeader} label="Account" field="account" />
+              <TableHeader<SortField> {...commonHeader} label="Bucket" field="bucket" />
+              <TableHeader<SortField> {...commonHeader} label="Risk" field="risk" />
+              <TableHeader<SortField> {...commonHeader} label="Sentiment" field="sentiment" />
+              <TableHeader<SortField> {...commonHeader} label="ATR" field="atr" align="right" />
+              <TableHeader<SortField> {...commonHeader} label="ACV Δ" field="acvDelta" align="right" />
+              <TableHeader<SortField> {...commonHeader} label="Renewal" field="renewal" />
+              <TableHeader<SortField> {...commonHeader} label="Hygiene" field="hygiene" align="center" />
+              <TableHeader<SortField> {...commonHeader} label="Last Sentiment Update" field="lastSentimentUpdate" />
+              <TableHeader<SortField>
+                {...commonHeader}
+                label="Data"
+                field="data"
+              />
+              <TableHeader<SortField> {...commonHeader} label="Salesforce" />
             </tr>
           </thead>
           <tbody>
-            {groupBy === 'cse' && groupedData ? (
-              cseNames.map(cseName => {
-                const groupViews = groupedData.get(cseName) || [];
-                const isExpanded = expandedGroups.has(cseName);
-                const totalATR = groupViews.reduce((s, v) => s + v.atrUSD, 0);
-                const totalACVDelta = groupViews.reduce((s, v) => s + v.opportunities.reduce((acc, o) => acc + (o.acvDelta ?? 0), 0), 0);
-
-                return (
-                  <React.Fragment key={cseName}>
-                    {/* Group header */}
-                    <tr className="bg-gray-100 cursor-pointer hover:bg-gray-200" onClick={() => toggleGroup(cseName)}>
-                      <td className="px-3 py-2 font-semibold" colSpan={12}>
-                        <span className="mr-2">{isExpanded ? '▼' : '▶'}</span>
-                        {cseName} ({groupViews.length} accounts)
-                        <span className="ml-4 text-gray-600">
-                          ATR: {fmtUSD(totalATR)} | ACV Δ: {fmtUSD(totalACVDelta)}
-                        </span>
-                      </td>
-                    </tr>
-                    {/* Group rows */}
-                    {isExpanded && groupViews.map(v => <AccountRow key={v.account.accountId} v={v} showCSE={false} />)}
-                  </React.Fragment>
-                );
-              })
-            ) : (
-              views.map(v => <AccountRow key={v.account.accountId} v={v} showCSE={true} />)
-            )}
+            {sortedViews.map(v => <AccountRow key={v.account.accountId} v={v} />)}
           </tbody>
         </table>
       </div>
-      <p className="text-xs text-gray-500">Sorted by Manager Priority. Default rank uses bucket → Risk Category → days to renewal → ATR.</p>
+      <p className="text-xs text-gray-500">
+        Showing {sortedViews.length} of {views.length} accounts. Click headers to sort, use the funnel icon to filter by CSE.
+      </p>
     </>
   );
 }

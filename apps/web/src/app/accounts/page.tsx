@@ -16,6 +16,16 @@ export default async function AccountsPage() {
         <RefreshButton />
       </div>
 
+      <div className="flex items-center gap-2">
+        <label className="text-sm font-medium">Franchise:</label>
+        <select
+          disabled
+          className="rounded border border-gray-300 px-2 py-1 text-sm bg-gray-50"
+        >
+          <option>Expand 3</option>
+        </select>
+      </div>
+
       <AccountsTable views={views} />
     </div>
   );

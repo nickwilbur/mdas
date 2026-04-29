@@ -31,6 +31,7 @@ export interface SfdcAccountRow extends SalesforceQueryRecord {
   Type: string | null;
   OwnerId: string | null;
   Assigned_CSE__c: string | null;
+  Assigned_CSE__r: { Name: string | null } | null;
   Current_FY_Franchise__c: string | null;
   Tenant_ID__c: string | null;
   ZuoraTenant__c: string | null;
@@ -44,6 +45,7 @@ export interface SfdcAccountRow extends SalesforceQueryRecord {
   Churn_Reason__c: string | null;
   Churn_Date__c: string | null;
   CS_Coverage__c: string | null;
+  Customer_Status__c: string | null;
   engagio__EngagementMinutesLast7Days__c: number | null;
   engagio__EngagementMinutesLast30Days__c: number | null;
   engagio__EngagementMinutesLast3Months__c: number | null;
@@ -152,7 +154,7 @@ export function mapAccount(
     zuoraTenantId: row.Tenant_ID__c ?? row.ZuoraTenant__c ?? null,
 
     accountOwner: row.OwnerId ? { id: row.OwnerId, name: row.OwnerId } : null,
-    assignedCSE: row.Assigned_CSE__c ? { id: row.Assigned_CSE__c, name: row.Assigned_CSE__c } : null,
+    assignedCSE: row.Assigned_CSE__c ? { id: row.Assigned_CSE__c, name: row.Assigned_CSE__r?.Name ?? row.Assigned_CSE__c } : null,
     csCoverage: mapCsCoverage(row.CS_Coverage__c),
 
     franchise: row.Current_FY_Franchise__c ?? 'Expand 3',

@@ -27,8 +27,10 @@ export async function getDashboardData(): Promise<{
   const run = await latestSuccessfulRun();
   if (!run) return { views: [], refreshId: null, startedAt: null };
   const views = await readAccountViews(run.id);
-  views.sort((a, b) => a.priorityRank - b.priorityRank);
-  return { views, refreshId: run.id, startedAt: run.started_at };
+  // Filter to only Expand 3 franchise
+  const filteredViews = views.filter(v => v.account.franchise === 'Expand 3');
+  filteredViews.sort((a, b) => a.priorityRank - b.priorityRank);
+  return { views: filteredViews, refreshId: run.id, startedAt: run.started_at };
 }
 
 export async function getAccount(accountId: string): Promise<AccountView | null> {

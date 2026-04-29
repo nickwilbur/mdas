@@ -36,18 +36,20 @@ export const isReadOnly: true = true;
 //   Workshop_Engagement__c.Status   → renamed Workshop_Engagement__c.Status__c
 export const SOQL_ACCOUNTS = `
 SELECT
-  Id, Name, X18_Digit_ID__c, Type, OwnerId, Assigned_CSE__c,
+  Id, Name, X18_Digit_ID__c, Type, OwnerId, Assigned_CSE__c, Assigned_CSE__r.Name,
   Current_FY_Franchise__c, Tenant_ID__c, ZuoraTenant__c,
   Total_ACV__c, All_Time_ARR_Billing__c, All_Time_ARR_Zephr__c,
   Business_Industry_Health__c, CSM_Sentiment_Commentary__c,
   CSE_Sentiment_Last_Modified__c, CSE_Sentiment_Commentary_Last_Modified__c,
   Churn_Reason__c, Churn_Date__c,
   CS_Coverage__c,
+  Customer_Status__c,
   engagio__EngagementMinutesLast7Days__c,
   engagio__EngagementMinutesLast30Days__c,
   engagio__EngagementMinutesLast3Months__c
 FROM Account
 WHERE Current_FY_Franchise__c = 'Expand 3'
+  AND Customer_Status__c IN ('Live', 'Implementing')
 `;
 
 export const SOQL_OPPS = `
