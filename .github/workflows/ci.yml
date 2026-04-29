@@ -1,7 +1,10 @@
 name: ci
 on:
   push:
-    branches: [main]
+    # Default branch is `master` today; `main` listed for forwards-compat
+    # if/when the team renames. Without `master` here, push events skip CI
+    # entirely and broken builds (e.g., a stale tsc fixture) can land.
+    branches: [master, main]
   pull_request:
 
 jobs:

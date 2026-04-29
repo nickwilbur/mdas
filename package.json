@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "lint": "tsc -b --pretty",
     "ci:guard": "node scripts/ci-guard.mjs",
+    "check": "npm run ci:guard && npm run lint && npm test",
     "seed": "node scripts/seed.mjs",
     "migrate": "node scripts/migrate.mjs",
     "sf:fieldmap": "tsx scripts/generate-sfdc-field-map.ts",

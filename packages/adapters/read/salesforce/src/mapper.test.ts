@@ -21,7 +21,20 @@ const SAMPLE_ACCOUNT_ROW: SfdcAccountRow = {
   Type: 'Customer',
   OwnerId: '0050g000005xyzAAA',
   Assigned_CSE__c: '0050g000005z5SbAAI',
+  // Added 2026-04-28 (PR-A1): mapper.ts requires the related-record
+  // resolver alongside the FK Id so assignedCSE.name renders the human
+  // name in the UI rather than the opaque 18-char user Id. Default to
+  // null in the base fixture so existing tests (which don't assert on
+  // the resolver) still cover the fallback-to-Id path; resolver-happy-
+  // path coverage is added below.
+  Assigned_CSE__r: null,
   Current_FY_Franchise__c: 'Expand 3',
+  // Added 2026-04-28 (PR-A1): SOQL_ACCOUNTS already filters by
+  // Customer_Status__c IN ('Live', 'Implementing', 'In Production',
+  // 'Churned (Live)'). Mapper currently doesn't read it — kept on the
+  // row interface for future use and to keep fixture parity with the
+  // SOQL projection.
+  Customer_Status__c: 'Live',
   Tenant_ID__c: 'tenant-stenograph',
   ZuoraTenant__c: null,
   Total_ACV__c: 100000,
@@ -106,6 +119,21 @@ describe('mapAccount', () => {
     );
     expect(out.allTimeARR).toBeNull();
   });
+
+  it('resolves assignedCSE.name from Assigned_CSE__r.Name when present', () => {
+    // Production-relevant: real SOQL pulls Assigned_CSE__r.Name so the
+    // UI shows "Jane Doe" instead of "0050g000005z5SbAAI". The default
+    // fixture leaves __r null to exercise the fallback; this case
+    // covers the happy path explicitly.
+    const out = mapAccount(
+      { ...SAMPLE_ACCOUNT_ROW, Assigned_CSE__r: { Name: 'Jane Doe' } },
+      CTX,
+    );
+    expect(out.assignedCSE).toEqual({
+      id: '0050g000005z5SbAAI',
+      name: 'Jane Doe',
+    });
+  });
 });
 
 const SAMPLE_OPP_ROW: SfdcOpportunityRow = {
@@ -138,6 +166,11 @@ const SAMPLE_OPP_ROW: SfdcOpportunityRow = {
   SLM_Notes__c: null,
   SE_Next_Steps__c: 'Schedule executive sync',
   Sales_Engineer__c: '0050g000005z5SbAAI',
+  // Added 2026-04-28 (PR-A1): mapper.ts requires the resolver so the UI
+  // surfaces the SE's human name. Base fixture leaves it null to keep
+  // the existing fallback-to-Id assertion at :165 valid; resolver-happy
+  // -path coverage is added below.
+  Sales_Engineer__r: null,
   Full_Churn_Notification_to_Owner_Date__c: null,
   Full_Churn_Final_Email_Sent_Date__c: null,
   Churn_Downsell_Reason__c: null,
@@ -212,6 +245,17 @@ describe('mapOpportunity', () => {
       CTX,
     );
     expect(out.fullChurnNotificationToOwnerDate).toBe('2026-04-23');
+  });
+
+  it('resolves salesEngineer.name from Sales_Engineer__r.Name when present', () => {
+    const out = mapOpportunity(
+      { ...SAMPLE_OPP_ROW, Sales_Engineer__r: { Name: 'John Roe' } },
+      CTX,
+    );
+    expect(out.salesEngineer).toEqual({
+      id: '0050g000005z5SbAAI',
+      name: 'John Roe',
+    });
   });
 });
 
