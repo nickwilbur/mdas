@@ -236,6 +236,32 @@ describe('mapOpportunity', () => {
     expect(out.mostLikelyConfidence).toBeNull();
   });
 
+  // PR-C1 — F-22 regression: a non-canonical-cased picklist value
+  // ('confirmed', 'CONFIRMED ') must still normalize to the canonical
+  // 'Confirmed', otherwise downstream `=== 'Confirmed'` comparisons
+  // (forecast generator, dashboard counters) silently miss the row.
+  it.each(['confirmed', 'CONFIRMED', '  Confirmed  '])(
+    'normalizes mostLikelyConfidence "%s" to canonical "Confirmed" (F-22)',
+    (raw) => {
+      const out = mapOpportunity(
+        { ...SAMPLE_OPP_ROW, Most_Likely_Confidence__c: raw },
+        CTX,
+      );
+      expect(out.mostLikelyConfidence).toBe('Confirmed');
+    },
+  );
+
+  // PR-C1 — F-21 regression: jsforce can emit Stage_Num__c as a
+  // comma-decimal under non-en_US locales. parseStage must accept that
+  // and produce the same numeric we'd get from the en_US "5.0".
+  it('parses Stage_Num__c with a comma decimal locale (F-21)', () => {
+    const out = mapOpportunity(
+      { ...SAMPLE_OPP_ROW, Stage_Num__c: '5,0' },
+      CTX,
+    );
+    expect(out.stageNum).toBe(5);
+  });
+
   it('strips datetime suffix from churn dates', () => {
     const out = mapOpportunity(
       {

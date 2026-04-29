@@ -3,6 +3,20 @@
 export type CSESentiment = 'Green' | 'Yellow' | 'Red' | 'Confirmed Churn' | null;
 export type CerebroRiskCategory = 'Low' | 'Medium' | 'High' | 'Critical' | null;
 export type MostLikelyConfidence = 'Confirmed' | 'High' | 'Medium' | 'Low' | 'Closed' | null;
+
+// PR-C1 — F-22: canonicalize a free-form mostLikelyConfidence string
+// (case-insensitive, trimmed) so non-SF adapters and ad-hoc imports
+// can't smuggle 'confirmed' into the canonical record where the
+// downstream consumer comparison `=== 'Confirmed'` would silently fail.
+//
+// The Salesforce mapper already does this; we expose the same logic
+// here so future adapters and tests share one source of truth.
+const MOST_LIKELY_CONFIDENCE_VALUES = ['Confirmed', 'High', 'Medium', 'Low', 'Closed'] as const;
+export function normalizeMostLikelyConfidence(raw: string | null | undefined): MostLikelyConfidence {
+  if (!raw) return null;
+  const v = String(raw).trim().toLowerCase();
+  return MOST_LIKELY_CONFIDENCE_VALUES.find((c) => c.toLowerCase() === v) ?? null;
+}
 export type Bucket = 'Confirmed Churn' | 'Saveable Risk' | 'Healthy';
 
 export type AdapterSource =

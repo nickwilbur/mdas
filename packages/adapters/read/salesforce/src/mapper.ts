@@ -16,10 +16,10 @@ import type {
   CanonicalAccount,
   CanonicalOpportunity,
   CSESentiment,
-  MostLikelyConfidence,
   SourceLink,
   Workshop,
 } from '@mdas/canonical';
+import { normalizeMostLikelyConfidence } from '@mdas/canonical';
 import type { SalesforceQueryRecord } from './client.js';
 
 // ---------- Salesforce row shapes (just the fields we read) ----------
@@ -126,13 +126,10 @@ function mapSentiment(raw: string | null): CSESentiment {
   return null;
 }
 
-function mapConfidence(raw: string | null): MostLikelyConfidence {
-  if (!raw) return null;
-  const v = raw.trim();
-  const allowed: MostLikelyConfidence[] = ['Confirmed', 'High', 'Medium', 'Low', 'Closed'];
-  const match = allowed.find((c) => c?.toLowerCase() === v.toLowerCase());
-  return match ?? null;
-}
+// PR-C1 — F-22: delegate to the canonical normalizer so all adapters
+// (including future non-SF ones) share one source of truth and a
+// consumer's `=== 'Confirmed'` comparison can't silently miss.
+const mapConfidence = normalizeMostLikelyConfidence;
 
 function mapCsCoverage(raw: string | null): 'CSE' | 'ESA' | 'Digital' | null {
   if (!raw) return null;
@@ -196,10 +193,17 @@ export function mapOpportunity(
   // Stage_Num__c is a Salesforce formula/number that occasionally arrives
   // as a string like "5.0". Strip non-digit prefix only when there is one;
   // Number('') returns 0, so we must reject empty leading-digit groups.
+  //
+  // PR-C1 — F-21: also accept the comma-decimal locales jsforce can
+  // emit when the connected app's user has e.g. fr_FR ("5,0"). We
+  // normalize ',' → '.' before the regex extract so the canonical
+  // Number() conversion is locale-independent. Documented because the
+  // test below pins both inputs.
   const parseStage = (raw: number | string | null): number | null => {
     if (raw == null) return null;
     if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
-    const leadingDigits = String(raw).match(/^\d+(?:\.\d+)?/)?.[0];
+    const normalized = String(raw).replace(',', '.');
+    const leadingDigits = normalized.match(/^\d+(?:\.\d+)?/)?.[0];
     if (!leadingDigits) return null;
     const n = Number(leadingDigits);
     return Number.isFinite(n) ? n : null;

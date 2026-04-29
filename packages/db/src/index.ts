@@ -112,18 +112,26 @@ export async function pruneOldRuns(retain = 12): Promise<number> {
   // refresh_jobs.refresh_run_id has no ON DELETE action, so a direct DELETE
   // on refresh_runs would fail with FK-violation 23503. We preserve the
   // refresh_jobs row (queue audit history) but drop the now-stale link.
+  //
+  // PR-C1 — F-16: order by (started_at DESC, id DESC) so the tiebreak is
+  // deterministic if two refreshes happen to start in the same millisecond
+  // (re-entrant pg_notify drains can do that on a busy worker). Without
+  // the secondary key, Postgres' returned order is undefined and
+  // OFFSET-12 could land on the most-recent run, deleting it.
+  // `id` is a uuid so DESC sorts lexicographically; combined with the
+  // primary `started_at DESC` it's stable enough for the prune semantics.
   await query(
     `UPDATE refresh_jobs
         SET refresh_run_id = NULL
       WHERE refresh_run_id IN (
-        SELECT id FROM refresh_runs ORDER BY started_at DESC OFFSET $1
+        SELECT id FROM refresh_runs ORDER BY started_at DESC, id DESC OFFSET $1
       )`,
     [retain],
   );
   const r = await query<{ id: string }>(
     `DELETE FROM refresh_runs
        WHERE id IN (
-         SELECT id FROM refresh_runs ORDER BY started_at DESC OFFSET $1
+         SELECT id FROM refresh_runs ORDER BY started_at DESC, id DESC OFFSET $1
        ) RETURNING id`,
     [retain],
   );
