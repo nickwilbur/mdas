@@ -119,3 +119,54 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+  # PR-B6 (F-20b): Lighthouse CI perf + a11y budget. Runs against the
+  # same seeded stack as the e2e job. Budgets are intentionally lenient
+  # for v0 (perf=warn 0.70, a11y=error 0.90) so we don't block merges
+  # on perf until we've measured the actual baseline at production-like
+  # row counts. Tighten in Phase 3 after collecting a week of LHCI data.
+  lighthouse:
+    needs: build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mdas
+          POSTGRES_PASSWORD: mdas
+          POSTGRES_DB: mdas
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mdas -d mdas" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://mdas:mdas@localhost:5432/mdas
+      ADAPTER_SALESFORCE: mock
+      ADAPTER_CEREBRO: mock
+      ADAPTER_GAINSIGHT: mock
+      ADAPTER_STAIRCASE: mock
+      ADAPTER_ZUORA_MCP: mock
+      ADAPTER_GLEAN_MCP: mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci || npm install
+      - name: Migrate + seed
+        run: npm run migrate && npm run seed
+      - name: Build web
+        run: npm --workspace apps/web run build
+      - name: Start web (background)
+        run: |
+          npm --workspace apps/web run start &
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:3000/ > /dev/null && break
+            sleep 1
+          done
+      - name: Lighthouse CI
+        run: npx --yes @lhci/cli@0.13.x autorun
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lighthouse-report
+          path: .lighthouseci/
+          retention-days: 7
