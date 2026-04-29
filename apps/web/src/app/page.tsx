@@ -72,35 +72,51 @@ export default async function DashboardPage({
           return ks.some((k) => selectedQuarters.has(k));
         });
 
-  // When filtering by quarter, we must sum opportunity-level metrics
-  // (availableToRenewUSD) for opps that close in the selected quarter,
-  // not account-level totals (atrUSD) which span all quarters.
+  // Quarter-scoped metrics. We must apply the same canonical formulas used
+  // by packages/scoring (atrUSD = Σ availableToRenewUSD; acvAtRiskUSD, gated
+  // on bucket !== 'Healthy', = Σ |knownChurnUSD| + max(0, -acvDelta)) but
+  // restrict the summed opportunities to those whose close-quarter is in
+  // the selection. Without quarter filtering we fall through to the
+  // pre-computed account-level totals.
   const totalAccounts = views.length;
   let totalATR = 0;
   let acvAtRisk = 0;
 
   if (selectedQuarters === null) {
-    // No quarter filter: use account-level totals as before
     totalATR = views.reduce((s, v) => s + v.atrUSD, 0);
     acvAtRisk = views.reduce((s, v) => s + v.acvAtRiskUSD, 0);
   } else {
-    // Quarter filter: sum only the ATR from opps that close in selected quarters
     for (const v of views) {
-      for (const o of v.opportunities) {
+      const oppsInQuarter = v.opportunities.filter((o) => {
         const fq = fiscalQuarterFromDate(o.closeDate);
-        if (fq && selectedQuarters.has(fq.key)) {
-          totalATR += (o.availableToRenewUSD ?? 0);
-          // For ACV at risk, use knownChurnUSD if set, otherwise estimate
-          // as the gap between ATR and forecastMostLikely
-          if (o.knownChurnUSD && o.knownChurnUSD > 0) {
-            acvAtRisk += o.knownChurnUSD;
-          } else {
-            const atr = o.availableToRenewUSD ?? 0;
-            const ml = o.forecastMostLikelyOverride ?? o.forecastMostLikely ?? atr;
-            acvAtRisk += Math.max(0, atr - ml);
-          }
-        }
-      }
+        return fq !== null && selectedQuarters.has(fq.key);
+      });
+
+      // ATR — straight sum of availableToRenewUSD over in-quarter opps.
+      totalATR += oppsInQuarter.reduce(
+        (s, o) => s + (o.availableToRenewUSD ?? 0),
+        0,
+      );
+
+      // ACV at Risk — gated by account bucket. For Confirmed Churn accounts
+      // bucketed into this quarter via their churn date, the relevant opps
+      // may have closeDates outside the quarter (or be empty), so fall back
+      // to the full opp set so we don't drop the known churn dollars.
+      if (v.bucket === 'Healthy') continue;
+      const isConfirmedChurnInQuarter =
+        v.bucket === 'Confirmed Churn' &&
+        (() => {
+          const fq = fiscalQuarterFromDate(v.account.churnDate);
+          return fq !== null && selectedQuarters.has(fq.key);
+        })();
+      const oppsForAcvAtRisk = isConfirmedChurnInQuarter
+        ? v.opportunities
+        : oppsInQuarter;
+      acvAtRisk += oppsForAcvAtRisk.reduce(
+        (s, o) =>
+          s + Math.abs(o.knownChurnUSD ?? 0) + Math.max(0, -(o.acvDelta ?? 0)),
+        0,
+      );
     }
   }
 
