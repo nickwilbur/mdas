@@ -5,6 +5,7 @@ import {
   Card,
   RelativeTime,
   RiskBadge,
+  RiskScoreBadge,
   SentimentBadge,
   StatTile,
   UpsellBandBadge,
@@ -139,7 +140,15 @@ export default async function DashboardPage() {
                   {v.account.accountName}
                 </Link>
                 <div className="flex items-center gap-2">
-                  <RiskBadge level={v.risk.level} source={v.risk.source} />
+                  {v.riskScore ? (
+                    <RiskScoreBadge
+                      score={v.riskScore.score}
+                      band={v.riskScore.band}
+                      confidence={v.riskScore.confidence}
+                    />
+                  ) : (
+                    <RiskBadge level={v.risk.level} source={v.risk.source} />
+                  )}
                   <span className="tabular-nums text-gray-700">{fmtUSD(v.atrUSD)}</span>
                 </div>
               </li>

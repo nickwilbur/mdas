@@ -309,6 +309,27 @@ export interface AccountView {
   opportunities: CanonicalOpportunity[];
   bucket: Bucket;
   risk: RiskIdentifier;
+  /**
+   * Composite Risk Score (PR-B1). Optional for backwards compatibility
+   * with views serialized before the score existed: the read-model
+   * enriches every fresh view with this field, but a cached snapshot
+   * loaded from a pre-B1 worker run won't carry it. Renderers that use
+   * it must be defensive (fall back to `risk` for display).
+   *
+   * Defined here, in canonical, so server reads and client renders
+   * agree on shape without crossing the @mdas/scoring boundary.
+   */
+  riskScore?: {
+    score: number;
+    band: 'Low' | 'Medium' | 'High' | 'Critical';
+    confidence: 'high' | 'low';
+    signals: {
+      label: string;
+      points: number;
+      source: AdapterSource | 'derived';
+      field?: string;
+    }[];
+  };
   upsell: UpsellAssessment;
   hygiene: { score: number; violations: HygieneViolation[] };
   priorityRank: number;

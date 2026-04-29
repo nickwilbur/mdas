@@ -12,7 +12,38 @@ import {
   query,
 } from '@mdas/db';
 import type { AccountView, CanonicalOpportunity, ChangeEvent } from '@mdas/canonical';
-import { diffAll } from '@mdas/scoring';
+import { diffAll, computeRiskScore } from '@mdas/scoring';
+
+// PR-B1 — enrich views with the composite Risk Score at read time.
+//
+// We compute on read rather than at write time because the score uses
+// WoW change events (one of 8 signals), which are themselves a read-time
+// join across two snapshots. Doing this in the worker would require
+// duplicating that join into the orchestrator. Read-time enrichment
+// keeps the worker contract simple and lets us evolve signal weights
+// without re-running the worker.
+//
+// Performance: O(views) with a one-time Map keyed by accountId for
+// O(1) event lookup. Negligible vs. the Postgres round-trip.
+function enrichViewsWithRiskScore(
+  views: AccountView[],
+  events: ChangeEvent[],
+): AccountView[] {
+  const eventsByAccount = new Map<string, ChangeEvent[]>();
+  for (const e of events) {
+    const list = eventsByAccount.get(e.accountId) ?? [];
+    list.push(e);
+    eventsByAccount.set(e.accountId, list);
+  }
+  return views.map((v) => {
+    const rs = computeRiskScore({
+      account: v.account,
+      opportunities: v.opportunities,
+      changeEvents: eventsByAccount.get(v.account.accountId) ?? [],
+    });
+    return { ...v, riskScore: rs };
+  });
+}
 
 export async function getLatestRunId(): Promise<string | null> {
   const r = await latestSuccessfulRun();
@@ -26,17 +57,30 @@ export async function getDashboardData(): Promise<{
 }> {
   const run = await latestSuccessfulRun();
   if (!run) return { views: [], refreshId: null, startedAt: null };
-  const views = await readAccountViews(run.id);
+  // PR-B1: load views + WoW events in parallel so the read path can
+  // enrich every view with the composite Risk Score in one DB pass.
+  const [views, wow] = await Promise.all([
+    readAccountViews(run.id),
+    getWoWChangeEvents(),
+  ]);
   // Filter to only Expand 3 franchise
   const filteredViews = views.filter(v => v.account.franchise === 'Expand 3');
   filteredViews.sort((a, b) => a.priorityRank - b.priorityRank);
-  return { views: filteredViews, refreshId: run.id, startedAt: run.started_at };
+  const enriched = enrichViewsWithRiskScore(filteredViews, wow.events);
+  return { views: enriched, refreshId: run.id, startedAt: run.started_at };
 }
 
 export async function getAccount(accountId: string): Promise<AccountView | null> {
   const run = await latestSuccessfulRun();
   if (!run) return null;
-  return readAccountView(run.id, accountId);
+  const view = await readAccountView(run.id, accountId);
+  if (!view) return null;
+  // PR-B1: drill-in needs the same enrichment so the explainer card
+  // sees the composite RiskScore. The events feed is small enough to
+  // pull globally and let enrichViewsWithRiskScore filter by accountId.
+  const wow = await getWoWChangeEvents();
+  const [enriched] = enrichViewsWithRiskScore([view], wow.events);
+  return enriched ?? view;
 }
 
 export async function getWoWChangeEvents(): Promise<{

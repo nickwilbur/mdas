@@ -39,6 +39,55 @@ export function RiskBadge({
   );
 }
 
+// PR-B1: composite Risk Score badge.
+//
+// Renders the 0–100 score and band, plus a low-confidence indicator
+// when Cerebro Risk Category is missing (so the user knows the score
+// is directional, not authoritative). The colors are deliberately a
+// shade darker than RiskBadge to differentiate them at a glance —
+// the two badges live next to each other in many places.
+const RISK_SCORE_BAND_COLORS: Record<string, string> = {
+  Critical: 'bg-red-700 text-white',
+  High: 'bg-orange-700 text-white',
+  Medium: 'bg-amber-500 text-black',
+  Low: 'bg-emerald-700 text-white',
+};
+
+export function RiskScoreBadge({
+  score,
+  band,
+  confidence,
+  showLabel = false,
+}: {
+  score: number;
+  band: 'Low' | 'Medium' | 'High' | 'Critical';
+  confidence: 'high' | 'low';
+  /** When true, prepends 'Score' before the number — useful inline. */
+  showLabel?: boolean;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span
+        className={clsx(
+          'rounded px-2 py-0.5 text-xs font-semibold tabular-nums',
+          RISK_SCORE_BAND_COLORS[band] ?? 'bg-gray-400 text-white',
+        )}
+        title={`Composite risk score: ${score} (${band})`}
+      >
+        {showLabel ? `Score ${score}` : score} · {band}
+      </span>
+      {confidence === 'low' ? (
+        <span
+          className="rounded border border-gray-300 px-1 py-0.5 text-[10px] uppercase text-gray-500"
+          title="Cerebro Risk Category is missing for this account; treat the score as directional only."
+        >
+          low conf
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function SentimentBadge({ value }: { value: CSESentiment }) {
   const colors: Record<string, string> = {
     Green: 'bg-green-100 text-green-800 ring-green-300',

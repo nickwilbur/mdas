@@ -8,12 +8,14 @@ import {
   GainsightTaskList,
   RelativeTime,
   RiskBadge,
+  RiskScoreBadge,
   SentimentBadge,
   SourceLinksGrouped,
   StatTile,
   UpsellBandBadge,
   fmtUSD,
 } from '@/components/ui';
+import { RiskScoreExplainer } from '@/components/RiskScoreExplainer';
 import type { AdapterSource } from '@mdas/canonical';
 
 // Sources we expect to have run for an Expand 3 account when adapters
@@ -64,6 +66,26 @@ export default async function AccountPage({
           <StatTile label="Renewal" value={v.daysToRenewal == null ? '—' : `${v.daysToRenewal}d`} />
         </div>
       </div>
+
+      {/* PR-B1: per-signal explainer answers "why is this account at
+          risk score N?" using the same RiskScoreSignal[] from the
+          composite score. Reads from v.riskScore so it gracefully
+          degrades when a pre-B1 view loads. */}
+      {v.riskScore ? (
+        <Card
+          title="Risk Score Breakdown"
+          right={
+            <RiskScoreBadge
+              score={v.riskScore.score}
+              band={v.riskScore.band}
+              confidence={v.riskScore.confidence}
+              showLabel
+            />
+          }
+        >
+          <RiskScoreExplainer riskScore={v.riskScore} />
+        </Card>
+      ) : null}
 
       <Card title="Cerebro Risk Analysis" right={<RiskBadge level={v.risk.level} source={v.risk.source} />}>
         <p className="text-sm text-gray-800">

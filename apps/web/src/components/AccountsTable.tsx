@@ -7,6 +7,7 @@ import {
   BucketBadge,
   RelativeTime,
   RiskBadge,
+  RiskScoreBadge,
   SentimentBadge,
   SourceDots,
   fmtUSD,
@@ -246,7 +247,23 @@ export function AccountsTable({ views }: AccountsTableProps) {
           </Link>
         </td>
         <td className="px-3 py-2"><BucketBadge bucket={v.bucket} /></td>
-        <td className="px-3 py-2"><RiskBadge level={v.risk.level} source={v.risk.source} /></td>
+        <td className="px-3 py-2">
+          {v.riskScore ? (
+            // PR-B1: composite Risk Score is now the primary signal.
+            // RiskBadge (Cerebro passthrough) is kept inline as the
+            // source-of-truth reference per audit decision D-3.
+            <div className="flex flex-col gap-0.5">
+              <RiskScoreBadge
+                score={v.riskScore.score}
+                band={v.riskScore.band}
+                confidence={v.riskScore.confidence}
+              />
+              <RiskBadge level={v.risk.level} source={v.risk.source} />
+            </div>
+          ) : (
+            <RiskBadge level={v.risk.level} source={v.risk.source} />
+          )}
+        </td>
         <td className="px-3 py-2"><SentimentBadge value={v.account.cseSentiment} /></td>
         <td className="px-3 py-2 text-right tabular-nums">{fmtUSD(v.atrUSD)}</td>
         <td className={`px-3 py-2 text-right tabular-nums ${acvDelta < 0 ? 'text-red-700' : acvDelta > 0 ? 'text-green-700' : 'text-gray-600'}`}>
