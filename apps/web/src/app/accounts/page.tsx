@@ -38,8 +38,13 @@ export default async function AccountsPage({
   for (const v of views) {
     for (const k of quartersForAccount(v)) {
       if (!quarterMap.has(k)) {
+        // Quarter keys are produced by fiscalQuarterFromDate(...).key
+        // which always emits "YYYY-Qn" (see lib/fiscal.ts:41), so the
+        // destructure is well-defined. Guard with `??` for the type
+        // checker; mismatches would also indicate a fiscal.ts bug worth
+        // catching loudly.
         const [fy, q] = k.split('-');
-        quarterMap.set(k, `FY${fy.slice(-2)} ${q}`);
+        quarterMap.set(k, `FY${(fy ?? '').slice(-2)} ${q ?? ''}`);
       }
     }
   }

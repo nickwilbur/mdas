@@ -454,7 +454,10 @@ const builds: Build[] = REAL_EXPAND_3_ACCOUNTS.map((acc, i) => ({
   cerebroRisks: i === 0 ? { ...allFalse, utilizationRisk: true, engagementRisk: true, shareRisk: true, pricingRisk: true } : allFalse,
   arr: 500_000 + i * 100_000,
   products: acc.products,
-  cseName: ['Christopher Franklin-Hollier', 'Sneha Stephen', 'Shwetha Ravindran', 'Kiran Rajan', 'Mahalakshmi Krishnan', 'Jayaram Iyer'][i % 6],
+  // `i % 6` makes the index always valid, but `noUncheckedIndexedAccess`
+  // (PR-A2) widens array reads to `T | undefined`. Non-null assertion is
+  // safe because the array is a 6-tuple literal indexed by `i % 6`.
+  cseName: ['Christopher Franklin-Hollier', 'Sneha Stephen', 'Shwetha Ravindran', 'Kiran Rajan', 'Mahalakshmi Krishnan', 'Jayaram Iyer'][i % 6]!,
   ownerName: 'Brandon LaTourelle',
   commentary: i === 0 ? 'STATE AND RENEWAL RISK: Monitoring for potential consolidation risks.\nACTION PLAN: Increase executive engagement; ensure value realization.' : 'Customer engagement stable. Regular quarterly business reviews scheduled.',
   commentaryDaysAgo: 7 + i,

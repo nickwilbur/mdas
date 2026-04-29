@@ -61,7 +61,11 @@ export function AccountFilters({ quarterOptions }: { quarterOptions: QuarterOpti
     if (allActive) return 'All Quarters';
     if (selected.size === 0) return 'None';
     if (selected.size === 1) {
-      const only = [...selected][0];
+      // selected.size === 1 guarantees at least one element; the type
+      // narrows under noUncheckedIndexedAccess only with an explicit
+      // fallback. Empty string would render as "FY ", which is visibly
+      // wrong and surfaces a mis-keyed selection rather than swallowing it.
+      const only = [...selected][0] ?? '';
       return fiscalQuarterLabel(only);
     }
     if (selected.size === allKeys.length) return 'All Quarters';

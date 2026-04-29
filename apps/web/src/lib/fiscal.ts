@@ -49,5 +49,5 @@ export function fiscalQuarterKey(fy: number, q: number): string {
 
 export function fiscalQuarterLabel(key: string): string {
   const [fy, q] = key.split('-');
-  return `FY${fy.slice(-2)} ${q}`;
+  return `FY${(fy ?? '').slice(-2)} ${q ?? ''}`;
 }
