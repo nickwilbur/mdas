@@ -115,6 +115,192 @@ export async function getAuditTail(limit = 80) {
   return readAuditLog(limit);
 }
 
+// ----- Data quality (F-06) -----
+//
+// Per-account, per-source freshness with ARR exposure for the latest
+// successful refresh. Powers the /admin/data-quality surface so a
+// manager can see "how much ARR is sitting on stale or missing data
+// from each integration."
+//
+// SLA buckets:
+//   fresh   : last fetch ≤ 7d   (matches isStale() in components/time.ts)
+//   stale   : last fetch > 7d
+//   error   : adapter recorded a non-fatal error this refresh
+//   missing : no entry for this source on this account
+const STALE_AFTER_DAYS = 7;
+
+export type DataQualityState = 'fresh' | 'stale' | 'error' | 'missing';
+
+export interface SourceQualityRow {
+  source: string;
+  fresh: { count: number; arr: number };
+  stale: { count: number; arr: number };
+  error: { count: number; arr: number };
+  missing: { count: number; arr: number };
+}
+
+export interface FieldQualityRow {
+  /** Canonical field path on CanonicalAccount or CanonicalOpportunity. */
+  field: string;
+  /** Description of "missing" rule for the field. */
+  description: string;
+  /** Accounts that fail the rule, with their ARR. */
+  missingCount: number;
+  missingARR: number;
+  /** Total accounts evaluated. */
+  total: number;
+}
+
+export interface DataQualitySummary {
+  refreshId: string | null;
+  startedAt: string | null;
+  totalAccounts: number;
+  totalARR: number;
+  perSource: SourceQualityRow[];
+  perField: FieldQualityRow[];
+}
+
+function dqStateForIso(iso: string | null, errored: boolean, asOf: number): DataQualityState {
+  if (errored) return 'error';
+  if (!iso) return 'missing';
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return 'missing';
+  return asOf - t > STALE_AFTER_DAYS * 86400_000 ? 'stale' : 'fresh';
+}
+
+function blank(): SourceQualityRow {
+  return {
+    source: '',
+    fresh: { count: 0, arr: 0 },
+    stale: { count: 0, arr: 0 },
+    error: { count: 0, arr: 0 },
+    missing: { count: 0, arr: 0 },
+  };
+}
+
+function asString(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+export async function getDataQuality(): Promise<DataQualitySummary> {
+  const run = await latestSuccessfulRun();
+  if (!run) {
+    return { refreshId: null, startedAt: null, totalAccounts: 0, totalARR: 0, perSource: [], perField: [] };
+  }
+  const [accounts, opps] = await Promise.all([
+    readSnapshotAccounts(run.id),
+    readSnapshotOpportunities(run.id),
+  ]);
+  const inFranchise = accounts.filter((a) => a.franchise === 'Expand 3');
+  const totalAccounts = inFranchise.length;
+  const totalARR = inFranchise.reduce((s, a) => s + (a.allTimeARR ?? 0), 0);
+
+  // Discover the canonical source set from the data + the well-known
+  // expected sources so we still show 0/0 rows for adapters that never
+  // touched any account this refresh (a meaningful signal in its own right).
+  const observed = new Set<string>();
+  for (const a of inFranchise) {
+    for (const k of Object.keys(a.lastFetchedFromSource ?? {})) observed.add(k);
+    for (const k of Object.keys(a.sourceErrors ?? {})) observed.add(k);
+  }
+  const expected: string[] = ['salesforce', 'cerebro', 'gainsight', 'glean-mcp'];
+  for (const s of expected) observed.add(s);
+  const sources = Array.from(observed).sort();
+
+  const asOf = Date.now();
+  const bySource = new Map<string, SourceQualityRow>(
+    sources.map((s) => [s, { ...blank(), source: s }]),
+  );
+  for (const a of inFranchise) {
+    const arr = a.allTimeARR ?? 0;
+    for (const s of sources) {
+      const iso = a.lastFetchedFromSource?.[s as keyof typeof a.lastFetchedFromSource] ?? null;
+      const errored = !!a.sourceErrors?.[s as keyof typeof a.sourceErrors];
+      const state = dqStateForIso(iso, errored, asOf);
+      const row = bySource.get(s)!;
+      row[state].count += 1;
+      row[state].arr += arr;
+    }
+  }
+
+  // Field-level critical-data presence: ranked by ARR-exposed.
+  // Each field rule is defined here so the policy is in one place.
+  const oppsByAccount = new Map<string, typeof opps>();
+  for (const o of opps) {
+    const list = oppsByAccount.get(o.accountId) ?? [];
+    list.push(o);
+    oppsByAccount.set(o.accountId, list);
+  }
+  const fieldRules: {
+    field: string;
+    description: string;
+    missing: (a: typeof inFranchise[number]) => boolean;
+  }[] = [
+    {
+      field: 'cseSentimentCommentary',
+      description: 'Account has no CSE sentiment commentary.',
+      missing: (a) => !asString(a.cseSentimentCommentary).trim(),
+    },
+    {
+      field: 'cseSentimentCommentaryLastUpdated',
+      description: 'Sentiment commentary last-updated stamp is missing.',
+      missing: (a) => !a.cseSentimentCommentaryLastUpdated,
+    },
+    {
+      field: 'opp.flmNotes',
+      description: 'No FLM Notes on any open opportunity.',
+      missing: (a) => {
+        const list = oppsByAccount.get(a.accountId) ?? [];
+        if (list.length === 0) return false; // no opps → not missing
+        return list.every((o) => !asString(o.flmNotes).trim());
+      },
+    },
+    {
+      field: 'opp.scNextSteps',
+      description: 'No SC/SE next steps on any open opportunity.',
+      missing: (a) => {
+        const list = oppsByAccount.get(a.accountId) ?? [];
+        if (list.length === 0) return false;
+        return list.every((o) => !asString(o.scNextSteps).trim());
+      },
+    },
+    {
+      field: 'recentMeetings',
+      description: 'No recent meetings recorded.',
+      missing: (a) => (a.recentMeetings?.length ?? 0) === 0,
+    },
+  ];
+
+  const perField: FieldQualityRow[] = fieldRules.map((rule) => {
+    let count = 0;
+    let arr = 0;
+    for (const a of inFranchise) {
+      if (rule.missing(a)) {
+        count += 1;
+        arr += a.allTimeARR ?? 0;
+      }
+    }
+    return {
+      field: rule.field,
+      description: rule.description,
+      missingCount: count,
+      missingARR: arr,
+      total: totalAccounts,
+    };
+  });
+  // Sort by ARR-exposed descending — managers care about money first.
+  perField.sort((a, b) => b.missingARR - a.missingARR);
+
+  return {
+    refreshId: run.id,
+    startedAt: run.started_at,
+    totalAccounts,
+    totalARR,
+    perSource: Array.from(bySource.values()),
+    perField,
+  };
+}
+
 export async function getAllOpportunities(): Promise<{
   opportunities: CanonicalOpportunity[];
   accounts: Map<string, import('@mdas/canonical').CanonicalAccount>;

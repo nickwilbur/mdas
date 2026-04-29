@@ -14,6 +14,7 @@ const NAV = [
   { href: '/wow', label: 'WoW' },
   { href: '/hygiene', label: 'Hygiene' },
   { href: '/forecast', label: 'Forecast' },
+  { href: '/admin/data-quality', label: 'Data Quality' },
   { href: '/admin/refresh', label: 'Refresh' },
 ];
 
