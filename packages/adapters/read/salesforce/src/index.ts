@@ -49,7 +49,7 @@ SELECT
   engagio__EngagementMinutesLast3Months__c
 FROM Account
 WHERE Current_FY_Franchise__c = 'Expand 3'
-  AND Customer_Status__c IN ('Live', 'Implementing')
+  AND Customer_Status__c IN ('Live', 'Implementing', 'In Production')
 `;
 
 export const SOQL_OPPS = `
