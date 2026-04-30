@@ -127,6 +127,12 @@ interface MergedData {
 function withAccountDefaults(a: CanonicalAccount): CanonicalAccount {
   return {
     ...a,
+    // `lastUpdated` is NOT NULL in snapshot_account.captured_at. Glean
+    // enrichment adapters (cerebro, gainsight, glean-mcp) emit account
+    // partials without lastUpdated when they discover an accountId not
+    // produced by SFDC/local-snapshots. Default to "now" so the snapshot
+    // write doesn't blow up the whole refresh.
+    lastUpdated: a.lastUpdated ?? new Date().toISOString(),
     workshops: a.workshops ?? [],
     recentMeetings: a.recentMeetings ?? [],
     accountPlanLinks: a.accountPlanLinks ?? [],

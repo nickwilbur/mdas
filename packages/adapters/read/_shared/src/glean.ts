@@ -20,6 +20,73 @@
 // initialize handshake.
 import { readOnlyGuard } from './index.js';
 
+// ---------------------------------------------------------------------------
+// Process-wide rate limiter for Glean's MCP transport.
+//
+// Glean enforces a tight per-minute rate limit on the search tool that
+// short-window retries cannot satisfy: a burst of 8 parallel calls
+// finishes ~4 of them and leaves the rest in 429 even after 5s of
+// exponential backoff. Empirically the limit behaves like a sliding
+// window measured in seconds, not requests-per-second, so the only
+// reliable mitigation is to GATE concurrency at the GleanClient layer
+// regardless of how many adapters are running in parallel.
+//
+// Tunables (env vars, all optional):
+//   - GLEAN_MAX_INFLIGHT       max parallel calls in flight (default 2)
+//   - GLEAN_MIN_INTERVAL_MS    min gap between call starts  (default 300)
+//   - GLEAN_MAX_RETRY_ATTEMPTS retries on 429              (default 6)
+//   - GLEAN_RETRY_BASE_MS      first backoff delay         (default 1500)
+// ---------------------------------------------------------------------------
+
+const GLEAN_MAX_INFLIGHT = Number(process.env.GLEAN_MAX_INFLIGHT) || 2;
+const GLEAN_MIN_INTERVAL_MS = Number(process.env.GLEAN_MIN_INTERVAL_MS) || 300;
+const GLEAN_MAX_RETRY_ATTEMPTS = Number(process.env.GLEAN_MAX_RETRY_ATTEMPTS) || 6;
+const GLEAN_RETRY_BASE_MS = Number(process.env.GLEAN_RETRY_BASE_MS) || 1500;
+
+let inFlight = 0;
+let lastStartedAt = 0;
+const waitQueue: Array<() => void> = [];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function backoffMs(attempt: number): number {
+  // 1.5s, 3s, 6s, 12s, 24s, 48s … plus 0–500ms jitter so retries
+  // belonging to the same burst don't all fire on the same tick.
+  const base = GLEAN_RETRY_BASE_MS * Math.pow(2, attempt);
+  return Math.min(60_000, base) + Math.floor(Math.random() * 500);
+}
+
+function isRateLimitMessage(msg: string): boolean {
+  const s = msg.toLowerCase();
+  return (
+    s.includes('rate limit') ||
+    s.includes('429') ||
+    s.includes('too many requests')
+  );
+}
+
+/** Acquire a Glean call slot. Honors both the in-flight cap and the
+ *  minimum inter-request gap so that bursts get serialized. */
+async function acquireGleanSlot(): Promise<void> {
+  if (inFlight >= GLEAN_MAX_INFLIGHT) {
+    await new Promise<void>((resolve) => waitQueue.push(resolve));
+  }
+  inFlight++;
+  const sinceLast = Date.now() - lastStartedAt;
+  if (sinceLast < GLEAN_MIN_INTERVAL_MS) {
+    await sleep(GLEAN_MIN_INTERVAL_MS - sinceLast);
+  }
+  lastStartedAt = Date.now();
+}
+
+function releaseGleanSlot(): void {
+  inFlight = Math.max(0, inFlight - 1);
+  const next = waitQueue.shift();
+  if (next) next();
+}
+
 export interface GleanCredentials {
   /** Bearer token from GLEAN_MCP_TOKEN. */
   token: string;
@@ -306,31 +373,65 @@ export class GleanClient {
     name: string,
     args: Record<string, unknown>,
   ): Promise<McpToolResult> {
-    await this.ensureMcpInitialized();
-    const resp = await this.mcpRawPost(
-      {
-        jsonrpc: '2.0',
-        id: ++this.rpcId,
-        method: 'tools/call',
-        params: { name, arguments: args },
-      },
-      `glean:mcp-tool:${name}`,
-    );
-    const env = await this.readRpcEnvelope(resp);
-    if (env.error) {
-      throw new Error(
-        `Glean MCP tools/call(${name}) error: ${env.error.message} (${env.error.code})`,
-      );
+    // Process-wide rate limiter: serialize Glean calls so that even
+    // when 3 adapters all loop over 300 accounts in parallel, we never
+    // open more than GLEAN_MAX_INFLIGHT requests against Glean's MCP
+    // search at once. Combined with retry-on-429 below, this keeps
+    // the refresh under Glean's per-minute throttle.
+    await acquireGleanSlot();
+    try {
+    // Glean's "Elastic rate limit exceeded" surfaces as a tools/call
+    // result with isError + a 429-shaped error message rather than as
+    // an HTTP 429. Retry with longer backoff for the per-minute window.
+    const maxAttempts = GLEAN_MAX_RETRY_ATTEMPTS;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await this.ensureMcpInitialized();
+      try {
+        const resp = await this.mcpRawPost(
+          {
+            jsonrpc: '2.0',
+            id: ++this.rpcId,
+            method: 'tools/call',
+            params: { name, arguments: args },
+          },
+          `glean:mcp-tool:${name}`,
+        );
+        const env = await this.readRpcEnvelope(resp);
+        if (env.error) {
+          throw new Error(
+            `Glean MCP tools/call(${name}) error: ${env.error.message} (${env.error.code})`,
+          );
+        }
+        const result = env.result ?? { content: [] };
+        if (result.isError) {
+          const txt = (result.content ?? [])
+            .map((c) => (c.type === 'text' ? c.text : ''))
+            .join('\n')
+            .trim();
+          // Detect rate-limit signal embedded in tool error text.
+          if (isRateLimitMessage(txt) && attempt < maxAttempts - 1) {
+            await sleep(backoffMs(attempt));
+            continue;
+          }
+          throw new Error(`Glean MCP tool '${name}' returned error: ${txt}`);
+        }
+        return result;
+      } catch (err) {
+        lastErr = err;
+        const msg = (err as Error).message ?? '';
+        // HTTP-level 429 (rare; usually surfaces as isError above).
+        if ((msg.includes('429') || isRateLimitMessage(msg)) && attempt < maxAttempts - 1) {
+          await sleep(backoffMs(attempt));
+          continue;
+        }
+        throw err;
+      }
     }
-    const result = env.result ?? { content: [] };
-    if (result.isError) {
-      const txt = (result.content ?? [])
-        .map((c) => (c.type === 'text' ? c.text : ''))
-        .join('\n')
-        .trim();
-      throw new Error(`Glean MCP tool '${name}' returned error: ${txt}`);
+    throw lastErr instanceof Error ? lastErr : new Error('Glean MCP retries exhausted');
+    } finally {
+      releaseGleanSlot();
     }
-    return result;
   }
 
   // -------------------------------------------------------------------
@@ -553,7 +654,13 @@ function parseGleanYamlDocuments(text: string): GleanDocument[] {
   const out: GleanDocument[] = [];
   let inDocs = false;
   let cur: GleanDocument | null = null;
-  let curIndent = -1;
+  let docIndent = -1; // indent of the doc's top-level key/value lines
+  // Track the currently-open nested map (e.g. `matchingFilters:`). When
+  // set, lines deeper than docIndent route into this map. Cleared when
+  // we return to docIndent (or shallower).
+  let nestedKey: string | null = null;
+  let nestedIndent = -1;
+  let nested: Record<string, string[]> | null = null;
 
   const stripQuotes = (v: string): string => {
     const s = v.trim();
@@ -586,13 +693,39 @@ function parseGleanYamlDocuments(text: string): GleanDocument[] {
     return items.map(stripQuotes);
   };
 
+  /** Close the current nested-map context if any. */
+  const closeNested = (): void => {
+    if (nestedKey && nested && cur) {
+      // Attach to the document under the conventional name.
+      if (nestedKey === 'matchingFilters') {
+        cur.matchingFilters = { ...(cur.matchingFilters ?? {}), ...nested };
+      }
+      // Other nested maps (owner, customer, …) ignored for now — cerebro/
+      // gainsight only need matchingFilters.
+    }
+    nestedKey = null;
+    nested = null;
+    nestedIndent = -1;
+  };
+
+  /** Close the current document if any. */
+  const closeDoc = (): void => {
+    closeNested();
+    if (cur) {
+      out.push(cur);
+      cur = null;
+      docIndent = -1;
+    }
+  };
+
   for (const raw of lines) {
     const trimmed = raw.trimStart();
     const indent = raw.length - trimmed.length;
+    if (!trimmed) continue;
 
     // Top-level section header: `documents[N]:` / `entities[N]:` / etc.
     if (indent === 0 && /^[a-zA-Z_][\w]*(?:\[\d+\])?\s*:\s*$/.test(trimmed)) {
-      if (cur) { out.push(cur); cur = null; curIndent = -1; }
+      closeDoc();
       inDocs = /^documents/.test(trimmed);
       continue;
     }
@@ -601,41 +734,70 @@ function parseGleanYamlDocuments(text: string): GleanDocument[] {
     // New document marker: `- key: value` (the dash starts a new entry)
     const dashMatch = /^-\s+(.*)$/.exec(trimmed);
     if (dashMatch) {
-      if (cur) out.push(cur);
+      closeDoc();
       cur = {};
-      curIndent = indent + 2; // children align two past the dash
+      docIndent = indent + 2; // children align two past the dash
       const rest = dashMatch[1]!.trim();
-      if (rest) applyKv(cur, rest);
+      if (rest) applyKv(cur, rest, indent + 2);
       continue;
     }
 
     if (!cur) continue;
 
-    // Continuation lines must be at >= curIndent. If we see a line at
-    // less than curIndent (and it's not the dashMatch above), the doc
-    // block has ended.
-    if (indent < curIndent) {
-      out.push(cur);
-      cur = null;
-      curIndent = -1;
+    // If we've returned to or above the doc's own indent, the doc block
+    // has ended (next sibling doc or new section).
+    if (indent < docIndent) {
+      closeDoc();
       continue;
     }
-    // Skip nested objects (matchingFilters: with no value on same line) —
-    // we don't surface those in the UI today.
-    if (indent > curIndent) continue;
 
-    applyKv(cur, trimmed);
+    // At doc indent: regular doc field OR start of a nested map.
+    if (indent === docIndent) {
+      closeNested();
+      applyKv(cur, trimmed, indent);
+      continue;
+    }
+
+    // Deeper than doc indent: must belong to an open nested-map block.
+    // (Glean indents nested map children 2 spaces past the parent key.)
+    const target: Record<string, string[]> | null = nested;
+    if (target && indent > nestedIndent) {
+      const colon = trimmed.indexOf(':');
+      if (colon > 0) {
+        const k = trimmed.slice(0, colon).trim().replace(/\[\d+\]$/, '');
+        const v = trimmed.slice(colon + 1).trim();
+        if (v) (target as Record<string, string[]>)[k] = splitScalars(v);
+      }
+      continue;
+    }
+    // Otherwise: a nested key was opened but we're back at its level →
+    // close it and re-process the line as a doc field.
+    closeNested();
+    if (indent === docIndent) applyKv(cur, trimmed, indent);
   }
-  if (cur) out.push(cur);
+  closeDoc();
 
-  function applyKv(doc: GleanDocument, kv: string): void {
+  function applyKv(doc: GleanDocument, kv: string, lineIndent: number): void {
     const colon = kv.indexOf(':');
     if (colon < 0) return;
     const rawKey = kv.slice(0, colon).trim();
     const rawVal = kv.slice(colon + 1).trim();
     // Strip array-length annotations like `snippets[16]` → `snippets`.
     const key = rawKey.replace(/\[\d+\]$/, '');
-    if (!rawVal) return; // sub-object header; we ignore inner fields
+    // Empty value with key = nested-map header. Open a nested-map block.
+    if (!rawVal) {
+      if (key === 'matchingFilters') {
+        nestedKey = key;
+        nested = doc.matchingFilters ? { ...doc.matchingFilters } : {};
+        nestedIndent = lineIndent;
+      } else {
+        // Open + ignored (we only care about matchingFilters today).
+        nestedKey = key;
+        nested = {};
+        nestedIndent = lineIndent;
+      }
+      return;
+    }
     const val = stripQuotes(rawVal);
     switch (key) {
       case 'title':

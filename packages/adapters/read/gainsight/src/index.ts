@@ -55,7 +55,13 @@ export const gainsightAdapter: ReadAdapter = {
       log?.info('gainsight.skip', { reason: 'no prior snapshot' });
       return { accounts: [], opportunities: [] };
     }
-    const priorAccounts = await readSnapshotAccounts(prior.id);
+    const allAccounts = await readSnapshotAccounts(prior.id);
+    // Cap enrichment scope. With Glean's per-minute rate limit + the
+    // process-wide concurrency gate in GleanClient, ~300 accounts × 3
+    // adapters would push the refresh past 10 minutes. Default 100,
+    // overridable via GLEAN_ENRICH_LIMIT (set 0 to disable cap).
+    const limit = Number(process.env.GLEAN_ENRICH_LIMIT) || 50;
+    const priorAccounts = limit > 0 ? allAccounts.slice(0, limit) : allAccounts;
     const nameToAccountId = new Map<string, string>();
     for (const a of priorAccounts) {
       nameToAccountId.set(normalizeName(a.accountName), a.accountId);
@@ -66,22 +72,80 @@ export const gainsightAdapter: ReadAdapter = {
     }
 
     const client = new GleanClient(creds);
+    // Concurrency 2 to share Glean's rate-limit budget with cerebro +
+    // glean-mcp. See GleanClient's retry-with-backoff for the upstream
+    // safety net.
+    // Use `||` not `??` because docker-compose forwards unset host env
+    // vars as empty strings; Number("") is 0 → zero workers → no-op.
+    const concurrency = Number(process.env.GAINSIGHT_CONCURRENCY) || 2;
 
-    let docs;
-    try {
-      docs = await client.searchAll({
-        query: '*',
-        datasources: ['gainsight'],
-        facetFilters: [
-          { fieldName: 'type', values: [{ value: 'calltoaction', relationType: 'EQUALS' }] },
-        ],
-        pageSize: 100,
-      });
-    } catch (err) {
-      log?.error('gainsight.search.failed', { error: (err as Error).message });
-      return { accounts: [], opportunities: [] };
-    }
-    log?.info('gainsight.search.complete', { docCount: docs.length });
+    // MCP search ignores datasources / facetFilters — those are
+    // admin-scoped REST args. Per-account keyword search is the only
+    // path that surfaces Gainsight CTAs; we then filter to the
+    // gainsight datasource via the matchingFilters / datasource
+    // fields embedded in each result.
+    log?.info('gainsight.start', {
+      accountCount: priorAccounts.length,
+      concurrency,
+    });
+    const startedAt = Date.now();
+    let searchFailures = 0;
+    const docsAccum: Awaited<ReturnType<typeof client.search>>['documents'] = [];
+
+    const perAccount = await Promise.all(
+      // Bounded concurrency via simple promise-array slicing — gainsight
+      // adapter doesn't import the helper from glean-mcp; this is small
+      // enough to inline.
+      (() => {
+        const results: Promise<void>[] = [];
+        let cursor = 0;
+        const work = async (): Promise<void> => {
+          while (cursor < priorAccounts.length) {
+            const i = cursor++;
+            const account = priorAccounts[i]!;
+            try {
+              const resp = await client.search({
+                query: `gainsight CTA ${account.accountName}`,
+              });
+              const found = (resp.documents ?? resp.results ?? []).filter(
+                (d) =>
+                  d.datasource === 'gainsight' ||
+                  d.matchingFilters?.app?.includes('gainsight') === true ||
+                  (d.url ?? '').includes('gainsight'),
+              );
+              docsAccum.push(...found);
+            } catch (err) {
+              searchFailures += 1;
+              log?.warn('gainsight.search.account.failed', {
+                accountId: account.accountId,
+                error: (err as Error).message,
+              });
+            }
+          }
+        };
+        for (let w = 0; w < Math.min(concurrency, priorAccounts.length); w++) {
+          results.push(work());
+        }
+        return results;
+      })(),
+    );
+    void perAccount;
+
+    // Dedupe by URL — overlapping per-account searches surface the same
+    // CTA more than once.
+    const seenUrls = new Set<string>();
+    const docs = docsAccum.filter((d) => {
+      if (!d.url) return true;
+      if (seenUrls.has(d.url)) return false;
+      seenUrls.add(d.url);
+      return true;
+    });
+    log?.info('gainsight.search.complete', {
+      searchedAccounts: priorAccounts.length,
+      searchFailures,
+      docCount: docs.length,
+      durationMs: Date.now() - startedAt,
+    });
 
     // Bucket CTAs by normalized account name.
     const ctasByAccountName = new Map<string, GainsightCtaMapped[]>();

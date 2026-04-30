@@ -58,25 +58,28 @@ interface SourceConfig {
  * on the underlying message. This is the privacy guard for accounts the
  * current user doesn't own.
  */
+// Glean's MCP `search` tool requires SHORT keyword queries — no quotes,
+// no boolean operators, no advanced filters like `from:`. Per Glean's
+// tool description. We use plain keyword combinations and rely on
+// downstream datasource-filtering of returned docs.
 const SOURCES: SourceConfig[] = [
   {
     datasource: 'googlecalendar',
     bucket: 'calendar',
     fullDoc: true,
-    buildQuery: (n) => `"${n}" (renewal OR EBR OR QBR OR review OR sync OR escalation)`,
+    buildQuery: (n) => `${n} renewal QBR review`,
   },
   {
     datasource: 'slack',
     bucket: 'calendar', // Slack mentions surface as evidence; logical bucket "calendar" is closest in the canonical type's union.
     fullDoc: false,
-    buildQuery: (n) => `"${n}" (renewal OR risk OR escalation OR churn OR EBR OR QBR)`,
+    buildQuery: (n) => `${n} renewal risk escalation`,
   },
   {
     datasource: 'gmail',
     bucket: 'staircase', // Staircase summaries arrive via Gmail.
     fullDoc: false, // PRIVACY: never read Gmail bodies.
-    buildQuery: (n) =>
-      `from:support@staircase.ai "${n}"`,
+    buildQuery: (n) => `${n} staircase summary`,
   },
 ];
 
@@ -154,15 +157,22 @@ export async function fetchAccountEvidence(
   const perSource = await Promise.all(
     SOURCES.map(async (source) => {
       try {
-        const docs = await client.searchAll(
-          {
-            query: source.buildQuery(input.accountName),
-            datasources: [source.datasource],
-            pageSize: 25,
-          },
-          /* maxPages */ 1,
-        );
-        const fresh = docs.filter((d) => isRecent(d, recencyDays)).slice(0, topN);
+        const resp = await client.search({
+          query: source.buildQuery(input.accountName),
+        });
+        const docs = resp.documents ?? resp.results ?? [];
+        // MCP search returns cross-datasource results — filter to the
+        // intended source. Datasource is reported on the top-level
+        // `datasource` field for each doc; some Glean builds also
+        // populate matchingFilters.app.
+        const inSource = docs.filter((d) => {
+          if (d.datasource === source.datasource) return true;
+          const apps = d.matchingFilters?.app ?? [];
+          return apps.some((a) => a === source.datasource);
+        });
+        const fresh = inSource
+          .filter((d) => isRecent(d, recencyDays))
+          .slice(0, topN);
         return { source, docs: fresh };
       } catch {
         return { source, docs: [] as GleanDocument[] };

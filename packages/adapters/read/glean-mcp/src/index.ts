@@ -30,7 +30,11 @@ import { fetchAccountEvidence, applyContextAndEvidenceToAccount } from './eviden
 
 export const isReadOnly: true = true;
 
-const DEFAULT_CONCURRENCY = 5;
+// Concurrency 2 to share Glean's rate-limit budget with cerebro +
+// gainsight (each account fans out into ~4 searches between
+// account-context + 3 evidence sources). GleanClient's retry-with-
+// backoff absorbs the occasional 429 that still slips through.
+const DEFAULT_CONCURRENCY = 2;
 
 /**
  * Run async fn over each item with bounded parallelism.
@@ -68,7 +72,10 @@ export const gleanMcpAdapter: ReadAdapter = {
 
     const refreshAt = ctx?.asOf ?? new Date();
     const log = ctx?.logger;
-    const concurrency = Number(process.env.GLEAN_CONCURRENCY ?? DEFAULT_CONCURRENCY);
+    // Use `||` not `??` because docker-compose forwards unset host env
+    // vars as empty strings; Number("") is 0 → zero workers → no-op.
+    const concurrency =
+      Number(process.env.GLEAN_CONCURRENCY) || DEFAULT_CONCURRENCY;
 
     // Discover the account set from the prior successful snapshot. If
     // there is no prior snapshot (cold start), there's nothing to enrich
@@ -78,11 +85,18 @@ export const gleanMcpAdapter: ReadAdapter = {
       log?.info('glean-mcp.skip', { reason: 'no prior snapshot' });
       return { accounts: [], opportunities: [] };
     }
-    const priorAccounts = await readSnapshotAccounts(prior.id);
-    if (priorAccounts.length === 0) {
+    const allAccounts = await readSnapshotAccounts(prior.id);
+    if (allAccounts.length === 0) {
       log?.info('glean-mcp.skip', { reason: 'prior snapshot has no accounts' });
       return { accounts: [], opportunities: [] };
     }
+    // Cap enrichment scope. Each account fans out into ~5 Glean calls
+    // (account-context primary + secondary + 3 evidence sources). At
+    // Glean's effective ~2 req/s ceiling, 300 accounts × 5 ≈ 12 min,
+    // which exceeds the worker timeout. Default 100; override via
+    // GLEAN_ENRICH_LIMIT (set 0 to disable cap).
+    const limit = Number(process.env.GLEAN_ENRICH_LIMIT) || 50;
+    const priorAccounts = limit > 0 ? allAccounts.slice(0, limit) : allAccounts;
 
     const client = new GleanClient(creds);
     log?.info('glean-mcp.start', {

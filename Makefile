@@ -52,6 +52,6 @@ sf-validate:
 # shell (which would otherwise shadow .env in docker compose).
 glean-token:
 	@unset GLEAN_MCP_TOKEN && node scripts/refresh-glean-token.mjs
-	@echo "[glean-token] re-creating web container so it picks up the new token..."
-	@unset GLEAN_MCP_TOKEN && docker compose up -d --force-recreate --no-deps web
+	@echo "[glean-token] re-creating web + worker so they pick up the new token..."
+	@unset GLEAN_MCP_TOKEN ADAPTER_TIMEOUT_MS_CEREBRO ADAPTER_TIMEOUT_MS_GAINSIGHT ADAPTER_TIMEOUT_MS_GLEAN_MCP CEREBRO_CONCURRENCY GAINSIGHT_CONCURRENCY GLEAN_CONCURRENCY GLEAN_ENRICH_LIMIT && docker compose up -d --force-recreate --no-deps web worker
 	@sleep 4 && curl -sS http://localhost:3000/api/glean/health | head -c 400 && echo

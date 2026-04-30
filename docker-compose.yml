@@ -77,6 +77,40 @@ services:
       ZUORA_MCP_CLIENT_SECRET: ${ZUORA_MCP_CLIENT_SECRET-}
       ZUORA_MCP_BASE_URL: ${ZUORA_MCP_BASE_URL-}
       SCORING_VERSION: ${SCORING_VERSION:-v0.1.0}
+      # Per-adapter timeouts (ms). The Glean-using adapters loop
+      # over every account at concurrency 2 and call Glean's MCP
+      # search tool once per account. At ~700ms/call after rate-
+      # limit backoff, 300 accounts ≈ 105s per adapter. We
+      # default the timeout at 300s; override via host .env.
+      ADAPTER_TIMEOUT_MS: ${ADAPTER_TIMEOUT_MS-}
+      # All three Glean adapters share a process-wide rate-limit gate
+      # (see GleanClient in packages/adapters/read/_shared/src/glean.ts),
+      # so when they run in parallel each one effectively waits for the
+      # others. 600s timeout covers worst-case 50 accounts × 7 combined
+      # calls at Glean's ~2 req/s ceiling plus retry headroom.
+      ADAPTER_TIMEOUT_MS_CEREBRO: ${ADAPTER_TIMEOUT_MS_CEREBRO:-600000}
+      ADAPTER_TIMEOUT_MS_GAINSIGHT: ${ADAPTER_TIMEOUT_MS_GAINSIGHT:-600000}
+      # glean-mcp fans out 5x more calls per account than the other Glean
+      # adapters (account-context primary + secondary + 3 evidence sources),
+      # so it needs a longer timeout. 600s covers 50 accounts × 5 calls
+      # at Glean's ~2 req/s ceiling with retry headroom.
+      ADAPTER_TIMEOUT_MS_GLEAN_MCP: ${ADAPTER_TIMEOUT_MS_GLEAN_MCP:-600000}
+      # Concurrency overrides for the Glean-using adapters. Lower =
+      # gentler on Glean's rate limit at the cost of refresh duration.
+      CEREBRO_CONCURRENCY: ${CEREBRO_CONCURRENCY-}
+      GAINSIGHT_CONCURRENCY: ${GAINSIGHT_CONCURRENCY-}
+      GLEAN_CONCURRENCY: ${GLEAN_CONCURRENCY-}
+      # Cap how many accounts each Glean adapter enriches per refresh.
+      # Default 100; set to 0 to disable cap. Each adapter loops over
+      # this many accounts and calls Glean once (cerebro/gainsight) or
+      # ~5x (glean-mcp). At Glean's ~2 req/s effective ceiling, 100
+      # accounts ≈ 250s for glean-mcp.
+      GLEAN_ENRICH_LIMIT: ${GLEAN_ENRICH_LIMIT-}
+      # Process-wide GleanClient rate limiter tunables (in glean.ts):
+      GLEAN_MAX_INFLIGHT: ${GLEAN_MAX_INFLIGHT-}
+      GLEAN_MIN_INTERVAL_MS: ${GLEAN_MIN_INTERVAL_MS-}
+      GLEAN_MAX_RETRY_ATTEMPTS: ${GLEAN_MAX_RETRY_ATTEMPTS-}
+      GLEAN_RETRY_BASE_MS: ${GLEAN_RETRY_BASE_MS-}
       # Corporate TLS interception (Zscaler etc.). When the host has
       # exported its corp root CAs to .docker-ca.pem, point Node at
       # them. Empty value = use bundled Mozilla CAs only (works only

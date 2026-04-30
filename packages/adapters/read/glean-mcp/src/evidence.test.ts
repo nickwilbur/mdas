@@ -1,24 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
 import { applyContextAndEvidenceToAccount, fetchAccountEvidence } from './evidence.js';
 import type { CanonicalAccount } from '@mdas/canonical';
-import type { GleanClient, GleanDocument, GleanSearchOptions } from '../../_shared/src/glean.js';
+import type { GleanClient, GleanDocument } from '../../_shared/src/glean.js';
 
 const NOW = new Date('2026-04-28T18:00:00.000Z');
 
 /**
- * Build a stubbed GleanClient that dispatches per-datasource fixtures.
- * The evidence module issues one search per datasource; the stub
- * inspects opts.datasources[0] and returns the matching fixture.
+ * Build a stubbed GleanClient. Glean's MCP `search` tool returns
+ * cross-datasource results and the evidence module filters them by
+ * `doc.datasource` after the fact, so we can flatten every fixture
+ * into a single combined result list and let the production filter
+ * route docs to the right bucket.
  */
 function makeClientByDatasource(
   fixtures: Record<string, GleanDocument[]>,
 ): GleanClient {
+  const combined = Object.values(fixtures).flat();
   return {
-    searchAll: vi.fn(async (opts: GleanSearchOptions) => {
-      const ds = opts.datasources?.[0] ?? '';
-      return fixtures[ds] ?? [];
-    }),
-    search: vi.fn(),
+    searchAll: vi.fn(async () => combined),
+    search: vi.fn(async () => ({ results: combined })),
     getDocuments: vi.fn(),
     healthCheck: vi.fn(),
   } as unknown as GleanClient;
@@ -125,18 +125,24 @@ describe('fetchAccountEvidence', () => {
   });
 
   it('survives a single-source failure without losing other sources', async () => {
+    // Glean's MCP search uses one query per source (different keyword
+    // sets per datasource bucket). We route by query content: the
+    // "staircase" keyword belongs to the gmail bucket and we make
+    // that call throw; other queries succeed and surface a calendar
+    // result the assertions can lock onto.
     const client: GleanClient = {
-      searchAll: vi.fn(async (opts: GleanSearchOptions) => {
-        const ds = opts.datasources?.[0];
-        if (ds === 'gmail') throw new Error('Gmail connector down');
-        if (ds === 'googlecalendar') {
-          return [
-            { title: 'Acme EBR', url: 'https://cal/1', updateTime: RECENT, datasource: 'googlecalendar' },
-          ];
+      searchAll: vi.fn(),
+      search: vi.fn(async ({ query }: { query: string }) => {
+        if (query.includes('staircase')) throw new Error('Gmail connector down');
+        if (query.includes('renewal QBR')) {
+          return {
+            results: [
+              { title: 'Acme EBR', url: 'https://cal/1', updateTime: RECENT, datasource: 'googlecalendar' },
+            ],
+          };
         }
-        return [];
+        return { results: [] };
       }),
-      search: vi.fn(),
       getDocuments: vi.fn(),
       healthCheck: vi.fn(),
     } as unknown as GleanClient;

@@ -101,17 +101,95 @@ const SUB_METRIC_BOOL_FIELDS = [
   'crReportingUse',
 ] as const;
 
-function extractSubMetrics(parsed: CerebroRichContent | null): Record<string, number | string | boolean | null> {
-  if (!parsed?.facets) return {};
-  const intFacets = parsed.facets.intFacets ?? {};
-  const kw = parsed.facets.keywordFacets ?? {};
-  const out: Record<string, number | string | boolean | null> = {};
-  for (const k of SUB_METRIC_INT_FIELDS) {
-    if (k in intFacets) out[k] = intFacets[k] ?? null;
+/**
+ * Snippets in Glean's MCP `search` response carry the sub-metrics as
+ * labeled scalars, e.g.:
+ *   "Dso: 0", "Executive Meeting Count: 3",
+ *   "Has Invoice Settlement: false", "Revenue Amount: 1234567"
+ *
+ * Map each snippet → canonical sub-metric key. Returns the parsed value
+ * (number for numerics, boolean for has-flags) or null if the snippet
+ * doesn't match any known label.
+ */
+const SNIPPET_LABEL_TO_INT_KEY: Record<string, (typeof SUB_METRIC_INT_FIELDS)[number]> = {
+  'Projected Billing Utilization': 'crProjectedBillingUtilization',
+  'Projected Revenue Utilization': 'crProjectedRevenueUtilization',
+  'Executive Meeting Count': 'crExecutiveMeetingCount',
+  'Billing Product Share': 'crBillingProductShare',
+  'Revenue Product Share': 'crRevenueProductShare',
+  'Orders API Usage': 'crOrdersApiUsage',
+  'Emailed Invoices': 'crEmailedInvoices',
+  'ePayments Processed': 'crEpaymentsProcessed',
+  'Invoices Posted': 'crInvoicesPosted',
+  'Journal Entries': 'crJournalEntries',
+  Orders: 'crOrders',
+  Quotes: 'crQuotes',
+  'Revenue Amount': 'crRevenueAmount',
+  'Billing Cost': 'crBillingCost',
+  'Revenue Cost': 'crRevenueCost',
+  Dso: 'crDso',
+};
+
+const SNIPPET_LABEL_TO_BOOL_KEY: Record<string, (typeof SUB_METRIC_BOOL_FIELDS)[number]> = {
+  'Has Enhanced Services': 'crHasEnhancedServices',
+  'Has ESA': 'crHasEsa',
+  'Has Invoice Settlement': 'crHasInvoiceSettlement',
+  'Has MS': 'crHasMs',
+  'Has PES': 'crHasPes',
+  'Has TAM': 'crHasTam',
+  'Has UNO': 'crHasUno',
+  'Reporting Use': 'crReportingUse',
+};
+
+function parseSnippetSubMetric(
+  snippet: string,
+): { key: string; value: number | boolean } | null {
+  const m = /^([A-Za-z][A-Za-z\s]+?):\s*(.+?)\s*$/.exec(snippet);
+  if (!m) return null;
+  const label = m[1]!.trim();
+  const value = m[2]!.trim();
+  const intKey = SNIPPET_LABEL_TO_INT_KEY[label];
+  if (intKey) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    return { key: intKey, value: n };
   }
-  for (const k of SUB_METRIC_BOOL_FIELDS) {
-    const b = parseBool(kw[k]);
-    if (b !== null) out[k] = b;
+  const boolKey = SNIPPET_LABEL_TO_BOOL_KEY[label];
+  if (boolKey) {
+    const b = parseBool([value]);
+    if (b === null) return null;
+    return { key: boolKey, value: b };
+  }
+  return null;
+}
+
+function extractSubMetrics(
+  doc: GleanDocument,
+  parsed: CerebroRichContent | null,
+): Record<string, number | string | boolean | null> {
+  const out: Record<string, number | string | boolean | null> = {};
+  // Prefer richDocumentData (REST path; canonical-cased keys + intFacets).
+  if (parsed?.facets) {
+    const intFacets = parsed.facets.intFacets ?? {};
+    const kw = parsed.facets.keywordFacets ?? {};
+    for (const k of SUB_METRIC_INT_FIELDS) {
+      if (k in intFacets) out[k] = intFacets[k] ?? null;
+    }
+    for (const k of SUB_METRIC_BOOL_FIELDS) {
+      const b = parseBool(kw[k]);
+      if (b !== null) out[k] = b;
+    }
+  }
+  // Always also harvest from snippets — Glean's MCP `search` tool only
+  // surfaces sub-metrics there, and the REST `getdocument` path may
+  // return additional values via snippets too. Snippets-derived values
+  // never overwrite richDocumentData values.
+  for (const snippet of doc.snippets ?? []) {
+    const parsedSnippet = parseSnippetSubMetric(snippet);
+    if (!parsedSnippet) continue;
+    if (!(parsedSnippet.key in out)) {
+      out[parsedSnippet.key] = parsedSnippet.value;
+    }
   }
   return out;
 }
@@ -170,7 +248,7 @@ export function mapCerebroDocument(
   if (!accountId) return null;
 
   const cerebroRisks = extractRisks(doc, parsed);
-  const subMetrics = extractSubMetrics(parsed);
+  const subMetrics = extractSubMetrics(doc, parsed);
   const customerName = extractCustomerName(doc, parsed);
 
   const sourceLink: SourceLink = {

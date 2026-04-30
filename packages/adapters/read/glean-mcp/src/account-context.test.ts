@@ -3,9 +3,13 @@ import { fetchAccountContext } from './account-context.js';
 import type { GleanClient, GleanDocument } from '../../_shared/src/glean.js';
 
 function makeClient(stubbed: GleanDocument[]): GleanClient {
+  // The implementation issues 1+ search() calls per account (primary +
+  // secondary query) and concatenates the results. Stubbing search to
+  // return the same list for every call lets each test fixture stand in
+  // as Glean's relevance-sorted top-K.
   return {
     searchAll: vi.fn(async () => stubbed),
-    search: vi.fn(),
+    search: vi.fn(async () => ({ results: stubbed })),
     getDocuments: vi.fn(),
     healthCheck: vi.fn(),
   } as unknown as GleanClient;
@@ -38,7 +42,7 @@ describe('fetchAccountContext', () => {
 
   it('returns empty arrays when Glean throws', async () => {
     const client = {
-      searchAll: vi.fn(async () => {
+      search: vi.fn(async () => {
         throw new Error('Glean down');
       }),
     } as unknown as GleanClient;

@@ -33,8 +33,14 @@ export interface AccountContextOptions {
   buildQuery?: (accountName: string) => string;
 }
 
+// Glean's MCP `search` tool requires SHORT keyword queries — no quotes,
+// no boolean operators, no full sentences. Per Glean's tool description.
+// Two queries cover the common doc shapes; we run both per account and
+// dedupe by URL downstream.
 const DEFAULT_QUERY = (accountName: string): string =>
-  `"${accountName}" (account plan OR QBR OR business review OR success plan)`;
+  `${accountName} account plan`;
+const SECONDARY_QUERY = (accountName: string): string =>
+  `${accountName} QBR business review`;
 
 const PLAN_KEYWORDS = [
   'account plan',
@@ -83,27 +89,44 @@ export async function fetchAccountContext(
   const topN = opts.topN ?? 5;
   const buildQuery = opts.buildQuery ?? DEFAULT_QUERY;
 
-  let docs: GleanDocument[];
-  try {
-    docs = await client.searchAll(
-      {
-        query: buildQuery(input.accountName),
-        // Glean's gdrive connector indexes Google Drive documents (Sheets,
-        // Slides, Docs). That covers account plans, QBR decks, and
-        // business review writeups.
-        datasources: ['gdrive'],
-        pageSize: 25,
-      },
-      // One page is plenty — relevance ranking puts the best hits first.
-      /* maxPages */ 1,
-    );
-  } catch {
-    // Glean failures here are non-fatal; account-context is enrichment.
-    return { accountPlanLinks: [], sourceLinks: [] };
+  // Run two queries per account (plan-shaped + QBR/review-shaped) and
+  // merge results. MCP search ignores datasource filters, so we get
+  // cross-source results and rely on the title-keyword filter
+  // downstream to scope to plan docs.
+  const queries = [
+    buildQuery(input.accountName),
+    opts.buildQuery ? null : SECONDARY_QUERY(input.accountName),
+  ].filter((q): q is string => !!q);
+
+  const allDocs: GleanDocument[] = [];
+  for (const q of queries) {
+    try {
+      const resp = await client.search({ query: q });
+      const docs = resp.documents ?? resp.results ?? [];
+      allDocs.push(...docs);
+    } catch {
+      // Glean failures here are non-fatal; account-context is enrichment.
+    }
   }
 
-  // Filter to plan-shaped documents and keep top N.
-  const planLikeDocs = docs.filter(looksLikePlanDoc).slice(0, topN);
+  // Dedupe by URL and prefer Google Drive results when present (highest
+  // signal-to-noise for account plans).
+  const seenUrls = new Set<string>();
+  const deduped: GleanDocument[] = [];
+  for (const d of allDocs) {
+    if (!d.url || seenUrls.has(d.url)) continue;
+    seenUrls.add(d.url);
+    deduped.push(d);
+  }
+  // Sort: gdrive first, then any plan-shaped, then everything else.
+  deduped.sort((a, b) => {
+    const aGd = (a.datasource ?? '').includes('drive') ? 0 : 1;
+    const bGd = (b.datasource ?? '').includes('drive') ? 0 : 1;
+    return aGd - bGd;
+  });
+
+  // Filter to plan-shaped documents (by title keyword) and keep top N.
+  const planLikeDocs = deduped.filter(looksLikePlanDoc).slice(0, topN);
 
   const accountPlanLinks = planLikeDocs
     .map(toPlanLink)
