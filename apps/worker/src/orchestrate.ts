@@ -36,9 +36,12 @@ import { zuoraMcpAdapter } from '@mdas/adapter-zuora-mcp';
 import { gleanMcpAdapter } from '@mdas/adapter-glean-mcp';
 import { localSnapshotsAdapter } from '@mdas/adapter-local-snapshots';
 
-// Adapter execution order matters: mergeAdapterResults() does a naive
-// last-write-wins spread, so adapters scheduled LATER override earlier
-// ones on shared canonical fields.
+// Adapter execution order matters: mergeAdapterResults() does a
+// last-write-wins spread on scalar fields (so adapters scheduled LATER
+// override earlier ones on shared canonical fields like account name,
+// sentiment, owner). Provenance/freshness fields
+// (`lastFetchedFromSource`, `sourceErrors`, `sourceLinks`) are
+// deep-merged instead — see mergeAccount() / mergeOpportunity().
 //
 // Policy (see "Data sources & precedence" in README.md):
 //   1. localSnapshots is ALWAYS first as the baseline so unattended
@@ -154,6 +157,65 @@ function withAccountDefaults(a: CanonicalAccount): CanonicalAccount {
   };
 }
 
+/**
+ * Naive last-write-wins shallow merge is correct for scalar canonical
+ * fields (Salesforce wins on account name, sentiment, owner, etc. — see
+ * REAL_ADAPTERS execution order above). But a handful of fields are
+ * *additive* across adapters and would be silently destroyed by a plain
+ * `{ ...existing, ...a }` spread:
+ *
+ *   - `lastFetchedFromSource` — each adapter emits `{ <itsSource>: ts }`,
+ *     so a shallow spread by the last adapter (salesforce) erases every
+ *     other source's freshness stamp. Symptom: /admin/data-quality shows
+ *     0 fresh accounts for cerebro / gainsight / glean-mcp even when the
+ *     adapters ran successfully.
+ *   - `sourceErrors` — same shape, same risk; per-source error pills in
+ *     the UI would be wiped by a later successful adapter.
+ *   - `sourceLinks` — each adapter contributes one (or more) citation
+ *     link for the Account Drill-In; a shallow spread keeps only the
+ *     last adapter's link.
+ *
+ * We deep-merge those three fields here so provenance/freshness is
+ * preserved while still keeping last-write-wins for every other field.
+ */
+function mergeAccount(
+  existing: CanonicalAccount,
+  next: CanonicalAccount,
+): CanonicalAccount {
+  return {
+    ...existing,
+    ...next,
+    lastFetchedFromSource: {
+      ...(existing.lastFetchedFromSource ?? {}),
+      ...(next.lastFetchedFromSource ?? {}),
+    },
+    sourceErrors: {
+      ...(existing.sourceErrors ?? {}),
+      ...(next.sourceErrors ?? {}),
+    },
+    sourceLinks: [...(existing.sourceLinks ?? []), ...(next.sourceLinks ?? [])],
+  };
+}
+
+function mergeOpportunity(
+  existing: CanonicalOpportunity,
+  next: CanonicalOpportunity,
+): CanonicalOpportunity {
+  return {
+    ...existing,
+    ...next,
+    lastFetchedFromSource: {
+      ...(existing.lastFetchedFromSource ?? {}),
+      ...(next.lastFetchedFromSource ?? {}),
+    },
+    sourceErrors: {
+      ...(existing.sourceErrors ?? {}),
+      ...(next.sourceErrors ?? {}),
+    },
+    sourceLinks: [...(existing.sourceLinks ?? []), ...(next.sourceLinks ?? [])],
+  };
+}
+
 function mergeAdapterResults(
   results: { accounts?: CanonicalAccount[]; opportunities?: CanonicalOpportunity[] }[],
 ): MergedData {
@@ -162,11 +224,11 @@ function mergeAdapterResults(
   for (const r of results) {
     for (const a of r.accounts ?? []) {
       const existing = accountsMap.get(a.accountId);
-      accountsMap.set(a.accountId, existing ? { ...existing, ...a } : a);
+      accountsMap.set(a.accountId, existing ? mergeAccount(existing, a) : a);
     }
     for (const o of r.opportunities ?? []) {
       const existing = oppsMap.get(o.opportunityId);
-      oppsMap.set(o.opportunityId, existing ? { ...existing, ...o } : o);
+      oppsMap.set(o.opportunityId, existing ? mergeOpportunity(existing, o) : o);
     }
   }
   return {
