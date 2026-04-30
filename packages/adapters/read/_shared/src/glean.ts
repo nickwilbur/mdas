@@ -1,19 +1,23 @@
-// GleanClient — shared HTTP client for Glean REST API v1.
+// GleanClient — shared client for Glean. Speaks Glean's MCP
+// (Streamable HTTP) transport, which is what non-admin tokens are
+// scoped to in most tenants. The public API mirrors the original REST
+// client (search / searchAll / getDocuments / chat / healthCheck) so
+// route handlers and worker adapters don't need to change.
 //
 // Read-only by construction:
-//   - Only exposes search() (POST /rest/api/v1/search) and getDocument()
-//     (POST /rest/api/v1/getdocument). No createIndex / updateMetadata /
-//     similar verbs are exported.
-//   - All POSTs route through readOnlyGuard which only permits the search,
-//     chat, getdocument, and documents endpoints (see _shared/index.ts).
+//   - Only invokes the `search`, `chat`, and `read_document` MCP tools.
+//     readOnlyGuard still gates the underlying POST so any future write
+//     verb hits a hard stop in tests + at runtime.
 //
-// Auth: Bearer token via GLEAN_MCP_TOKEN env var. Token is treated as
-// opaque — no refresh logic; if it expires the caller surfaces the 401
-// via .ok / response shape.
+// Auth: Bearer token via GLEAN_MCP_TOKEN. Token is treated as opaque —
+// if Glean rejects it (401 / Invalid Secret) the error propagates to
+// the caller for surfacing.
 //
 // Per-refresh caching: each GleanClient instance is constructed inside
 // the worker's runRefresh() loop (PR-1 RefreshContext), so its in-memory
-// caches are scoped to a single refresh and discarded after.
+// caches are scoped to a single refresh and discarded after. The MCP
+// session id is also instance-scoped — a fresh client = a fresh
+// initialize handshake.
 import { readOnlyGuard } from './index.js';
 
 export interface GleanCredentials {
@@ -146,58 +150,210 @@ export class GleanClient {
    *  document when multiple adapter codepaths reference it. */
   private readonly docCache = new Map<string, GleanDocument>();
 
+  /** MCP endpoint URL — used as-is for JSON-RPC POSTs. */
+  private readonly mcpUrl: string;
+  /** Captured from Mcp-Session-Id response header on initialize. */
+  private mcpSessionId?: string;
+  /** Memoized initialize handshake; one per client lifetime. */
+  private mcpInit?: Promise<void>;
+  /** Monotonic JSON-RPC id counter. */
+  private rpcId = 0;
+
   constructor(creds: GleanCredentials) {
-    // Normalize the base URL to the REST API root.
-    //
-    // Operators often set GLEAN_MCP_BASE_URL to the MCP transport
-    // endpoint (e.g. `https://zuora-be.glean.com/mcp/default`) because
-    // that's what the Glean MCP server documentation hands out. The
-    // REST client we use here appends `/rest/api/v1/...` and would
-    // 404/401 against an MCP path. Strip any trailing `/mcp/<name>`
-    // (or bare `/mcp`) plus any trailing slash so the same env var
-    // works for both transports without forcing a rename.
-    this.baseUrl = creds.baseUrl
-      .replace(/\/mcp(\/[^/]*)?\/?$/, '')
-      .replace(/\/$/, '');
+    // Operators normally set GLEAN_MCP_BASE_URL to Glean's MCP transport
+    // endpoint (e.g. `https://zuora-be.glean.com/mcp/default`). That's
+    // what we use directly. If a tenant-root URL was provided instead,
+    // append the conventional `/mcp/default` so non-admin tokens still
+    // resolve to a usable endpoint.
+    let url = creds.baseUrl.replace(/\/$/, '');
+    if (!/\/mcp(\/[^/]+)?$/.test(url)) {
+      url = `${url}/mcp/default`;
+    }
+    this.mcpUrl = url;
+    // Stored separately from headers because we also need the bare token
+    // for the readOnlyGuard call paths (no other reason).
+    this.baseUrl = url;
     this.headers = {
       'content-type': 'application/json',
+      // Glean's MCP server replies with either application/json OR
+      // text/event-stream depending on the server build; advertise both.
+      accept: 'application/json, text/event-stream',
       authorization: `Bearer ${creds.token}`,
     };
   }
 
-  /**
-   * Issue a POST /rest/api/v1/search call. Returns the raw response body —
-   * callers narrow the document set themselves. Use searchAll() for
-   * cursor-paginated full result retrieval.
-   */
-  async search(opts: GleanSearchOptions): Promise<GleanSearchResponse> {
-    const body: Record<string, unknown> = {
-      query: opts.query,
-      pageSize: opts.pageSize ?? 100,
-    };
-    if (opts.cursor) body.cursor = opts.cursor;
-    const requestOptions: Record<string, unknown> = {};
-    if (opts.datasources?.length) requestOptions.datasourcesFilter = opts.datasources;
-    if (opts.facetFilters?.length) requestOptions.facetFilters = opts.facetFilters;
-    if (Object.keys(requestOptions).length) body.requestOptions = requestOptions;
+  // -------------------------------------------------------------------
+  // MCP transport (Streamable HTTP, JSON-RPC 2.0)
+  //
+  // Per the MCP spec, a session is established by:
+  //   1. POST { method: 'initialize', ... }
+  //      → server returns capabilities + an Mcp-Session-Id header.
+  //   2. POST { method: 'notifications/initialized' }  (no id, no reply)
+  // Subsequent requests echo the session id header back.
+  //
+  // Glean's MCP server may answer with SSE for streaming tools; we
+  // collapse the stream into the final JSON-RPC envelope and parse
+  // that.
+  // -------------------------------------------------------------------
+  private async ensureMcpInitialized(): Promise<void> {
+    if (!this.mcpInit) {
+      this.mcpInit = this.doMcpInitialize().catch((err) => {
+        // Reset so a later call can retry; otherwise a transient init
+        // failure permanently bricks the client.
+        this.mcpInit = undefined;
+        throw err;
+      });
+    }
+    await this.mcpInit;
+  }
 
-    const r = await readOnlyGuard(`${this.baseUrl}/rest/api/v1/search`, {
+  private async doMcpInitialize(): Promise<void> {
+    const initResp = await this.mcpRawPost(
+      {
+        jsonrpc: '2.0',
+        id: ++this.rpcId,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'mdas-web', version: '0.1.0' },
+        },
+      },
+      'glean:mcp-initialize',
+    );
+    const sid = initResp.headers.get('mcp-session-id');
+    if (sid) this.mcpSessionId = sid;
+    // Drain body so the connection can be released.
+    await initResp.text();
+    // Send the initialized notification (no id → no response).
+    const notifResp = await this.mcpRawPost(
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/initialized',
+      },
+      'glean:mcp-notify',
+    );
+    await notifResp.text();
+  }
+
+  private async mcpRawPost(
+    payload: Record<string, unknown>,
+    intent: string,
+  ): Promise<Response> {
+    const headers: Record<string, string> = { ...this.headers };
+    if (this.mcpSessionId) headers['mcp-session-id'] = this.mcpSessionId;
+    const r = await readOnlyGuard(this.mcpUrl, {
       method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify(body),
-      intent: 'glean:search',
+      headers,
+      body: JSON.stringify(payload),
+      intent,
     });
     if (!r.ok) {
       const text = await r.text();
-      throw new Error(`Glean search failed: ${r.status} ${text}`);
+      throw new Error(
+        `Glean MCP ${String(payload.method)} failed: ${r.status} ${text}`,
+      );
     }
-    return (await r.json()) as GleanSearchResponse;
+    return r;
   }
 
-  /**
-   * Auto-paginate a search across cursors until exhausted. Returns the
-   * combined document list. Hard-caps at maxPages * pageSize for safety.
-   */
+  /** Read a JSON-RPC response that may have come back as plain JSON
+   *  or as an SSE stream of `data:`-prefixed chunks. Returns the parsed
+   *  envelope (with `result` or `error`). */
+  private async readRpcEnvelope(r: Response): Promise<{
+    result?: McpToolResult;
+    error?: { code: number; message: string; data?: unknown };
+  }> {
+    const ct = r.headers.get('content-type') ?? '';
+    const text = await r.text();
+    if (ct.includes('text/event-stream') || text.startsWith('event:') || text.startsWith('data:')) {
+      // Parse SSE: find the last `data: <json>` line that is a JSON-RPC
+      // response (has `id` and either `result` or `error`).
+      let last:
+        | { result?: McpToolResult; error?: { code: number; message: string } }
+        | undefined;
+      for (const line of text.split(/\r?\n/)) {
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === '[DONE]') continue;
+        try {
+          const parsed = JSON.parse(data) as Record<string, unknown>;
+          if ('result' in parsed || 'error' in parsed) {
+            last = parsed as typeof last;
+          }
+        } catch {
+          /* not JSON, skip */
+        }
+      }
+      if (!last) {
+        throw new Error(
+          `Glean MCP returned SSE with no parseable JSON-RPC envelope: ${text.slice(0, 200)}`,
+        );
+      }
+      return last;
+    }
+    try {
+      return JSON.parse(text) as {
+        result?: McpToolResult;
+        error?: { code: number; message: string };
+      };
+    } catch {
+      throw new Error(`Glean MCP returned non-JSON: ${text.slice(0, 200)}`);
+    }
+  }
+
+  private async callTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<McpToolResult> {
+    await this.ensureMcpInitialized();
+    const resp = await this.mcpRawPost(
+      {
+        jsonrpc: '2.0',
+        id: ++this.rpcId,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      },
+      `glean:mcp-tool:${name}`,
+    );
+    const env = await this.readRpcEnvelope(resp);
+    if (env.error) {
+      throw new Error(
+        `Glean MCP tools/call(${name}) error: ${env.error.message} (${env.error.code})`,
+      );
+    }
+    const result = env.result ?? { content: [] };
+    if (result.isError) {
+      const txt = (result.content ?? [])
+        .map((c) => (c.type === 'text' ? c.text : ''))
+        .join('\n')
+        .trim();
+      throw new Error(`Glean MCP tool '${name}' returned error: ${txt}`);
+    }
+    return result;
+  }
+
+  // -------------------------------------------------------------------
+  // Public API — same shapes as the original REST client.
+  // -------------------------------------------------------------------
+
+  /** Run Glean's `search` MCP tool.
+   *
+   * The MCP server's `search` tool currently accepts only the `query`
+   * argument (other Glean SDK params like `pageSize` / `cursor` /
+   * `datasources` are ignored or rejected). We forward `datasources`
+   * defensively because some Glean tenant builds expose it, but the
+   * server tolerates unknown arguments only when its tool schema marks
+   * them optional. To avoid `unknown field` errors we keep the arg set
+   * minimal. */
+  async search(opts: GleanSearchOptions): Promise<GleanSearchResponse> {
+    const args: Record<string, unknown> = { query: opts.query };
+    const result = await this.callTool('search', args);
+    return parseSearchResult(result);
+  }
+
+  /** Auto-paginate a search across cursors. Glean's MCP `search` tool
+   *  may not echo cursors back; in that case we return the first page. */
   async searchAll(
     opts: GleanSearchOptions,
     maxPages = 20,
@@ -214,10 +370,11 @@ export class GleanClient {
     return out;
   }
 
-  /**
-   * Fetch full document content for an array of URLs via
-   * POST /rest/api/v1/getdocument. Per-refresh cached.
-   */
+  /** Fetch document text via the `read_document` MCP tool.
+   *
+   * Glean's tool schema: `{ urls: string[] }` (batch only — single-url
+   * variant doesn't exist) plus optional `mode: "raw_bytes"`. We always
+   * use the default mode so we get extracted text. */
   async getDocuments(urls: string[]): Promise<GleanDocument[]> {
     const need = urls.filter((u) => !this.docCache.has(u));
     if (need.length === 0) {
@@ -225,105 +382,378 @@ export class GleanClient {
         .map((u) => this.docCache.get(u))
         .filter((d): d is GleanDocument => d !== undefined);
     }
-
-    const r = await readOnlyGuard(`${this.baseUrl}/rest/api/v1/getdocument`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({ urls: need }),
-      intent: 'glean:getdocument',
-    });
-    if (!r.ok) {
-      const text = await r.text();
-      throw new Error(`Glean getdocument failed: ${r.status} ${text}`);
+    try {
+      const result = await this.callTool('read_document', { urls: need });
+      const docs = parseReadDocumentBatch(result, need);
+      for (const doc of docs) {
+        if (doc.url) this.docCache.set(doc.url, doc);
+      }
+    } catch {
+      // Non-fatal: getDocuments callers treat missing entries as cache
+      // misses (worker enrichment is best-effort).
     }
-    const parsed = (await r.json()) as GleanReadDocumentResponse;
-    for (const doc of parsed.documents ?? []) {
-      if (doc.url) this.docCache.set(doc.url, doc);
-    }
-
     return urls
       .map((u) => this.docCache.get(u))
       .filter((d): d is GleanDocument => d !== undefined);
   }
 
-  /**
-   * POST /rest/api/v1/chat — Glean Assistant. Returns an assembled
-   * assistant reply plus deduped citation metadata. We intentionally do
-   * not stream today: Next.js route handlers for in-app use buffer the
-   * full reply and return JSON (simpler client; assistant replies are
-   * small enough to not need SSE for the MVP).
-   */
+  /** Run Glean's `chat` MCP tool.
+   *
+   * Glean's tool schema: `{ message: string, context?: string[] }`
+   * — the assistant takes the latest user message plus an optional
+   * array of prior messages-as-strings for context. We map our richer
+   * GleanChatRequestMessage[] into that flatter shape. */
   async chat(opts: GleanChatOptions): Promise<GleanChatMessage> {
-    const body: Record<string, unknown> = {
-      messages: opts.messages,
-      stream: opts.stream ?? false,
-    };
-    if (opts.chatId) body.chatId = opts.chatId;
-
-    const r = await readOnlyGuard(`${this.baseUrl}/rest/api/v1/chat`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify(body),
-      intent: 'glean:chat',
-    });
-    if (!r.ok) {
-      const text = await r.text();
-      throw new Error(`Glean chat failed: ${r.status} ${text}`);
-    }
-    const parsed = (await r.json()) as GleanChatResponse;
-
-    // Find the last GLEAN_AI message (Glean echoes the full conversation).
-    const all = parsed.messages ?? [];
-    const reply = [...all].reverse().find((m) => m.author === 'GLEAN_AI') ?? all[all.length - 1];
-    if (!reply) return { author: 'GLEAN_AI', text: '', citations: [] };
-
-    const text = (reply.fragments ?? [])
-      .map((f) => f.text ?? '')
-      .join('')
-      .trim();
-
-    // Citations can show up either inline on fragments or aggregated on
-    // the message. Collect both, then dedupe by URL.
-    const seen = new Map<string, GleanChatCitation>();
-    const pushDoc = (
-      doc: GleanDocument | undefined,
-      snippet: string | undefined,
-    ): void => {
-      if (!doc?.url) return;
-      if (seen.has(doc.url)) return;
-      seen.set(doc.url, {
-        url: doc.url,
-        title: doc.title,
-        datasource: doc.datasource,
-        citationId: doc.citationId,
-        snippet,
-      });
-    };
-    for (const frag of reply.fragments ?? []) {
-      pushDoc(frag.citation?.sourceDocument, undefined);
-      pushDoc(frag.citation?.sourceFile, undefined);
-    }
-    for (const cite of reply.citations ?? []) {
-      pushDoc(cite.sourceDocument, cite.snippet?.text);
-      pushDoc(cite.sourceFile, cite.snippet?.text);
-    }
-
-    return {
-      author: reply.author ?? 'GLEAN_AI',
-      text,
-      citations: Array.from(seen.values()),
-    };
+    const flat = opts.messages.map((m) => ({
+      author: m.author ?? 'USER',
+      text: (m.fragments ?? []).map((f) => f.text).join('').trim(),
+    }));
+    const lastUser = [...flat].reverse().find((m) => m.author === 'USER');
+    const messageText = lastUser?.text ?? '';
+    const context = flat.slice(0, lastUser ? flat.lastIndexOf(lastUser) : flat.length)
+      .map((m) => `${m.author === 'GLEAN_AI' ? 'Assistant' : 'User'}: ${m.text}`);
+    const args: Record<string, unknown> = { message: messageText };
+    if (context.length > 0) args.context = context;
+    const result = await this.callTool('chat', args);
+    return parseChatResult(result);
   }
 
   async healthCheck(): Promise<{ ok: boolean; details: string }> {
     try {
       const r = await this.search({ query: 'healthcheck', pageSize: 1 });
       const count = (r.documents ?? r.results ?? []).length;
-      return { ok: true, details: `Glean reachable; sample query returned ${count} doc(s)` };
+      return {
+        ok: true,
+        details: `Glean MCP reachable (${this.mcpUrl}); sample query returned ${count} result(s)`,
+      };
     } catch (err) {
       return { ok: false, details: (err as Error).message };
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// MCP result shapes + parsers
+// ---------------------------------------------------------------------------
+
+interface McpToolContent {
+  type: 'text' | 'image' | 'resource';
+  text?: string;
+  /** Other types (image, resource) carry alternative fields we ignore. */
+  [k: string]: unknown;
+}
+
+interface McpToolResult {
+  content?: McpToolContent[];
+  /** Some MCP servers attach a structured payload alongside text. */
+  structuredContent?: unknown;
+  isError?: boolean;
+}
+
+function toolText(result: McpToolResult): string {
+  return (result.content ?? [])
+    .map((c) => (c.type === 'text' ? c.text ?? '' : ''))
+    .join('\n')
+    .trim();
+}
+
+/** Extract markdown-style links `[title](url)` and a trailing snippet. */
+function extractDocsFromMarkdown(text: string): GleanDocument[] {
+  const docs: GleanDocument[] = [];
+  const lines = text.split(/\r?\n/);
+  let pending: GleanDocument | null = null;
+  const linkRe = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) {
+      if (pending) {
+        docs.push(pending);
+        pending = null;
+      }
+      continue;
+    }
+    const m = linkRe.exec(line);
+    if (m) {
+      if (pending) docs.push(pending);
+      pending = {
+        title: m[1],
+        url: m[2],
+        snippets: [],
+      };
+      // Anything after the link is treated as a snippet seed.
+      const tail = line.slice((m.index ?? 0) + m[0].length).replace(/^[\s\-—–:]+/, '').trim();
+      if (tail) pending.snippets = [tail];
+      continue;
+    }
+    if (pending) {
+      const arr = pending.snippets ?? [];
+      arr.push(line);
+      pending.snippets = arr;
+    }
+  }
+  if (pending) docs.push(pending);
+  // Collapse multi-line snippets into one string each.
+  for (const d of docs) {
+    if (d.snippets && d.snippets.length > 1) {
+      d.snippets = [d.snippets.join(' ').slice(0, 600)];
+    } else if (d.snippets && d.snippets[0]) {
+      d.snippets = [d.snippets[0].slice(0, 600)];
+    }
+  }
+  return docs;
+}
+
+function parseSearchResult(result: McpToolResult): GleanSearchResponse {
+  // Best case: server attached structuredContent with {results:[...]}.
+  if (result.structuredContent && typeof result.structuredContent === 'object') {
+    const sc = result.structuredContent as GleanSearchResponse;
+    if (Array.isArray(sc.results) || Array.isArray(sc.documents)) return sc;
+  }
+  const text = toolText(result);
+  if (!text) return { results: [] };
+  // Try strict JSON first (some Glean MCP builds return JSON in the text block).
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === 'object') {
+      const obj = parsed as Record<string, unknown>;
+      if (Array.isArray(obj.results)) return { results: obj.results as GleanDocument[] };
+      if (Array.isArray(obj.documents)) return { documents: obj.documents as GleanDocument[] };
+      if (Array.isArray(parsed)) return { results: parsed as GleanDocument[] };
+    }
+  } catch {
+    /* fall through */
+  }
+  // Glean's MCP `search` tool returns a YAML-ish string. Parse it.
+  const yamlDocs = parseGleanYamlDocuments(text);
+  if (yamlDocs.length > 0) return { results: yamlDocs };
+  // Last-resort: markdown links.
+  return { results: extractDocsFromMarkdown(text) };
+}
+
+/**
+ * Parse Glean's YAML-like search response. Sample shape:
+ *
+ *   documents[26]:
+ *     - createTime: "2026-03-19T18:42:03Z"
+ *       datasource: workflows
+ *       title: "..."
+ *       url: "https://..."
+ *       snippets[3]: "foo","bar","baz"
+ *       matchingFilters:
+ *         app[1]: docs
+ *     - ...
+ *   entities[1]:
+ *     - ...
+ *
+ * We only extract documents (not entities) and only the fields the UI
+ * cares about: title, url, datasource, snippets[0], updateTime/createTime.
+ */
+function parseGleanYamlDocuments(text: string): GleanDocument[] {
+  const lines = text.split(/\r?\n/);
+  const out: GleanDocument[] = [];
+  let inDocs = false;
+  let cur: GleanDocument | null = null;
+  let curIndent = -1;
+
+  const stripQuotes = (v: string): string => {
+    const s = v.trim();
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+      return s.slice(1, -1);
+    }
+    return s;
+  };
+
+  /** Split a comma-separated list of YAML-ish quoted/unquoted scalars,
+   *  respecting double-quote escapes. Glean uses `\"` inside quotes. */
+  const splitScalars = (s: string): string[] => {
+    const items: string[] = [];
+    let buf = '';
+    let inQuote = false;
+    let esc = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i]!;
+      if (esc) { buf += ch; esc = false; continue; }
+      if (ch === '\\' && inQuote) { esc = true; continue; }
+      if (ch === '"') { inQuote = !inQuote; buf += ch; continue; }
+      if (ch === ',' && !inQuote) {
+        items.push(buf.trim());
+        buf = '';
+        continue;
+      }
+      buf += ch;
+    }
+    if (buf.trim()) items.push(buf.trim());
+    return items.map(stripQuotes);
+  };
+
+  for (const raw of lines) {
+    const trimmed = raw.trimStart();
+    const indent = raw.length - trimmed.length;
+
+    // Top-level section header: `documents[N]:` / `entities[N]:` / etc.
+    if (indent === 0 && /^[a-zA-Z_][\w]*(?:\[\d+\])?\s*:\s*$/.test(trimmed)) {
+      if (cur) { out.push(cur); cur = null; curIndent = -1; }
+      inDocs = /^documents/.test(trimmed);
+      continue;
+    }
+    if (!inDocs) continue;
+
+    // New document marker: `- key: value` (the dash starts a new entry)
+    const dashMatch = /^-\s+(.*)$/.exec(trimmed);
+    if (dashMatch) {
+      if (cur) out.push(cur);
+      cur = {};
+      curIndent = indent + 2; // children align two past the dash
+      const rest = dashMatch[1]!.trim();
+      if (rest) applyKv(cur, rest);
+      continue;
+    }
+
+    if (!cur) continue;
+
+    // Continuation lines must be at >= curIndent. If we see a line at
+    // less than curIndent (and it's not the dashMatch above), the doc
+    // block has ended.
+    if (indent < curIndent) {
+      out.push(cur);
+      cur = null;
+      curIndent = -1;
+      continue;
+    }
+    // Skip nested objects (matchingFilters: with no value on same line) —
+    // we don't surface those in the UI today.
+    if (indent > curIndent) continue;
+
+    applyKv(cur, trimmed);
+  }
+  if (cur) out.push(cur);
+
+  function applyKv(doc: GleanDocument, kv: string): void {
+    const colon = kv.indexOf(':');
+    if (colon < 0) return;
+    const rawKey = kv.slice(0, colon).trim();
+    const rawVal = kv.slice(colon + 1).trim();
+    // Strip array-length annotations like `snippets[16]` → `snippets`.
+    const key = rawKey.replace(/\[\d+\]$/, '');
+    if (!rawVal) return; // sub-object header; we ignore inner fields
+    const val = stripQuotes(rawVal);
+    switch (key) {
+      case 'title':
+        doc.title = val;
+        break;
+      case 'url':
+        doc.url = val;
+        break;
+      case 'datasource':
+        doc.datasource = val;
+        break;
+      case 'createTime':
+        doc.createTime = val;
+        break;
+      case 'updateTime':
+        doc.updateTime = val;
+        break;
+      case 'snippets':
+        doc.snippets = splitScalars(rawVal).filter((s) => s.length > 0);
+        break;
+      case 'percentRetrieved':
+        doc.percentRetrieved = val;
+        break;
+      default:
+        break;
+    }
+  }
+
+  // Filter out docs with no URL — they're useless to the UI.
+  return out.filter((d) => d.url);
+}
+
+function parseReadDocumentBatch(
+  result: McpToolResult,
+  urls: string[],
+): GleanDocument[] {
+  const text = toolText(result);
+  if (!text) return [];
+  // If the server returned JSON, prefer that.
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (Array.isArray(parsed)) {
+      return (parsed as GleanDocument[]).map((d, i) => ({
+        url: d.url ?? urls[i] ?? '',
+        title: d.title,
+        datasource: d.datasource,
+        snippets: d.snippets,
+        richDocumentData: d.richDocumentData,
+        updateTime: d.updateTime,
+      }));
+    }
+    if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { documents?: unknown }).documents)) {
+      return (parsed as { documents: GleanDocument[] }).documents;
+    }
+  } catch {
+    /* fall through to YAML parse */
+  }
+  const docs = parseGleanYamlDocuments(text);
+  if (docs.length > 0) return docs;
+  // No structure recognized — stuff the whole text into the first URL.
+  return urls.map((url, i) =>
+    i === 0
+      ? { url, richDocumentData: { content: text, mimeType: 'text/plain' } }
+      : { url },
+  );
+}
+
+function parseChatResult(result: McpToolResult): GleanChatMessage {
+  // structuredContent shape, when present, is preferred.
+  if (result.structuredContent && typeof result.structuredContent === 'object') {
+    const sc = result.structuredContent as {
+      reply?: string;
+      text?: string;
+      citations?: GleanChatCitation[];
+    };
+    return {
+      author: 'GLEAN_AI',
+      text: (sc.reply ?? sc.text ?? '').trim(),
+      citations: sc.citations ?? [],
+    };
+  }
+  const raw = toolText(result);
+  if (!raw) return { author: 'GLEAN_AI', text: '', citations: [] };
+  // If the entire payload is JSON, parse it.
+  try {
+    const parsed = JSON.parse(raw) as Partial<{
+      reply: string;
+      text: string;
+      response: string;
+      citations: GleanChatCitation[];
+    }>;
+    const replyText = parsed.reply ?? parsed.text ?? parsed.response;
+    if (typeof replyText === 'string') {
+      return {
+        author: 'GLEAN_AI',
+        text: replyText.trim(),
+        citations: parsed.citations ?? [],
+      };
+    }
+  } catch {
+    /* fall through — treat as plain text */
+  }
+  // Heuristic: extract any markdown-style citation links from the body so
+  // the UI's citations rail shows something useful.
+  const citations: GleanChatCitation[] = [];
+  const seen = new Set<string>();
+  const linkRe = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = linkRe.exec(raw)) !== null) {
+    if (seen.has(m[2]!)) continue;
+    seen.add(m[2]!);
+    citations.push({ title: m[1], url: m[2] });
+  }
+  return {
+    author: 'GLEAN_AI',
+    text: raw,
+    citations,
+  };
 }
 
 export function readGleanCredsFromEnv(): GleanCredentials | null {

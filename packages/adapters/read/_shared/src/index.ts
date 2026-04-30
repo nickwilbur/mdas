@@ -7,6 +7,10 @@ const ALLOWED_POST_PATHS: { host: string; pathRegex: RegExp }[] = [
   // Glean API search/chat/read
   { host: 'api.glean.com', pathRegex: /\/(rest\/api\/v1\/(search|chat|getdocument|documents))/ },
   { host: '*.glean.com', pathRegex: /\/(rest\/api\/v1\/(search|chat|getdocument|documents))/ },
+  // Glean MCP transport (Streamable HTTP, JSON-RPC). Tool-level gating
+  // happens upstream via the GleanClient's allowed-tool list (search,
+  // chat, read_document only).
+  { host: '*.glean.com', pathRegex: /\/mcp(\/|$)/ },
   // Zuora data query (read-only)
   { host: '*.zuora.com', pathRegex: /\/(query|api\/data-query)/ },
   // Zuora Remote MCP (POST is the JSON-RPC transport; tool gating happens upstream by allowlist)

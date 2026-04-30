@@ -1,4 +1,4 @@
-.PHONY: up down seed migrate test ci-guard logs sf-login sf-fieldmap sf-validate
+.PHONY: up down seed migrate test ci-guard logs sf-login sf-fieldmap sf-validate glean-token
 
 up:
 	docker compose up -d --build
@@ -44,3 +44,14 @@ sf-fieldmap:
 # the prod org. Fails non-zero on drift. Suitable for CI.
 sf-validate:
 	npm run sf:validate
+
+# Refresh GLEAN_MCP_TOKEN in .env from the access_token Windsurf
+# negotiated with Glean's MCP OAuth flow. Glean tokens have ~1-week TTL;
+# re-run when the in-app /api/glean/* routes start returning 401. The
+# `unset` clears any stale value that might be lingering in the parent
+# shell (which would otherwise shadow .env in docker compose).
+glean-token:
+	@unset GLEAN_MCP_TOKEN && node scripts/refresh-glean-token.mjs
+	@echo "[glean-token] re-creating web container so it picks up the new token..."
+	@unset GLEAN_MCP_TOKEN && docker compose up -d --force-recreate --no-deps web
+	@sleep 4 && curl -sS http://localhost:3000/api/glean/health | head -c 400 && echo

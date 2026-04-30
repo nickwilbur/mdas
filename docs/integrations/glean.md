@@ -144,19 +144,28 @@ The web app exposes Glean as a first-class navigation target. Three surfaces:
 | Command bar | `⌘K` / `Ctrl+K` from anywhere | Compact search overlay. Auto-focuses, pickers close on result click. Only registered when the status badge says Glean is reachable. |
 | Account drill-in | "Search Glean" button next to the account name | Opens the command bar pre-filled with `accountName`. |
 
-All three call the same server-side proxy routes:
+All three call the same server-side proxy routes, which speak Glean's
+**MCP transport** (Streamable HTTP / JSON-RPC at `/mcp/<name>`) under
+the hood — Glean's REST API requires admin scopes most users don't have,
+whereas the MCP transport uses the same OAuth tokens Windsurf negotiates
+on demand.
 
-| Route | Glean endpoint | Notes |
+| Route | MCP tool | Notes |
 |---|---|---|
-| `POST /api/glean/search` | `/rest/api/v1/search` | Datasource presets → `requestOptions.datasourcesFilter`. |
-| `POST /api/glean/chat` | `/rest/api/v1/chat` | Buffered (non-streaming). Returns `{reply, citations}`. |
-| `POST /api/glean/document` | `/rest/api/v1/getdocument` | Capped at 5 URLs/call. Used by the search panel's "Preview" button. |
-| `GET  /api/glean/health` | `/rest/api/v1/search` (1-doc probe) | Drives the "Glean connected" badge in the top nav. |
+| `POST /api/glean/search` | `search` | Datasource preset is sent as the `query` (the MCP tool ignores most filter args). |
+| `POST /api/glean/chat` | `chat` | Buffered. We map our message log into `{message, context: string[]}`. |
+| `POST /api/glean/document` | `read_document` | Batch — `{urls: string[]}`. Used by the search panel's "Preview" button. |
+| `GET  /api/glean/health` | `search` (1-doc probe) | Drives the "Glean connected" badge in the top nav. |
+
+`GleanClient` (`@mdas/adapter-shared/glean`) handles the MCP handshake:
+`initialize` → `notifications/initialized` → `tools/call` per request,
+auto-resuming via the `Mcp-Session-Id` header. Responses come back as
+either JSON or SSE; both paths are parsed.
 
 ### Why a server proxy and not a browser-direct fetch?
 
 1. The Glean bearer token has broad read access — keeping it server-side is non-negotiable.
-2. Glean's REST API does not advertise CORS for arbitrary origins; the browser fetch would be blocked.
+2. Glean's MCP server does not advertise CORS for arbitrary origins; browser fetches would be blocked.
 3. Centralizes `readOnlyGuard` + `intent` tagging in one place per Section 2.6 of the refactor prompt.
 
 ### Auth posture (`AUTH_MODE` env var)
@@ -167,12 +176,45 @@ Reuses the same `GLEAN_MCP_TOKEN` the worker uses. Single-user / localhost. Toke
 
 ```bash
 echo "AUTH_MODE=none" >> .env             # explicit; or omit (default)
-echo "GLEAN_MCP_TOKEN=..." >> .env
-echo "GLEAN_MCP_BASE_URL=https://yourtenant-be.glean.com" >> .env
-npm --workspace apps/web run dev
+echo "GLEAN_MCP_BASE_URL=https://yourtenant-be.glean.com/mcp/default" >> .env
+make glean-token                          # see "Getting a token" below
 ```
 
 Verify: top-right of the app should show `Glean connected ⌘K`.
+
+##### Getting a token (non-admin path)
+
+Glean's MCP server requires **OAuth 2.1 with Dynamic Client Registration
++ PKCE**, not static bearer tokens. Static token attempts get
+`401 Invalid Secret`. Two ways to get a working token:
+
+1. **Borrow Windsurf's token** (`make glean-token`).
+   Windsurf already runs the OAuth flow via your Okta SSO and stores the
+   resulting access token AES-encrypted in macOS Keychain. The
+   `scripts/refresh-glean-token.mjs` helper decrypts it and writes the
+   value into `.env` as `GLEAN_MCP_TOKEN`. Tokens have ~1-week TTL — re-run
+   when `/api/glean/health` starts returning 401.
+   - Requires Windsurf to have used a Glean MCP tool at least once (so
+     the token is in its store).
+   - macOS only. Linux/Windows would need libsecret/DPAPI equivalents.
+   - **Don't commit `.env`** (already gitignored).
+2. **Implement OAuth in the app itself** (Option B below). Right thing to
+   do for any multi-user deployment.
+
+##### Shell variable shadowing (gotcha)
+
+If a `GLEAN_MCP_TOKEN` is exported in your interactive shell, it
+**shadows** the value in `.env` because Docker Compose's `${VAR-}`
+interpolation reads the host shell first. Symptoms: container logs say
+`Invalid Secret` even after `make glean-token` reports success. Fix:
+
+```bash
+unset GLEAN_MCP_TOKEN
+docker compose up -d --force-recreate web
+```
+
+The `make glean-token` target does the `unset` for you; running
+`docker compose` directly does not.
 
 #### Option B — `AUTH_MODE=okta` (per-user OAuth, scaffold today)
 
