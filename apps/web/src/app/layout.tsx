@@ -14,6 +14,7 @@ const NAV = [
   { href: '/opportunities', label: 'Opportunities' },
   { href: '/wow', label: 'WoW' },
   { href: '/hygiene', label: 'Hygiene' },
+  { href: '/ctas', label: 'CTAs' },
   { href: '/forecast', label: 'Forecast' },
   { href: '/glean', label: 'Glean' },
   { href: '/admin/data-quality', label: 'Data Quality' },
