@@ -1,77 +1,13 @@
 import { readFileSync, readdirSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
-import { CTABoard, type CTAEntry } from '@/components/CTABoard';
+import { CTABoard, type CTAEntry, GenerateCTAsButton } from '@/components/CTABoard';
+import { parseScanMarkdown, generateSlackMessage, type RichCTA } from '@/lib/cta-utils';
 
 export const dynamic = 'force-dynamic';
 
 // ── Data loading ───────────────────────────────────────────────────────────
 
 const PROJECT_ROOT = resolve(process.cwd(), '../..');
-
-interface RichCTA {
-  cta_id: string;
-  account_name: string;
-  salesforce_account_id: string | null;
-  play_type: string;
-  risk_color: string;
-  primary_owner: { name: string; slack_handle: string; role: string } | string;
-  cc_owners?: { name: string; slack_handle: string; role: string }[];
-  destination_slack_channel?: string | null;
-  renewal_opportunity_url?: string | null;
-  drivers?: string[];
-  requested_action?: string;
-  deadline: string;
-  follow_through?: {
-    expected_artifact: string;
-    check_back_date: string;
-    auto_check_query: string;
-    escalation_owner: string;
-    escalation_trigger: string;
-  };
-  data_gaps?: string[];
-  cse_sentiment_commentary?: string | null;
-  commentary_last_updated?: string | null;
-  team_aware?: boolean;
-}
-
-function parseScanMarkdown(content: string): {
-  richCTAs: Map<string, RichCTA>;
-  slackMessages: Map<string, string>;
-} {
-  const richCTAs = new Map<string, RichCTA>();
-  const slackMessages = new Map<string, string>();
-
-  // Split into CTA sections by ### headers
-  const sections = content.split(/^### /m).slice(1);
-
-  for (const section of sections) {
-    // Extract JSON block
-    const jsonMatch = section.match(/```json\s*\n([\s\S]*?)\n```/);
-    if (!jsonMatch) continue;
-
-    let parsed: RichCTA;
-    try {
-      parsed = JSON.parse(jsonMatch[1] ?? '{}');
-    } catch {
-      continue;
-    }
-    if (!parsed.cta_id) continue;
-
-    richCTAs.set(parsed.cta_id, parsed);
-
-    // Extract Slack message — text after the closing ``` and before the next ---
-    const matchIdx = jsonMatch.index ?? 0;
-    const afterJson = section.slice(matchIdx + jsonMatch[0].length);
-    const slackText = (afterJson.split('---')[0] ?? '')
-      .trim()
-      .replace(/\n{2,}/g, '\n');
-    if (slackText) {
-      slackMessages.set(parsed.cta_id, slackText);
-    }
-  }
-
-  return { richCTAs, slackMessages };
-}
 
 function loadCTAData(): { ctas: CTAEntry[]; slackMessages: Record<string, string> } {
   const ctas: CTAEntry[] = [];
@@ -90,7 +26,11 @@ function loadCTAData(): { ctas: CTAEntry[]; slackMessages: Record<string, string
     for (const [id, msg] of msgs) slackMap.set(id, msg);
   }
 
-  // 2. Read the JSONL tracking log for status data
+  // 2. Read the JSONL tracking log — two kinds of entry:
+  //    a) Rich entries (have account_name) — written by generate-ctas.ts,
+  //       these are the durable data store and can populate richMap.
+  //    b) Tracking stubs (no account_name) — old-format status-only entries,
+  //       used only to overlay status onto rich CTAs.
   const jsonlPath = join(PROJECT_ROOT, 'expand3_cta_log.jsonl');
   const statusMap = new Map<string, Record<string, unknown>>();
   if (existsSync(jsonlPath)) {
@@ -99,17 +39,26 @@ function loadCTAData(): { ctas: CTAEntry[]; slackMessages: Record<string, string
       try {
         const entry = JSON.parse(line);
         statusMap.set(entry.cta_id, entry);
+        // Rich JSONL entries (have account_name) backfill richMap when
+        // scan MD is deleted or missing.  Scan MD still wins if present.
+        if (entry.account_name && !richMap.has(entry.cta_id)) {
+          richMap.set(entry.cta_id, entry as RichCTA);
+        }
       } catch {
         continue;
       }
     }
   }
 
-  // 3. Merge: rich data takes priority, JSONL provides status tracking
+  // 3. Merge: only entries in richMap (from scan MD or rich JSONL) render
+  //    as cards. Tracking stubs without account_name are never shown.
   const allIds = new Set([...richMap.keys(), ...statusMap.keys()]);
   for (const id of allIds) {
     const rich = richMap.get(id);
     const tracking = statusMap.get(id) as Record<string, unknown> | undefined;
+
+    // Skip entries without rich data — no account_name means nothing to show
+    if (!rich) continue;
 
     const ownerFromRich = rich?.primary_owner;
     const ownerName =
@@ -140,17 +89,25 @@ function loadCTAData(): { ctas: CTAEntry[]; slackMessages: Record<string, string
       risk_color: rich?.risk_color ?? (tracking?.risk_color as string) ?? '🟢',
       primary_owner: rich?.primary_owner ?? ownerName,
       cc_owners: rich?.cc_owners,
-      destination_slack_channel: rich?.destination_slack_channel ?? null,
-      renewal_opportunity_url: rich?.renewal_opportunity_url ?? null,
+      destination_slack_channel:
+        rich?.destination_slack_channel ??
+        (tracking?.destination_slack_channel as string | null) ??
+        null,
+      renewal_opportunity_url:
+        rich?.renewal_opportunity_url ??
+        (tracking?.renewal_opportunity_url as string | null) ??
+        null,
       drivers: rich?.drivers,
       requested_action: rich?.requested_action,
       deadline:
         rich?.deadline ?? (tracking?.deadline as string) ?? '',
       check_back_date:
+        rich?.check_back_date ??
         rich?.follow_through?.check_back_date ??
         (tracking?.check_back_date as string) ??
         '',
       expected_artifact:
+        rich?.expected_artifact ??
         rich?.follow_through?.expected_artifact ??
         (tracking?.expected_artifact as string) ??
         '',
@@ -169,16 +126,25 @@ function loadCTAData(): { ctas: CTAEntry[]; slackMessages: Record<string, string
       cse_sentiment_commentary: rich?.cse_sentiment_commentary ?? null,
       commentary_last_updated: rich?.commentary_last_updated ?? null,
       team_aware: Boolean(rich?.team_aware),
+      situation_read: rich?.situation_read ?? null,
+      point_of_view: rich?.point_of_view ?? null,
     };
     ctas.push(entry);
     if (slackMap.has(id)) {
       slackMessages[id] = slackMap.get(id)!;
+    } else if (rich) {
+      // Auto-generate Slack message from CTA data
+      slackMessages[id] = generateSlackMessage(rich);
     }
   }
 
-  // Sort: 🔴 before 🟡 before 🟢, then by deadline ascending
+  // Sort: Red before Yellow before Green, then by deadline ascending
   ctas.sort((a, b) => {
-    const riskOrder: Record<string, number> = { '🔴': 0, '🟡': 1, '🟢': 2 };
+    const riskOrder: Record<string, number> = {
+      '🔴': 0, Red: 0,
+      '🟡': 1, Yellow: 1,
+      '🟢': 2, Green: 2,
+    };
     const ra = riskOrder[a.risk_color] ?? 3;
     const rb = riskOrder[b.risk_color] ?? 3;
     if (ra !== rb) return ra - rb;
@@ -196,15 +162,22 @@ export default function CTAsPage() {
   if (ctas.length === 0) {
     return (
       <div className="space-y-4">
-        <h1 className="text-2xl font-semibold">Churn-Risk CTAs</h1>
-        <div className="rounded-lg border border-gray-200 bg-white p-8 text-center">
-          <p className="text-gray-600">
-            No CTAs generated yet. Run{' '}
-            <code className="rounded bg-gray-100 px-1.5 py-0.5 text-sm">
-              /expand3-cta-generator scan
-            </code>{' '}
-            to generate your first batch.
-          </p>
+        <div className="flex items-end justify-between">
+          <h1 className="text-2xl font-semibold">Churn-Risk CTAs</h1>
+          <GenerateCTAsButton />
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
+          <div className="mx-auto max-w-md space-y-3">
+            <p className="text-4xl">📋</p>
+            <p className="text-sm font-medium text-gray-900">No CTAs generated yet</p>
+            <p className="text-xs text-gray-500">
+              Click <strong>Generate CTAs</strong> above or run{' '}
+              <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">
+                /expand3-cta-generator scan
+              </code>{' '}
+              in Cascade to scan all 224 Expand 3 accounts.
+            </p>
+          </div>
         </div>
       </div>
     );
@@ -219,6 +192,7 @@ export default function CTAsPage() {
             Expand 3 — generated from Cerebro, SFDC, and Glean signals
           </p>
         </div>
+        <GenerateCTAsButton />
       </div>
       <CTABoard ctas={ctas} slackMessages={slackMessages} />
     </div>

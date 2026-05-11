@@ -23,6 +23,8 @@
     "migrate": "node scripts/migrate.mjs",
     "sf:fieldmap": "tsx scripts/generate-sfdc-field-map.ts",
     "sf:validate": "tsx scripts/validate-salesforce-schema.ts",
+    "cta:generate": "tsx scripts/generate-ctas.ts",
+    "cta:dry-run": "tsx scripts/generate-ctas.ts --dry-run",
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium"
   },
@@ -31,6 +33,7 @@
     "@playwright/test": "^1.59.1",
     "@types/node": "^20.11.30",
     "@types/pg": "^8.20.0",
+    "@vitest/coverage-v8": "^4.1.6",
     "tsx": "^4.7.2",
     "typescript": "^5.4.5",
     "vitest": "^1.5.0"

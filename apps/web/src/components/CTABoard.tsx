@@ -8,16 +8,18 @@ import { Check, Copy, ExternalLink, ChevronDown, ChevronUp, Filter } from 'lucid
 
 export interface CTAOwner {
   name: string;
-  slack_handle: string;
+  slack_handle?: string;
   role: string;
 }
 
 export interface CTAFollowThrough {
-  expected_artifact: string;
-  check_back_date: string;
-  auto_check_query: string;
-  escalation_owner: string;
-  escalation_trigger: string;
+  expected_artifact?: string;
+  check_back_date?: string;
+  auto_check_query?: string;
+  escalation_owner?: string;
+  escalation_trigger?: string;
+  if_no_response_by?: string;
+  then?: string;
 }
 
 export interface CTAEntry {
@@ -50,6 +52,8 @@ export interface CTAEntry {
   cse_sentiment_commentary?: string | null;
   commentary_last_updated?: string | null;
   team_aware?: boolean;
+  situation_read?: string | null;
+  point_of_view?: string | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -58,6 +62,7 @@ const PLAY_TYPE_LABELS: Record<string, string> = {
   surprise_churn_watch: 'Surprise Churn Watch',
   utilization_risk: 'Utilization Risk',
   dark_renewal: 'Dark Renewal',
+  dark_account: 'Dark Account',
   scale_engagement: 'Scale Engagement',
   expertise_risk: 'Expertise Risk',
   engagement_risk: 'Engagement Risk',
@@ -67,6 +72,7 @@ const PLAY_TYPE_LABELS: Record<string, string> = {
   legacy_tech_risk: 'Legacy Tech Risk',
   sentiment_stale: 'Sentiment Stale',
   confirmed_churn_retro: 'Confirmed Churn Retro',
+  churn_retro: 'Churn Retro',
   managed_wind_down: 'Managed Wind-Down',
   no_strategic_engagement: 'No Strategic Engagement',
 };
@@ -74,14 +80,16 @@ const PLAY_TYPE_LABELS: Record<string, string> = {
 const PLAY_TYPE_COLORS: Record<string, string> = {
   surprise_churn_watch: 'bg-red-100 text-red-800 ring-red-300',
   utilization_risk: 'bg-orange-100 text-orange-800 ring-orange-300',
-  dark_renewal: 'bg-amber-100 text-amber-800 ring-amber-300',
+  dark_renewal: 'bg-zinc-700 text-zinc-100 ring-zinc-500',
   scale_engagement: 'bg-blue-100 text-blue-800 ring-blue-300',
   expertise_risk: 'bg-purple-100 text-purple-800 ring-purple-300',
   engagement_risk: 'bg-pink-100 text-pink-800 ring-pink-300',
   pricing_risk: 'bg-rose-100 text-rose-800 ring-rose-300',
   confirmed_churn_retro: 'bg-gray-800 text-white ring-gray-600',
+  churn_retro: 'bg-gray-800 text-white ring-gray-600',
   managed_wind_down: 'bg-slate-100 text-slate-800 ring-slate-300',
   no_strategic_engagement: 'bg-indigo-100 text-indigo-800 ring-indigo-300',
+  dark_account: 'bg-zinc-800 text-zinc-100 ring-zinc-600',
 };
 
 function ownerName(owner: string | CTAOwner): string {
@@ -130,209 +138,274 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
 
 // ── CTA Card ───────────────────────────────────────────────────────────────
 
+const RISK_BORDER: Record<string, string> = {
+  Red: 'border-l-red-500',
+  '🔴': 'border-l-red-500',
+  Yellow: 'border-l-amber-400',
+  '🟡': 'border-l-amber-400',
+  Green: 'border-l-emerald-400',
+  '🟢': 'border-l-emerald-400',
+};
+
 function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string }) {
   const [expanded, setExpanded] = useState(false);
   const playLabel = PLAY_TYPE_LABELS[cta.play_type] ?? cta.play_type;
   const playColor = PLAY_TYPE_COLORS[cta.play_type] ?? 'bg-gray-100 text-gray-800 ring-gray-300';
-  const riskEmoji = cta.risk_color === '🔴' ? '🔴' : cta.risk_color === '🟡' ? '🟡' : '🟢';
+  const riskEmoji =
+    cta.risk_color === '🔴' || cta.risk_color === 'Red' ? '🔴'
+    : cta.risk_color === '🟡' || cta.risk_color === 'Yellow' ? '🟡'
+    : '🟢';
+  const borderColor = RISK_BORDER[cta.risk_color] ?? 'border-l-gray-300';
+  const days = daysUntil(cta.deadline);
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-4 py-3">
+    <div className={clsx('rounded-lg border border-gray-200 border-l-4 bg-white shadow-sm', borderColor)}>
+      {/* Compact header row */}
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-          <span className="text-base" title={cta.risk_color}>
-            {riskEmoji}
-          </span>
-          <h3 className="text-sm font-semibold text-gray-900">{cta.account_name}</h3>
-          <span className={clsx('rounded px-2 py-0.5 text-[11px] font-medium ring-1', playColor)}>
+          <span className="text-sm" title={cta.risk_color}>{riskEmoji}</span>
+          <h3 className="text-sm font-semibold text-gray-900 truncate">{cta.account_name}</h3>
+          {cta.renewal_opportunity_url ? (
+            <a
+              href={cta.renewal_opportunity_url}
+              className="inline-flex items-center gap-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-100"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="SFDC Opportunity"
+            >
+              <ExternalLink className="h-2.5 w-2.5" /> SFDC Opp
+            </a>
+          ) : cta.salesforce_account_id ? (
+            <a
+              href={`https://zuora.lightning.force.com/lightning/r/Account/${cta.salesforce_account_id}/view`}
+              className="inline-flex items-center gap-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-100"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="SFDC Account"
+            >
+              <ExternalLink className="h-2.5 w-2.5" /> SFDC
+            </a>
+          ) : null}
+          {cta.destination_slack_channel && (
+            <a
+              href={cta.destination_slack_channel}
+              className="inline-flex items-center gap-0.5 rounded bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 hover:bg-purple-100"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Slack Channel"
+            >
+              <ExternalLink className="h-2.5 w-2.5" /> Slack
+            </a>
+          )}
+          <span className={clsx('rounded px-2 py-0.5 text-[10px] font-medium ring-1', playColor)}>
             {playLabel}
           </span>
-          <span
-            className={clsx(
-              'rounded px-1.5 py-0.5 text-[10px] uppercase',
-              cta.status === 'open'
-                ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-200'
-                : cta.status === 'closed_done'
-                  ? 'bg-green-50 text-green-700 ring-1 ring-green-200'
-                  : 'bg-gray-100 text-gray-600',
-            )}
-          >
-            {cta.status}
+          <span className={clsx('text-[10px] tabular-nums font-medium', deadlineColor(cta.deadline))}>
+            {days < 0 ? `${Math.abs(days)}d overdue` : days === 0 ? 'today' : `${days}d`}
           </span>
-          {/* Team members */}
-          <div className="flex flex-wrap gap-1.5 text-[10px] text-gray-600">
-            {cta.ae && (
-              <span className="rounded bg-gray-100 px-1.5 py-0.5 font-medium">
-                AE: {cta.ae.name}
-              </span>
-            )}
-            {cta.cse && (
-              <span className="rounded bg-gray-100 px-1.5 py-0.5 font-medium">
-                CSE: {cta.cse.name}
-              </span>
-            )}
-            {cta.tam && (
-              <span className="rounded bg-gray-100 px-1.5 py-0.5 font-medium">
-                TAM: {cta.tam.name}
-              </span>
-            )}
-            {cta.esa && (
-              <span className="rounded bg-gray-100 px-1.5 py-0.5 font-medium">
-                ESA: {cta.esa.name}
-              </span>
-            )}
-          </div>
+          {cta.team_aware && (
+            <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-semibold text-green-700">
+              Team Aware
+            </span>
+          )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <span className={clsx('text-xs tabular-nums', deadlineColor(cta.deadline))}>
-            {daysUntil(cta.deadline) < 0
-              ? `${Math.abs(daysUntil(cta.deadline))}d overdue`
-              : daysUntil(cta.deadline) === 0
-                ? 'Due today'
-                : `${daysUntil(cta.deadline)}d left`}
-          </span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <div className="flex gap-1 text-[10px] text-gray-500">
+            {cta.ae && <span className="rounded bg-gray-100 px-1.5 py-0.5">{cta.ae.name}</span>}
+            {cta.cse && <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">{cta.cse.name}</span>}
+          </div>
           <button
             onClick={() => setExpanded(!expanded)}
             className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
           >
-            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
           </button>
         </div>
       </div>
 
-      {/* CSE Sentiment Commentary */}
-      {cta.cse_sentiment_commentary && (
-        <div className="border-b border-gray-100 bg-amber-50/50 px-4 py-2.5">
-          <div className="flex items-start gap-2">
-            <span className="mt-0.5 text-xs">📋</span>
-            <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-amber-800">
-                CSE Sentiment Commentary
-                {cta.commentary_last_updated && (
-                  <span className="ml-1.5 font-normal normal-case text-amber-600">
-                    (updated {cta.commentary_last_updated.slice(0, 10)})
-                  </span>
-                )}
-                {cta.team_aware && (
-                  <span className="ml-1.5 rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-semibold normal-case text-green-700">
-                    Team Aware
-                  </span>
-                )}
-              </p>
-              <p className="mt-1 text-xs leading-relaxed text-amber-900">{cta.cse_sentiment_commentary}</p>
-            </div>
+      {/* Slack message — the hero element */}
+      <div className="border-t border-gray-100 bg-gray-50/50 px-4 py-3">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded bg-gray-800 text-xs font-bold text-white">
+            NW
           </div>
-        </div>
-      )}
-
-      {/* Slack Message */}
-      <div className="px-4 py-3">
-        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Slack Message</p>
-            <p className="mt-1 whitespace-pre-wrap text-sm text-gray-800 leading-relaxed">{slackMessage}</p>
+            <div className="flex items-baseline gap-2">
+              <span className="text-[13px] font-bold text-gray-900">Nick Wilbur</span>
+              <span className="text-[11px] text-gray-400">draft</span>
+            </div>
+            <p className="mt-0.5 text-[13px] leading-relaxed text-gray-800">{slackMessage}</p>
           </div>
-          <div className="shrink-0 pt-4">
-            <CopyButton text={slackMessage} label="Copy" />
-          </div>
+          <CopyButton text={slackMessage} label="Copy" />
         </div>
       </div>
 
-      {/* Owner + Deadline Row */}
-      <div className="flex flex-wrap items-center gap-4 border-t border-gray-100 px-4 py-2 text-xs text-gray-600">
-        <span>
-          <span className="font-medium">Owner:</span> {ownerName(cta.primary_owner)}
-        </span>
-        <span>
-          <span className="font-medium">Deadline:</span>{' '}
-          <span className={deadlineColor(cta.deadline)}>{cta.deadline}</span>
-        </span>
-        <span>
-          <span className="font-medium">Check-back:</span> {cta.check_back_date}
-        </span>
-        {cta.renewal_opportunity_url && (
-          <a
-            href={cta.renewal_opportunity_url}
-            className="inline-flex items-center gap-1 text-blue-700 hover:underline"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <ExternalLink className="h-3 w-3" /> SFDC Opp
-          </a>
-        )}
+      {/* Quick action links row */}
+      <div className="flex flex-wrap items-center gap-3 border-t border-gray-100 px-4 py-1.5 text-[11px] text-gray-500">
+        <span><span className="font-medium text-gray-600">Deadline</span> <span className={deadlineColor(cta.deadline)}>{cta.deadline}</span></span>
+        <span className="text-gray-300">|</span>
+        <span><span className="font-medium text-gray-600">Check-back</span> {cta.check_back_date}</span>
         {cta.destination_slack_channel && (
-          <a
-            href={cta.destination_slack_channel}
-            className="inline-flex items-center gap-1 text-blue-700 hover:underline"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <ExternalLink className="h-3 w-3" /> Slack Channel
-          </a>
+          <>
+            <span className="text-gray-300">|</span>
+            <a
+              href={cta.destination_slack_channel}
+              className="inline-flex items-center gap-0.5 text-blue-600 hover:underline"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink className="h-3 w-3" /> Channel
+            </a>
+          </>
         )}
+        {cta.renewal_opportunity_url ? (
+          <>
+            <span className="text-gray-300">|</span>
+            <a
+              href={cta.renewal_opportunity_url}
+              className="inline-flex items-center gap-0.5 text-blue-600 hover:underline"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink className="h-3 w-3" /> SFDC Opp
+            </a>
+          </>
+        ) : cta.salesforce_account_id ? (
+          <>
+            <span className="text-gray-300">|</span>
+            <a
+              href={`https://zuora.lightning.force.com/lightning/r/Account/${cta.salesforce_account_id}/view`}
+              className="inline-flex items-center gap-0.5 text-blue-600 hover:underline"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink className="h-3 w-3" /> SFDC Account
+            </a>
+          </>
+        ) : null}
+        <span
+          className={clsx(
+            'ml-auto rounded px-1.5 py-0.5 text-[10px] uppercase font-medium',
+            cta.status === 'open'
+              ? 'bg-blue-50 text-blue-700'
+              : cta.status === 'closed_done'
+                ? 'bg-green-50 text-green-700'
+                : 'bg-gray-100 text-gray-600',
+          )}
+        >
+          {cta.status.replace('_', ' ')}
+        </span>
       </div>
 
       {/* Expanded Details */}
       {expanded && (
-        <div className="space-y-3 border-t border-gray-100 px-4 py-3">
+        <div className="space-y-3 border-t border-gray-100 px-4 py-3 text-xs">
+          {/* v2 Reasoning Audit — Situation Read + POV (private, not posted) */}
+          {(cta.situation_read || cta.point_of_view) && (
+            <div className="rounded bg-blue-50 p-2.5">
+              {cta.situation_read && (
+                <>
+                  <p className="font-medium uppercase tracking-wide text-blue-800">
+                    Situation Read
+                  </p>
+                  <p className="mt-1 leading-relaxed text-blue-900">{cta.situation_read}</p>
+                </>
+              )}
+              {cta.point_of_view && (
+                <>
+                  <p className="mt-2 font-medium uppercase tracking-wide text-blue-800">
+                    Point of View
+                  </p>
+                  <p className="mt-1 leading-relaxed text-blue-900">{cta.point_of_view}</p>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* CSE Sentiment Commentary — full text in details */}
+          {cta.cse_sentiment_commentary && (
+            <div className="rounded bg-amber-50 p-2.5">
+              <p className="font-medium uppercase tracking-wide text-amber-800">
+                CSE Commentary
+                {cta.commentary_last_updated && (
+                  <span className="ml-1.5 font-normal normal-case text-amber-600">
+                    · updated {cta.commentary_last_updated.slice(0, 10)}
+                  </span>
+                )}
+              </p>
+              <p className="mt-1 leading-relaxed text-amber-900">{cta.cse_sentiment_commentary}</p>
+            </div>
+          )}
+
+          {/* Drivers */}
           {cta.drivers && cta.drivers.length > 0 && (
             <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Drivers</p>
-              <ul className="mt-1 space-y-0.5">
+              <p className="font-medium uppercase tracking-wide text-gray-500">Drivers</p>
+              <ul className="mt-1 space-y-0.5 text-gray-700">
                 {cta.drivers.map((d, i) => (
-                  <li key={i} className="text-sm text-gray-700">
-                    <span className="mr-1.5 text-gray-400">•</span>
+                  <li key={i}>
+                    <span className="mr-1 text-gray-400">·</span>
                     {d}
                   </li>
                 ))}
               </ul>
             </div>
           )}
+
+          {/* Requested Action */}
           {cta.requested_action && (
             <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                Requested Action
-              </p>
-              <p className="mt-1 text-sm text-gray-700">{cta.requested_action}</p>
+              <p className="font-medium uppercase tracking-wide text-gray-500">Requested Action</p>
+              <p className="mt-1 text-gray-700">{cta.requested_action}</p>
             </div>
           )}
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-              Expected Artifact
-            </p>
-            <p className="mt-1 text-sm text-gray-700">{cta.expected_artifact}</p>
-          </div>
-          {cta.data_gaps && cta.data_gaps.length > 0 && (
+
+          {/* Expected Artifact */}
+          {cta.expected_artifact && (
             <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Data Gaps</p>
-              <ul className="mt-1 space-y-0.5">
+              <p className="font-medium uppercase tracking-wide text-gray-500">Expected Artifact</p>
+              <p className="mt-1 text-gray-700">{cta.expected_artifact}</p>
+            </div>
+          )}
+
+          {/* Data Gaps */}
+          {cta.data_gaps && cta.data_gaps.length > 0 && (
+            <div className="rounded bg-amber-50 p-2.5">
+              <p className="font-medium uppercase tracking-wide text-amber-700">Data Gaps</p>
+              <ul className="mt-1 space-y-0.5 text-amber-800">
                 {cta.data_gaps.map((g, i) => (
-                  <li key={i} className="text-xs text-amber-700">
-                    <span className="mr-1.5">⚠</span>
-                    {g}
-                  </li>
+                  <li key={i}>⚠ {g}</li>
                 ))}
               </ul>
             </div>
           )}
+
+          {/* Follow-Through */}
           {cta.follow_through && (
             <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                Follow-Through Contract
-              </p>
-              <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-600">
-                <span>
-                  <span className="font-medium">Escalation owner:</span>{' '}
-                  {cta.follow_through.escalation_owner}
-                </span>
-                <span>
-                  <span className="font-medium">Escalation trigger:</span>{' '}
-                  {cta.follow_through.escalation_trigger}
-                </span>
+              <p className="font-medium uppercase tracking-wide text-gray-500">Follow-Through</p>
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-gray-600">
+                {cta.follow_through.if_no_response_by && (
+                  <span><span className="font-medium">No response by:</span> {cta.follow_through.if_no_response_by}</span>
+                )}
+                {cta.follow_through.then && (
+                  <span><span className="font-medium">→</span> {cta.follow_through.then}</span>
+                )}
+                {cta.follow_through.escalation_owner && (
+                  <span><span className="font-medium">Escalation:</span> {cta.follow_through.escalation_owner}</span>
+                )}
               </div>
             </div>
           )}
+
+          {/* Team */}
+          <div className="flex flex-wrap gap-3 text-gray-500">
+            {cta.ae && <span><span className="font-medium">AE:</span> {cta.ae.name}</span>}
+            {cta.cse && <span><span className="font-medium">CSE:</span> {cta.cse.name}</span>}
+            {cta.tam && <span><span className="font-medium">TAM:</span> {cta.tam.name}</span>}
+            {cta.esa && <span><span className="font-medium">ESA:</span> {cta.esa.name}</span>}
+            {!cta.cse && <span className="text-amber-600 font-medium">No CSE assigned</span>}
+          </div>
         </div>
       )}
     </div>
@@ -357,15 +430,19 @@ export function CTABoard({ ctas, slackMessages }: CTABoardProps) {
 
   const owners = Array.from(new Set(ctas.map((c) => ownerName(c.primary_owner)))).sort();
 
+  const isRed = (c: CTAEntry) => c.risk_color === '🔴' || c.risk_color === 'Red';
+  const isYellow = (c: CTAEntry) => c.risk_color === '🟡' || c.risk_color === 'Yellow';
+
   const filtered = ctas.filter((c) => {
-    if (riskFilter !== 'all' && c.risk_color !== riskFilter) return false;
+    if (riskFilter === '🔴' && !isRed(c)) return false;
+    if (riskFilter === '🟡' && !isYellow(c)) return false;
     if (statusFilter !== 'all' && c.status !== statusFilter) return false;
     if (ownerFilter !== 'all' && ownerName(c.primary_owner) !== ownerFilter) return false;
     return true;
   });
 
-  const redCount = ctas.filter((c) => c.risk_color === '🔴').length;
-  const yellowCount = ctas.filter((c) => c.risk_color === '🟡').length;
+  const redCount = ctas.filter(isRed).length;
+  const yellowCount = ctas.filter(isYellow).length;
   const openCount = ctas.filter((c) => c.status === 'open').length;
   const overdueCount = ctas.filter(
     (c) => c.status === 'open' && daysUntil(c.deadline) < 0,
@@ -526,6 +603,117 @@ export function CTABoard({ ctas, slackMessages }: CTABoardProps) {
           ))
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Generate CTAs Button ──────────────────────────────────────────────────
+
+interface GenerateJob {
+  id: string;
+  status: 'running' | 'done' | 'error';
+  progress: { phase: string; current: number; total: number; label?: string } | null;
+  result: { ctaCount: number } | null;
+  error: string | null;
+}
+
+export function GenerateCTAsButton() {
+  const [job, setJob] = useState<GenerateJob | null>(null);
+
+  const startGeneration = useCallback(async () => {
+    try {
+      const res = await fetch('/api/ctas/generate', { method: 'POST' });
+      const { jobId } = await res.json();
+      setJob({ id: jobId, status: 'running', progress: null, result: null, error: null });
+
+      // Poll for progress
+      const poll = setInterval(async () => {
+        try {
+          const statusRes = await fetch(`/api/ctas/generate/${jobId}`);
+          const data = await statusRes.json();
+          setJob(data);
+          if (data.status === 'done' || data.status === 'error') {
+            clearInterval(poll);
+            // Reload page after success to show new CTAs
+            if (data.status === 'done') {
+              setTimeout(() => window.location.reload(), 1500);
+            }
+          }
+        } catch {
+          clearInterval(poll);
+        }
+      }, 1000);
+    } catch {
+      setJob({ id: '', status: 'error', progress: null, result: null, error: 'Failed to start' });
+    }
+  }, []);
+
+  const isRunning = job?.status === 'running';
+  const isDone = job?.status === 'done';
+  const isError = job?.status === 'error';
+  const progressPct = job?.progress
+    ? Math.round((job.progress.current / job.progress.total) * 100)
+    : 0;
+
+  return (
+    <div className="flex items-center gap-3">
+      {/* Progress indicator */}
+      {isRunning && job.progress && (
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <div className="h-1.5 w-24 rounded-full bg-gray-200 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-blue-600 transition-all duration-300"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          <span className="tabular-nums">{progressPct}%</span>
+          {job.progress.label && (
+            <span className="max-w-[200px] truncate text-gray-400">{job.progress.label}</span>
+          )}
+        </div>
+      )}
+      {isDone && job.result && (
+        <span className="text-xs text-green-600 font-medium">
+          {job.result.ctaCount} CTAs generated — reloading…
+        </span>
+      )}
+      {isError && (
+        <span className="text-xs text-red-600 font-medium truncate max-w-[200px]">
+          {job.error ?? 'Generation failed'}
+        </span>
+      )}
+
+      <button
+        onClick={startGeneration}
+        disabled={isRunning}
+        className={clsx(
+          'inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium shadow-sm transition-colors',
+          isRunning
+            ? 'bg-gray-400 text-white cursor-not-allowed'
+            : isDone
+              ? 'bg-green-600 text-white'
+              : isError
+                ? 'bg-red-600 text-white hover:bg-red-700'
+                : 'bg-gray-900 text-white hover:bg-gray-800',
+        )}
+      >
+        {isRunning ? (
+          <>
+            <span className="animate-spin text-base leading-none">⏳</span>
+            Generating…
+          </>
+        ) : isDone ? (
+          <>
+            <Check className="h-4 w-4" />
+            Done
+          </>
+        ) : (
+          <>
+            <span className="text-base leading-none">⚡</span>
+            Generate CTAs
+          </>
+        )}
+      </button>
     </div>
   );
 }
