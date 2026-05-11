@@ -88,13 +88,13 @@ services:
       # so when they run in parallel each one effectively waits for the
       # others. 600s timeout covers worst-case 50 accounts × 7 combined
       # calls at Glean's ~2 req/s ceiling plus retry headroom.
-      ADAPTER_TIMEOUT_MS_CEREBRO: ${ADAPTER_TIMEOUT_MS_CEREBRO:-600000}
-      ADAPTER_TIMEOUT_MS_GAINSIGHT: ${ADAPTER_TIMEOUT_MS_GAINSIGHT:-600000}
+      ADAPTER_TIMEOUT_MS_CEREBRO: ${ADAPTER_TIMEOUT_MS_CEREBRO:-1800000}
+      ADAPTER_TIMEOUT_MS_GAINSIGHT: ${ADAPTER_TIMEOUT_MS_GAINSIGHT:-1800000}
       # glean-mcp fans out 5x more calls per account than the other Glean
       # adapters (account-context primary + secondary + 3 evidence sources),
       # so it needs a longer timeout. 600s covers 50 accounts × 5 calls
       # at Glean's ~2 req/s ceiling with retry headroom.
-      ADAPTER_TIMEOUT_MS_GLEAN_MCP: ${ADAPTER_TIMEOUT_MS_GLEAN_MCP:-600000}
+      ADAPTER_TIMEOUT_MS_GLEAN_MCP: ${ADAPTER_TIMEOUT_MS_GLEAN_MCP:-1800000}
       # Concurrency overrides for the Glean-using adapters. Lower =
       # gentler on Glean's rate limit at the cost of refresh duration.
       CEREBRO_CONCURRENCY: ${CEREBRO_CONCURRENCY-}
@@ -105,7 +105,11 @@ services:
       # this many accounts and calls Glean once (cerebro/gainsight) or
       # ~5x (glean-mcp). At Glean's ~2 req/s effective ceiling, 100
       # accounts ≈ 250s for glean-mcp.
-      GLEAN_ENRICH_LIMIT: ${GLEAN_ENRICH_LIMIT-}
+      GLEAN_ENRICH_LIMIT: ${GLEAN_ENRICH_LIMIT:-0}
+      # Date window (in days) for the WoW diff baseline. The orchestrator
+      # compares the current snapshot against the most recent successful run
+      # at least this many days old. Default 7.
+      DIFF_WINDOW_DAYS: ${DIFF_WINDOW_DAYS:-7}
       # Process-wide GleanClient rate limiter tunables (in glean.ts):
       GLEAN_MAX_INFLIGHT: ${GLEAN_MAX_INFLIGHT-}
       GLEAN_MIN_INTERVAL_MS: ${GLEAN_MIN_INTERVAL_MS-}

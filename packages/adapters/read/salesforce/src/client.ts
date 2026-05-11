@@ -20,6 +20,11 @@ export interface SalesforceCredentials {
   instanceUrl: string;
   /** Optional: pin a Salesforce REST API version. Defaults to 59.0. */
   apiVersion?: string;
+  /** Optional: override the OAuth token endpoint base URL.
+   *  Defaults to instanceUrl (which Salesforce routes correctly for both
+   *  production and sandbox orgs). Set this only if the org requires a
+   *  specific login endpoint, e.g. https://login.salesforce.com. */
+  loginUrl?: string;
 }
 
 export interface SalesforceQueryRecord {
@@ -30,13 +35,32 @@ export interface SalesforceQueryRecord {
 export class SalesforceClient {
   private connection: Connection | null = null;
   private accessToken: string | null = null;
+  /** In-flight connection promise — deduplicates parallel ensureConnection()
+   *  calls so 3 concurrent query() invocations share a single OAuth round-trip. */
+  private connectingPromise: Promise<Connection> | null = null;
 
   constructor(private readonly creds: SalesforceCredentials) {}
 
   private async ensureConnection(): Promise<Connection> {
     if (this.connection) return this.connection;
+    // Deduplicate: if another call is already creating the connection,
+    // piggyback on its promise instead of issuing a second OAuth refresh.
+    if (!this.connectingPromise) {
+      this.connectingPromise = this.createConnection().finally(() => {
+        this.connectingPromise = null;
+      });
+    }
+    return this.connectingPromise;
+  }
 
+  private async createConnection(): Promise<Connection> {
+    // loginUrl defaults to instanceUrl — Salesforce routes token requests
+    // from My Domain URLs correctly for both production and sandbox orgs.
+    // Overridable via SALESFORCE_LOGIN_URL for orgs that require a
+    // specific endpoint (e.g. https://login.salesforce.com).
+    const loginUrl = this.creds.loginUrl ?? this.creds.instanceUrl;
     const oauth2 = new OAuth2({
+      loginUrl,
       clientId: this.creds.clientId,
       clientSecret: this.creds.clientSecret,
       // No redirectUri needed for refresh_token grant.
@@ -47,6 +71,12 @@ export class SalesforceClient {
     // the Connection for us, so we issue the call ourselves and pass the
     // access token through the Connection ctor.
     const tokenRes = await oauth2.refreshToken(this.creds.refreshToken);
+    if (!tokenRes.access_token || typeof tokenRes.access_token !== 'string') {
+      throw new Error(
+        `Salesforce OAuth token refresh did not return an access_token. ` +
+        `loginUrl=${loginUrl} clientId=${this.creds.clientId}`,
+      );
+    }
     this.accessToken = tokenRes.access_token;
 
     this.connection = new Connection({
@@ -59,6 +89,10 @@ export class SalesforceClient {
       refreshFn: async (_conn: Connection, callback: (err: Error | null, accessToken?: string) => void) => {
         try {
           const fresh = await oauth2.refreshToken(this.creds.refreshToken);
+          if (!fresh.access_token) {
+            callback(new Error('Salesforce OAuth mid-session refresh returned no access_token'));
+            return;
+          }
           this.accessToken = fresh.access_token;
           callback(null, fresh.access_token);
         } catch (err) {
@@ -123,15 +157,20 @@ export class SalesforceClient {
    * suitable for surfacing on the dashboard's "Source freshness" panel.
    */
   async healthCheck(): Promise<{ ok: boolean; details: string }> {
+    const loginUrl = this.creds.loginUrl ?? this.creds.instanceUrl;
     try {
       await this.ensureConnection();
       const r = await this.query<SalesforceQueryRecord>('SELECT Id FROM User LIMIT 1');
       return {
         ok: true,
-        details: `OAuth ok; sample query returned ${r.length} row(s)`,
+        details: `OAuth ok (${loginUrl}); sample query returned ${r.length} row(s)`,
       };
     } catch (err) {
-      return { ok: false, details: (err as Error).message };
+      const msg = (err as Error).message ?? String(err);
+      const hint = msg.includes('INVALID_GRANT') || msg.includes('invalid_grant')
+        ? '. Refresh token may be expired or revoked — re-run `sf org login web --alias mdas-prod`'
+        : '';
+      return { ok: false, details: `${msg}${hint}` };
     }
   }
 }
@@ -161,5 +200,6 @@ export function readSalesforceCredsFromEnv(): SalesforceCredentials | null {
     refreshToken: e.SALESFORCE_REFRESH_TOKEN,
     instanceUrl: e.SALESFORCE_INSTANCE_URL,
     apiVersion: e.SALESFORCE_API_VERSION,
+    loginUrl: e.SALESFORCE_LOGIN_URL || undefined,
   };
 }

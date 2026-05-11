@@ -255,6 +255,9 @@ export interface RefreshContext {
   logger: AdapterLogger;
   /** Audit logger for refresh-level events. */
   audit: AdapterAuditLogger;
+  /** Report per-account progress so the UI can show a live progress bar.
+   *  Adapters call this periodically; the orchestrator debounces DB writes. */
+  reportProgress?: (current: number, total: number, label?: string) => void;
 }
 
 /**

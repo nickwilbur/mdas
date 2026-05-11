@@ -87,6 +87,44 @@ function releaseGleanSlot(): void {
   if (next) next();
 }
 
+// ---------------------------------------------------------------------------
+// JWT token expiry helpers
+// ---------------------------------------------------------------------------
+
+export interface TokenStatus {
+  expired: boolean;
+  expiresAt: Date | null;
+  ttlSeconds: number | null;
+}
+
+/** Parse the `exp` claim from a JWT without verifying the signature.
+ *  Returns null if the token is not a valid 3-part JWT. */
+export function parseJwtExpiry(token: string): TokenStatus {
+  const parts = token.split('.');
+  if (parts.length !== 3) return { expired: false, expiresAt: null, ttlSeconds: null };
+  try {
+    const payload = JSON.parse(
+      Buffer.from(parts[1]!.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'),
+    ) as { exp?: number };
+    if (typeof payload.exp !== 'number') return { expired: false, expiresAt: null, ttlSeconds: null };
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      expired: payload.exp < now,
+      expiresAt: new Date(payload.exp * 1000),
+      ttlSeconds: payload.exp - now,
+    };
+  } catch {
+    return { expired: false, expiresAt: null, ttlSeconds: null };
+  }
+}
+
+/** Returns true when an error message indicates a permanent auth failure
+ *  (401/403) that should NOT be retried. */
+function isPermanentAuthError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return msg.includes('401') || msg.includes('403') || msg.includes('unauthorized') || msg.includes('forbidden');
+}
+
 export interface GleanCredentials {
   /** Bearer token from GLEAN_MCP_TOKEN. */
   token: string;
@@ -225,8 +263,14 @@ export class GleanClient {
   private mcpInit?: Promise<void>;
   /** Monotonic JSON-RPC id counter. */
   private rpcId = 0;
+  /** Token expiry status, checked once at construction. */
+  readonly tokenStatus: TokenStatus;
+  /** Cached permanent auth error (401/403). Once set, every subsequent
+   *  call throws immediately instead of re-hitting Glean's endpoint. */
+  private mcpPermanentError?: Error;
 
   constructor(creds: GleanCredentials) {
+    this.tokenStatus = parseJwtExpiry(creds.token);
     // Operators normally set GLEAN_MCP_BASE_URL to Glean's MCP transport
     // endpoint (e.g. `https://zuora-be.glean.com/mcp/default`). That's
     // what we use directly. If a tenant-root URL was provided instead,
@@ -263,10 +307,24 @@ export class GleanClient {
   // that.
   // -------------------------------------------------------------------
   private async ensureMcpInitialized(): Promise<void> {
+    // Fast-path: token already known to be expired → skip network entirely.
+    if (this.tokenStatus.expired) {
+      const ago = this.tokenStatus.expiresAt
+        ? ` (expired ${this.tokenStatus.expiresAt.toISOString()})`
+        : '';
+      throw new Error(
+        `GLEAN_MCP_TOKEN is expired${ago}. Run \`make glean-token\` to refresh.`,
+      );
+    }
+    // Fast-path: a prior call hit a permanent auth error (401/403).
+    if (this.mcpPermanentError) throw this.mcpPermanentError;
     if (!this.mcpInit) {
       this.mcpInit = this.doMcpInitialize().catch((err) => {
-        // Reset so a later call can retry; otherwise a transient init
-        // failure permanently bricks the client.
+        if (isPermanentAuthError(err)) {
+          this.mcpPermanentError = err instanceof Error ? err : new Error(String(err));
+        }
+        // Reset so a later call can retry transient failures; permanent
+        // failures are caught by the mcpPermanentError guard above.
         this.mcpInit = undefined;
         throw err;
       });
@@ -520,12 +578,23 @@ export class GleanClient {
   }
 
   async healthCheck(): Promise<{ ok: boolean; details: string }> {
+    if (this.tokenStatus.expired) {
+      const ago = this.tokenStatus.expiresAt
+        ? ` expired ${this.tokenStatus.expiresAt.toISOString()}`
+        : ' expired';
+      return {
+        ok: false,
+        details: `GLEAN_MCP_TOKEN${ago}. Run \`make glean-token\` to refresh.`,
+      };
+    }
     try {
       const r = await this.search({ query: 'healthcheck', pageSize: 1 });
       const count = (r.documents ?? r.results ?? []).length;
+      const ttl = this.tokenStatus.ttlSeconds;
+      const ttlNote = ttl !== null ? ` token TTL ${Math.floor(ttl / 3600)}h` : '';
       return {
         ok: true,
-        details: `Glean MCP reachable (${this.mcpUrl}); sample query returned ${count} result(s)`,
+        details: `Glean MCP reachable (${this.mcpUrl}); sample query returned ${count} result(s)${ttlNote}`,
       };
     } catch (err) {
       return { ok: false, details: (err as Error).message };

@@ -64,6 +64,7 @@ export const gainsightAdapter: ReadAdapter = {
     const priorAccounts = limit > 0 ? allAccounts.slice(0, limit) : allAccounts;
     const nameToAccountId = new Map<string, string>();
     for (const a of priorAccounts) {
+      if (!a.accountName) continue;
       nameToAccountId.set(normalizeName(a.accountName), a.accountId);
     }
     if (nameToAccountId.size === 0) {
@@ -103,6 +104,7 @@ export const gainsightAdapter: ReadAdapter = {
           while (cursor < priorAccounts.length) {
             const i = cursor++;
             const account = priorAccounts[i]!;
+            ctx?.reportProgress?.(i + 1, priorAccounts.length, account.accountName);
             try {
               const resp = await client.search({
                 query: `gainsight CTA ${account.accountName}`,

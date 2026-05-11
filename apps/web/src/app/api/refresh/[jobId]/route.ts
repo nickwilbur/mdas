@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { query } from '@mdas/db';
+import type { RefreshProgress } from '@mdas/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,6 +32,8 @@ export interface RefreshJobStatus {
   rowCounts: Record<string, number> | null;
   /** Per-source non-fatal errors from the refresh, if any. */
   errorLog: { source: string; error: string }[] | null;
+  /** Live progress data (per-adapter current/total + overall pct). */
+  progress: RefreshProgress | null;
 }
 
 interface JoinRow {
@@ -42,6 +45,7 @@ interface JoinRow {
   sources_succeeded: string[] | null;
   row_counts: Record<string, number> | null;
   error_log: { source: string; error: string }[] | null;
+  progress: RefreshProgress | null;
 }
 
 export async function GET(
@@ -57,7 +61,8 @@ export async function GET(
        r.sources_attempted,
        r.sources_succeeded,
        r.row_counts,
-       r.error_log
+       r.error_log,
+       r.progress
      FROM refresh_jobs j
      LEFT JOIN refresh_runs r ON r.id = j.refresh_run_id
      WHERE j.id = $1`,
@@ -76,6 +81,7 @@ export async function GET(
     sourcesSucceeded: row.sources_succeeded ?? [],
     rowCounts: row.row_counts,
     errorLog: row.error_log,
+    progress: row.progress ?? null,
   };
   return NextResponse.json(body);
 }

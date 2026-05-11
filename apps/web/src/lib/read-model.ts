@@ -1,6 +1,7 @@
 // Server-only read helpers. Pages read ONLY from local Postgres (account_view + snapshot_*).
 import 'server-only';
 import {
+  baselineRunForWindow,
   latestSuccessfulRun,
   listRefreshRuns,
   previousSuccessfulRun,
@@ -50,7 +51,10 @@ export async function getLatestRunId(): Promise<string | null> {
   return r?.id ?? null;
 }
 
-export async function getDashboardData(): Promise<{
+export const DEFAULT_WINDOW_DAYS = 7;
+export const WINDOW_OPTIONS = [7, 14, 30] as const;
+
+export async function getDashboardData(windowDays = DEFAULT_WINDOW_DAYS): Promise<{
   views: AccountView[];
   refreshId: string | null;
   startedAt: string | null;
@@ -61,7 +65,7 @@ export async function getDashboardData(): Promise<{
   // enrich every view with the composite Risk Score in one DB pass.
   const [views, wow] = await Promise.all([
     readAccountViews(run.id),
-    getWoWChangeEvents(),
+    getWoWChangeEvents(windowDays),
   ]);
   // Filter to only Expand 3 franchise
   const filteredViews = views.filter(v => v.account.franchise === 'Expand 3');
@@ -70,7 +74,7 @@ export async function getDashboardData(): Promise<{
   return { views: enriched, refreshId: run.id, startedAt: run.started_at };
 }
 
-export async function getAccount(accountId: string): Promise<AccountView | null> {
+export async function getAccount(accountId: string, windowDays = DEFAULT_WINDOW_DAYS): Promise<AccountView | null> {
   const run = await latestSuccessfulRun();
   if (!run) return null;
   const view = await readAccountView(run.id, accountId);
@@ -78,20 +82,26 @@ export async function getAccount(accountId: string): Promise<AccountView | null>
   // PR-B1: drill-in needs the same enrichment so the explainer card
   // sees the composite RiskScore. The events feed is small enough to
   // pull globally and let enrichViewsWithRiskScore filter by accountId.
-  const wow = await getWoWChangeEvents();
-  const [enriched] = enrichViewsWithRiskScore([view], wow.events);
-  return enriched ?? view;
+  const wow = await getWoWChangeEvents(windowDays);
+  // Override the baked changeEvents with the window-based ones for this account.
+  const accountEvents = wow.events.filter(e => e.accountId === accountId);
+  const patched = { ...view, changeEvents: accountEvents };
+  const [enriched] = enrichViewsWithRiskScore([patched], wow.events);
+  return enriched ?? patched;
 }
 
-export async function getWoWChangeEvents(): Promise<{
+export async function getWoWChangeEvents(windowDays = DEFAULT_WINDOW_DAYS): Promise<{
   events: ChangeEvent[];
   currId: string | null;
   prevId: string | null;
+  /** Human-readable started_at of the baseline run, for UI labeling. */
+  baselineDate: string | null;
+  windowDays: number;
 }> {
   const curr = await latestSuccessfulRun();
-  if (!curr) return { events: [], currId: null, prevId: null };
-  const prev = await previousSuccessfulRun(curr.id);
-  if (!prev) return { events: [], currId: curr.id, prevId: null };
+  if (!curr) return { events: [], currId: null, prevId: null, baselineDate: null, windowDays };
+  const prev = await baselineRunForWindow(curr.id, windowDays);
+  if (!prev) return { events: [], currId: curr.id, prevId: null, baselineDate: null, windowDays };
 
   const [currA, currO, prevA, prevO] = await Promise.all([
     readSnapshotAccounts(curr.id),
@@ -105,7 +115,7 @@ export async function getWoWChangeEvents(): Promise<{
     prev.id,
     curr.id,
   );
-  return { events, currId: curr.id, prevId: prev.id };
+  return { events, currId: curr.id, prevId: prev.id, baselineDate: prev.started_at, windowDays };
 }
 
 export async function getRecentRuns(limit = 20) {

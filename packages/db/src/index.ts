@@ -38,6 +38,43 @@ export interface RefreshRun {
   sources_succeeded: string[];
   row_counts: Record<string, number> | null;
   error_log: unknown;
+  progress: RefreshProgress;
+}
+
+// ---------- Refresh progress ----------
+
+export interface AdapterProgress {
+  status: 'pending' | 'running' | 'done' | 'error';
+  current: number;
+  total: number;
+  /** Human-readable label, e.g. "Enriching Acme Corp" */
+  label?: string;
+}
+
+export interface RefreshProgress {
+  adapters?: Record<string, AdapterProgress>;
+  /** Overall percentage 0-100, computed by the orchestrator. */
+  pct?: number;
+}
+
+export async function updateRefreshProgress(
+  refreshId: string,
+  progress: RefreshProgress,
+): Promise<void> {
+  await query(
+    `UPDATE refresh_runs SET progress = $2::jsonb WHERE id = $1`,
+    [refreshId, JSON.stringify(progress)],
+  );
+}
+
+export async function getRefreshProgress(
+  refreshId: string,
+): Promise<RefreshProgress> {
+  const r = await query<{ progress: RefreshProgress }>(
+    `SELECT progress FROM refresh_runs WHERE id = $1`,
+    [refreshId],
+  );
+  return r.rows[0]?.progress ?? {};
 }
 
 export async function startRefreshRun(opts: {
@@ -105,6 +142,43 @@ export async function previousSuccessfulRun(
     [beforeId],
   );
   return r.rows[0] ?? null;
+}
+
+/**
+ * Find the latest successful run whose started_at is at least `windowDays`
+ * before the reference run. This gives meaningful WoW/multi-day diffs even
+ * when the user refreshes multiple times a day.
+ *
+ * Falls back to the earliest available successful run if nothing is old
+ * enough — so the UI always shows some diff rather than zero events.
+ * Returns null only if no other successful run exists at all.
+ */
+export async function baselineRunForWindow(
+  referenceRunId: string,
+  windowDays: number,
+): Promise<RefreshRun | null> {
+  // Primary: latest run at least windowDays before the reference run.
+  const r = await query<RefreshRun>(
+    `SELECT * FROM refresh_runs
+       WHERE status IN ('success','partial')
+         AND id != $1
+         AND started_at <= (SELECT started_at FROM refresh_runs WHERE id = $1)
+                           - make_interval(days => $2)
+     ORDER BY started_at DESC LIMIT 1`,
+    [referenceRunId, windowDays],
+  );
+  if (r.rows[0]) return r.rows[0];
+
+  // Fallback: earliest successful run that isn't the reference run itself.
+  // This covers the cold-start case where the only data we have is < windowDays old.
+  const fb = await query<RefreshRun>(
+    `SELECT * FROM refresh_runs
+       WHERE status IN ('success','partial')
+         AND id != $1
+     ORDER BY started_at ASC LIMIT 1`,
+    [referenceRunId],
+  );
+  return fb.rows[0] ?? null;
 }
 
 export async function pruneOldRuns(retain = 12): Promise<number> {

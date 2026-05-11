@@ -1,7 +1,8 @@
 import Link from 'next/link';
-import { getDashboardData, getWoWChangeEvents } from '@/lib/read-model';
+import { getDashboardData, getWoWChangeEvents, DEFAULT_WINDOW_DAYS } from '@/lib/read-model';
 import { Card } from '@/components/ui';
 import { FiscalQuarterFilter } from '@/components/FiscalQuarterFilter';
+import { WindowSelector } from '@/components/WindowSelector';
 import { fiscalQuartersForAccount, parseQuartersParam } from '@/lib/fiscal';
 import type { ChangeEvent } from '@mdas/canonical';
 
@@ -16,15 +17,21 @@ const CATEGORIES: { key: ChangeEvent['category']; title: string }[] = [
   { key: 'churn-notice', title: 'Churn notices submitted' },
 ];
 
+function formatDate(iso: string | null): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 export default async function WoWPage({
   searchParams,
 }: {
-  searchParams: Promise<{ quarters?: string }>;
+  searchParams: Promise<{ quarters?: string; window?: string }>;
 }) {
-  const { quarters } = await searchParams;
-  const [{ events, prevId, currId }, { views }] = await Promise.all([
-    getWoWChangeEvents(),
-    getDashboardData(),
+  const { quarters, window: windowParam } = await searchParams;
+  const windowDays = [7, 14, 30].includes(Number(windowParam)) ? Number(windowParam) : DEFAULT_WINDOW_DAYS;
+  const [{ events, baselineDate, windowDays: wd }, { views }] = await Promise.all([
+    getWoWChangeEvents(windowDays),
+    getDashboardData(windowDays),
   ]);
 
   // Map accountId → quarter keys so we can filter events by account's
@@ -54,10 +61,17 @@ export default async function WoWPage({
   }
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">Week-over-Week Changes</h1>
-      <p className="text-xs text-gray-500">
-        Diff between {prevId ? prevId.slice(0, 8) : '—'} and {currId ? currId.slice(0, 8) : '—'} ({filteredEvents.length} of {events.length} events)
-      </p>
+      <div className="flex items-end justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Changes</h1>
+          <p className="text-xs text-gray-500">
+            {baselineDate
+              ? `Since ${formatDate(baselineDate)} (${wd}d window) — ${filteredEvents.length} events`
+              : `No baseline found for ${wd}d window`}
+          </p>
+        </div>
+        <WindowSelector current={windowDays} />
+      </div>
       <FiscalQuarterFilter availableQuarterKeys={availableQuarterKeys} />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {CATEGORIES.map(({ key, title }) => {

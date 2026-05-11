@@ -105,10 +105,12 @@ export const gleanMcpAdapter: ReadAdapter = {
     });
 
     const startedAt = Date.now();
+    let gleanProcessed = 0;
     const partials = await mapWithConcurrency(
       priorAccounts,
       concurrency,
       async (account: CanonicalAccount): Promise<Partial<CanonicalAccount> | null> => {
+        ctx?.reportProgress?.(++gleanProcessed, priorAccounts.length, account.accountName);
         const input = { accountId: account.accountId, accountName: account.accountName };
         const [context, evidence] = await Promise.all([
           fetchAccountContext(client, input),

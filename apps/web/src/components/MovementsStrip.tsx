@@ -18,32 +18,41 @@ const CATEGORIES: { key: ChangeEvent['category']; label: string; tone: string }[
   { key: 'workshop', label: 'New workshops', tone: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
 ];
 
+function formatBaselineDate(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 export function MovementsStrip({
   events,
-  prevId,
-  currId,
+  baselineDate,
+  windowDays,
 }: {
   events: ChangeEvent[];
-  prevId: string | null;
-  currId: string | null;
+  baselineDate: string | null;
+  windowDays: number;
 }): JSX.Element {
   const counts = new Map<ChangeEvent['category'], number>();
   for (const e of events) {
     counts.set(e.category, (counts.get(e.category) ?? 0) + 1);
   }
   const total = events.length;
-  if (!prevId) {
+  if (!baselineDate) {
     return (
       <div className="rounded-lg border border-gray-200 bg-white p-3 text-sm text-gray-600">
-        No prior refresh to diff against — week-over-week movement will appear after the next refresh.
+        No prior refresh to diff against — movements will appear after another refresh outside the {windowDays}-day window.
       </div>
     );
   }
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-3">
       <div className="mb-2 flex items-end justify-between">
-        <h2 className="text-sm font-semibold">Movements this week</h2>
-        <Link href="/wow" className="text-xs text-blue-700 hover:underline">
+        <h2 className="text-sm font-semibold">
+          Movements since {formatBaselineDate(baselineDate)}
+          <span className="ml-1 text-xs font-normal text-gray-500">({windowDays}d window)</span>
+        </h2>
+        <Link href={`/wow${windowDays !== 7 ? `?window=${windowDays}` : ''}`} className="text-xs text-blue-700 hover:underline">
           See all {total} →
         </Link>
       </div>
@@ -61,9 +70,6 @@ export function MovementsStrip({
           );
         })}
       </ul>
-      <div className="mt-1 text-[10px] text-gray-500">
-        Diff between {prevId ? prevId.slice(0, 8) : '—'} → {currId ? currId.slice(0, 8) : '—'}
-      </div>
     </div>
   );
 }

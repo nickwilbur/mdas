@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { getAccount } from '@/lib/read-model';
+import { getAccount, DEFAULT_WINDOW_DAYS } from '@/lib/read-model';
 import {
   BucketBadge,
   Card,
@@ -51,14 +51,15 @@ export default async function AccountPage({
   params: { accountId: string };
   // Next 14 App Router exposes searchParams as a Promise; matches the
   // pattern used in @/Users/nick.wilbur/ai/mdas/apps/web/src/app/accounts/page.tsx.
-  searchParams: Promise<{ mode?: string }>;
+  searchParams: Promise<{ mode?: string; window?: string }>;
 }) {
-  const v = await getAccount(params.accountId);
+  const { mode, window: windowParam } = await searchParams;
+  const windowDays = [7, 14, 30].includes(Number(windowParam)) ? Number(windowParam) : DEFAULT_WINDOW_DAYS;
+  const v = await getAccount(params.accountId, windowDays);
   if (!v) notFound();
 
   const a = v.account;
   const opps = v.opportunities;
-  const { mode } = await searchParams;
   const isExec = mode === 'exec';
 
   return (

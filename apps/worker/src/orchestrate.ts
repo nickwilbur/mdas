@@ -11,16 +11,19 @@ import type {
 } from '@mdas/canonical';
 import {
   audit,
+  baselineRunForWindow,
   completeRefreshRun,
   latestSuccessfulRun,
   pruneOldRuns,
   readSnapshotAccounts,
   readSnapshotOpportunities,
   startRefreshRun,
+  updateRefreshProgress,
   writeAccountViews,
   writeSnapshotAccounts,
   writeSnapshotOpportunities,
 } from '@mdas/db';
+import type { AdapterProgress, RefreshProgress } from '@mdas/db';
 import {
   // SCORING_VERSION, // TODO: Fix module resolution issue
   buildAccountView,
@@ -252,6 +255,82 @@ export interface RefreshResult {
  * appears on every record emitted by an adapter — that's the trace
  * identifier persisted across web → worker.
  */
+// ---------------------------------------------------------------------------
+// Progress tracking — debounced writes to refresh_runs.progress
+// ---------------------------------------------------------------------------
+
+class ProgressTracker {
+  private adapters: Record<string, AdapterProgress> = {};
+  private dirty = false;
+  private timer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(private readonly refreshId: string, sources: string[]) {
+    for (const s of sources) {
+      this.adapters[s] = { status: 'pending', current: 0, total: 0 };
+    }
+  }
+
+  markRunning(source: string, total: number): void {
+    this.adapters[source] = { status: 'running', current: 0, total };
+    this.dirty = true;
+  }
+
+  report(source: string, current: number, total: number, label?: string): void {
+    const a = this.adapters[source];
+    if (a) {
+      a.current = current;
+      a.total = total;
+      a.status = 'running';
+      a.label = label;
+      this.dirty = true;
+    }
+  }
+
+  markDone(source: string, count: number): void {
+    this.adapters[source] = { status: 'done', current: count, total: count };
+    this.dirty = true;
+  }
+
+  markError(source: string): void {
+    const a = this.adapters[source];
+    if (a) a.status = 'error';
+    this.dirty = true;
+  }
+
+  /** Start periodic flushing to DB (every 2s). */
+  startFlushing(): void {
+    this.timer = setInterval(() => void this.flush(), 2_000);
+  }
+
+  stopFlushing(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  snapshot(): RefreshProgress {
+    const totalWeight = Object.values(this.adapters).reduce(
+      (s, a) => s + Math.max(a.total, 1),
+      0,
+    );
+    const doneWeight = Object.values(this.adapters).reduce((s, a) => {
+      if (a.status === 'done' || a.status === 'error') return s + Math.max(a.total, 1);
+      return s + a.current;
+    }, 0);
+    const pct = totalWeight > 0 ? Math.round((doneWeight / totalWeight) * 100) : 0;
+    return { adapters: { ...this.adapters }, pct };
+  }
+
+  async flush(): Promise<void> {
+    if (!this.dirty) return;
+    this.dirty = false;
+    try {
+      await updateRefreshProgress(this.refreshId, this.snapshot());
+    } catch {
+      // Best-effort — don't crash the refresh over a progress write.
+    }
+  }
+}
+
 function buildRefreshContext(
   refreshId: string,
   asOf: Date,
@@ -300,6 +379,9 @@ export async function runRefresh(
     sources: sourceNames,
   });
   const ctx = buildRefreshContext(refreshId, startedAt, options.requestId);
+  const progress = new ProgressTracker(refreshId, sourceNames);
+  progress.startFlushing();
+
   await audit(options.actor ?? 'manual:nick', 'refresh.started', {
     refreshId,
     ...(options.requestId ? { requestId: options.requestId } : {}),
@@ -311,12 +393,20 @@ export async function runRefresh(
   const errorLog: { source: string; error: string }[] = [];
   const fetched = await Promise.all(
     adapters.map(async (a) => {
+      const source = a.source ?? a.name;
       const adapterStart = Date.now();
       // PR-B3: per-adapter timeout, env-configurable. See adapterTimeoutMs.
-      const timeoutMs = adapterTimeoutMs(a.source ?? a.name);
+      const timeoutMs = adapterTimeoutMs(source);
+      // Per-adapter context with a progress callback bound to this source.
+      const adapterCtx: RefreshContext = {
+        ...ctx,
+        reportProgress: (current, total, label) =>
+          progress.report(a.name, current, total, label),
+      };
+      progress.markRunning(a.name, 0);
       try {
         const r = await Promise.race([
-          a.fetch({ franchise: FRANCHISE }, ctx),
+          a.fetch({ franchise: FRANCHISE }, adapterCtx),
           new Promise<Partial<MergedData>>((_, rej) =>
             // Descriptive error message so PR-A4's partial-success surface
             // can show "salesforce timed out after 25000ms" instead of
@@ -328,8 +418,9 @@ export async function runRefresh(
           ),
         ]);
         succeeded.push(a.name);
+        progress.markDone(a.name, r.accounts?.length ?? 0);
         ctx.logger.info(`adapter.success`, {
-          source: a.source ?? a.name,
+          source,
           durationMs: Date.now() - adapterStart,
           accounts: r.accounts?.length ?? 0,
           opportunities: r.opportunities?.length ?? 0,
@@ -338,8 +429,9 @@ export async function runRefresh(
       } catch (err) {
         const message = (err as Error).message;
         errorLog.push({ source: a.name, error: message });
+        progress.markError(a.name);
         ctx.logger.error(`adapter.failure`, {
-          source: a.source ?? a.name,
+          source,
           durationMs: Date.now() - adapterStart,
           error: message,
         });
@@ -347,6 +439,10 @@ export async function runRefresh(
       }
     }),
   );
+
+  // Final progress flush before merge/score phase.
+  progress.stopFlushing();
+  await progress.flush();
 
   // Phase 2: Normalize / merge.
   let merged: MergedData = options.injected ?? mergeAdapterResults(fetched);
@@ -356,18 +452,20 @@ export async function runRefresh(
   await writeSnapshotOpportunities(refreshId, merged.opportunities);
 
   // Phase 4 & 5: Score + WoW diff.
-  const prevRun = await latestSuccessfulRun();
+  // Compare against a run at least DIFF_WINDOW_DAYS old so that multiple
+  // same-day refreshes don't zero out the change events. Falls back to the
+  // earliest available run if nothing is old enough yet (cold start).
+  const diffWindowDays = Number(process.env.DIFF_WINDOW_DAYS) || 7;
+  const prevRun = await baselineRunForWindow(refreshId, diffWindowDays);
   let prevAccounts: CanonicalAccount[] = [];
   let prevOpps: CanonicalOpportunity[] = [];
-  if (prevRun && prevRun.id !== refreshId) {
+  if (prevRun) {
     prevAccounts = await readSnapshotAccounts(prevRun.id);
     prevOpps = await readSnapshotOpportunities(prevRun.id);
   }
 
   const events: ChangeEvent[] = diffAll(
-    prevRun && prevRun.id !== refreshId
-      ? { accounts: prevAccounts, opportunities: prevOpps }
-      : null,
+    prevRun ? { accounts: prevAccounts, opportunities: prevOpps } : null,
     merged,
     prevRun?.id ?? '',
     refreshId,

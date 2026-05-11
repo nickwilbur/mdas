@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { getDashboardData, getWoWChangeEvents } from '@/lib/read-model';
+import { getDashboardData, getWoWChangeEvents, DEFAULT_WINDOW_DAYS } from '@/lib/read-model';
 import {
   BucketBadge,
   Card,
@@ -14,6 +14,7 @@ import {
 import { RefreshButton } from '@/components/RefreshButton';
 import { ActionQueue } from '@/components/ActionQueue';
 import { MovementsStrip } from '@/components/MovementsStrip';
+import { WindowSelector } from '@/components/WindowSelector';
 import { FiscalQuarterFilter } from '@/components/FiscalQuarterFilter';
 import {
   fiscalQuarterFromDate,
@@ -35,14 +36,15 @@ export const dynamic = 'force-dynamic';
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ quarters?: string }>;
+  searchParams: Promise<{ quarters?: string; window?: string }>;
 }) {
-  const { quarters } = await searchParams;
+  const { quarters, window: windowParam } = await searchParams;
+  const windowDays = [7, 14, 30].includes(Number(windowParam)) ? Number(windowParam) : DEFAULT_WINDOW_DAYS;
   // Load both feeds in parallel so the ActionQueue can rank by
   // movement-this-week without an extra database round trip.
   const [{ views: allViews, refreshId, startedAt }, wow] = await Promise.all([
-    getDashboardData(),
-    getWoWChangeEvents(),
+    getDashboardData(windowDays),
+    getWoWChangeEvents(windowDays),
   ]);
 
   if (!refreshId) {
@@ -156,7 +158,10 @@ export default async function DashboardPage({
 
       {/* PR-A9: Movements strip — compressed WoW so the manager sees the
           "what changed" answer without leaving the page. */}
-      <MovementsStrip events={wow.events} prevId={wow.prevId} currId={wow.currId} />
+      <div className="flex items-center justify-between">
+        <WindowSelector current={windowDays} />
+      </div>
+      <MovementsStrip events={wow.events} baselineDate={wow.baselineDate} windowDays={windowDays} />
 
       {/* Roll-up tiles: same data as before, demoted below the new
           attention-direction surfaces. */}

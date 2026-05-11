@@ -12,6 +12,8 @@
     "build": "npm run build --workspaces --if-present",
     "dev:web": "npm run dev --workspace apps/web",
     "dev:worker": "npm run dev --workspace apps/worker",
+    "restart": "./restart.sh",
+    "stop": "pkill -f 'next dev' || true && pkill -f 'tsx src/main.ts' || true && docker-compose down",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc -b --pretty",

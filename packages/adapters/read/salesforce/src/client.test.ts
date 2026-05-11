@@ -10,6 +10,7 @@ const KEYS = [
   'SALESFORCE_REFRESH_TOKEN',
   'SALESFORCE_INSTANCE_URL',
   'SALESFORCE_API_VERSION',
+  'SALESFORCE_LOGIN_URL',
 ] as const;
 
 describe('readSalesforceCredsFromEnv', () => {
@@ -93,6 +94,25 @@ describe('readSalesforceCredsFromEnv', () => {
       refreshToken: 'r',
       instanceUrl: 'https://x.my.salesforce.com',
       apiVersion: undefined,
+      loginUrl: undefined,
     });
+  });
+
+  it('passes through SALESFORCE_LOGIN_URL when set', () => {
+    process.env.SALESFORCE_CLIENT_ID = 'PlatformCLI';
+    process.env.SALESFORCE_REFRESH_TOKEN = 'r';
+    process.env.SALESFORCE_INSTANCE_URL = 'https://zuora.my.salesforce.com';
+    process.env.SALESFORCE_LOGIN_URL = 'https://login.salesforce.com';
+    const creds = readSalesforceCredsFromEnv();
+    expect(creds!.loginUrl).toBe('https://login.salesforce.com');
+  });
+
+  it('returns undefined loginUrl when SALESFORCE_LOGIN_URL is empty', () => {
+    process.env.SALESFORCE_CLIENT_ID = 'PlatformCLI';
+    process.env.SALESFORCE_REFRESH_TOKEN = 'r';
+    process.env.SALESFORCE_INSTANCE_URL = 'https://zuora.my.salesforce.com';
+    process.env.SALESFORCE_LOGIN_URL = '';
+    const creds = readSalesforceCredsFromEnv();
+    expect(creds!.loginUrl).toBeUndefined();
   });
 });

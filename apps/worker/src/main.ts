@@ -122,6 +122,7 @@ async function drain(): Promise<void> {
 }
 
 main().catch((err) => {
-  log.error('worker.fatal', { error: (err as Error).message });
+  console.error('Worker fatal error:', err);
+  log.error('worker.fatal', { error: (err as Error).message, stack: (err as Error).stack });
   process.exit(1);
 });

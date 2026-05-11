@@ -126,10 +126,12 @@ export const cerebroGleanAdapter: ReadAdapter = {
     const startedSearches = Date.now();
     let searchFailures = 0;
     const allDocs: GleanDocument[] = [];
+    let cerebroProcessed = 0;
     const perAccount = await mapWithConcurrency(
       priorAccounts,
       concurrency,
       async (account: CanonicalAccount): Promise<GleanDocument[]> => {
+        ctx?.reportProgress?.(++cerebroProcessed, priorAccounts.length, account.accountName);
         try {
           const resp = await client.search({
             // SHORT keywords per Glean MCP tool guidance — no quotes,
