@@ -1,10 +1,30 @@
 import type { AccountView, CanonicalOpportunity, ChangeEvent } from '@mdas/canonical';
+import {
+  parseClariManagerForecastExportCsv,
+  selectLatestClariForecastValue,
+  timeframeMatchesFiscalQuarter,
+  type ClariForecastSelection,
+  type ClariManagerForecastRow,
+} from './clari-manager-forecast.js';
 import { fiscalQuarterFromDate, fiscalQuarterLabel } from './fiscal.js';
 
 // PR-C3 — re-export Clari CSV + dark-account helpers from the public
 // surface of @mdas/forecast-generator.
 export { generateClariCsv, findDarkAccounts } from './clari-csv.js';
 export type { ClariCsvOptions, DarkAccount } from './clari-csv.js';
+
+export {
+  parseClariManagerForecastExportCsv,
+  parseClariNumericDataValue,
+  selectLatestClariForecastValue,
+  timeframeMatchesFiscalQuarter,
+  CLARI_FORECAST_SOURCE_LABEL,
+} from './clari-manager-forecast.js';
+export type {
+  ClariForecastSelection,
+  ClariManagerForecastRow,
+  SelectClariForecastValueOpts,
+} from './clari-manager-forecast.js';
 
 export interface ForecastInput {
   views: AccountView[];
@@ -19,6 +39,14 @@ export interface ForecastInput {
    * leadership knows the field is intentionally blank.
    */
   plan?: { currentQuarterUSD?: number; nextQuarterUSD?: number };
+  /**
+   * Pasted Clari manager forecast export CSV (same columns as the
+   * export: Role, Timeframe, Field, Week, Data Type, Data Value, …).
+   * When present, headline **Churn/Downsell Flash / Most Likely** (and
+   * optional Plan / Hedge from matching Forecast Value rows) are read
+   * deterministically — account roll-ups never override Flash.
+   */
+  clariManagerForecastCsv?: string;
 }
 
 const fmtUSD = (n: number) =>
@@ -82,22 +110,47 @@ function bucketByQuarter(
 }
 
 /**
- * Net forecast value for an opportunity.
- *  - Renewals / Churn: forecastMostLikely is what we EXPECT to keep,
- *    so the loss = ATR - forecastMostLikely (or knownChurnUSD if set).
- *  - For this churn-call view we surface the LOSS as a positive
- *    dollar number ("$X churn risk").
+ * Per-opportunity churn/downsell component in **negative dollars**
+ * (Clari / manager convention). Used only for MDAS-estimated Flash
+ * fallback when no Clari manager row is supplied — never overrides
+ * `selectLatestClariForecastValue`.
+ *
+ * - Known churn → negative of that USD amount.
+ * - Negative Forecast Most Likely (SFDC churn/downsel) → use as-is.
+ * - Otherwise retention gap: if ATR > positive ML, churn risk is
+ *   `-(ATR - ML)`; if ML > ATR (expansion), do not treat as churn.
  */
-function churnAmount(opp: CanonicalOpportunity): number {
-  if (opp.knownChurnUSD && opp.knownChurnUSD > 0) return opp.knownChurnUSD;
+function opportunityChurnFlashUSD(opp: CanonicalOpportunity): number {
+  if (opp.knownChurnUSD != null && opp.knownChurnUSD > 0) {
+    return -opp.knownChurnUSD;
+  }
   const atr = opp.availableToRenewUSD ?? 0;
-  const ml = opp.forecastMostLikelyOverride ?? opp.forecastMostLikely ?? atr;
-  return Math.max(0, atr - ml);
+  const mlRaw = opp.forecastMostLikelyOverride ?? opp.forecastMostLikely;
+  if (mlRaw != null && mlRaw < 0) return mlRaw;
+  if (mlRaw == null) return 0;
+  const gap = atr - mlRaw;
+  return gap > 0 ? -gap : 0;
 }
 
-/** "Flash" = most-likely churn for the quarter (sum of churnAmount). */
-function flashChurn(rows: QuarterBucket['rows']): number {
-  return rows.reduce((s, r) => s + churnAmount(r.opp), 0);
+/** MDAS-estimated Flash (sum of per-opp churn components). */
+function mdasAccountFlashChurnUSD(rows: QuarterBucket['rows']): number {
+  return rows.reduce((s, r) => s + opportunityChurnFlashUSD(r.opp), 0);
+}
+
+const CLARI_ROLE = 'FLM Expand 3';
+const CLARI_DATA_TYPE = 'Forecast Value';
+
+function clariSelectionForQuarter(
+  rows: ClariManagerForecastRow[],
+  fiscalQuarterKey: string,
+  field: string,
+): ClariForecastSelection | null {
+  return selectLatestClariForecastValue(rows, {
+    role: CLARI_ROLE,
+    timeframeMatches: (tf) => timeframeMatchesFiscalQuarter(tf, fiscalQuarterKey),
+    field,
+    dataType: CLARI_DATA_TYPE,
+  });
 }
 
 /**
@@ -270,19 +323,40 @@ function renderQuarterSection(
   events: ChangeEvent[],
   planUSD: number | undefined,
   isCurrent: boolean,
+  clariRows: ClariManagerForecastRow[],
 ): string[] {
   const lines: string[] = [];
-  const flash = flashChurn(bucket.rows);
+  const clariFlash = clariSelectionForQuarter(
+    clariRows,
+    bucket.key,
+    'Churn/Downsell Flash',
+  );
+  const clariPlan = clariSelectionForQuarter(
+    clariRows,
+    bucket.key,
+    'Churn/Downsell Plan',
+  );
+  const clariHedge = clariSelectionForQuarter(clariRows, bucket.key, 'Hedge');
+
+  const resolvedPlan = planUSD ?? clariPlan?.clariForecastValue;
+  const flash =
+    clariFlash?.clariForecastValue ?? mdasAccountFlashChurnUSD(bucket.rows);
+
   const total = totalRisk(bucket.rows);
-  const hedgeUSD = hedge(bucket.rows);
+  const hedgeUSD =
+    clariHedge?.clariForecastValue ?? hedge(bucket.rows);
 
   lines.push(`${isCurrent ? 'Current Quarter' : 'Next Quarter'}: ${bucket.label}`);
-  lines.push(`Churn/Downsell Plan: ${planUSD != null ? fmtUSD(planUSD) : '[fill in]'}`);
-  lines.push(`Churn/Downsell Flash / Most Likely: ${fmtUSD(flash)}`);
   lines.push(
-    `Gap to Plan: ${planUSD != null ? fmtSignedUSD(flash - planUSD) : '[fill in once Plan is set]'}`,
+    `Churn/Downsell Plan: ${resolvedPlan != null ? fmtSignedUSD(resolvedPlan) : '[fill in]'}`,
   );
-  lines.push(`Total Churn/Downsell Risk / Baseline: ${fmtUSD(total)}`);
+  lines.push(
+    `Churn/Downsell Flash / Most Likely: ${fmtSignedUSD(flash)}`,
+  );
+  lines.push(
+    `Gap to Plan: ${resolvedPlan != null ? fmtSignedUSD(flash - resolvedPlan) : '[fill in once Plan is set]'}`,
+  );
+  lines.push(`Total Churn/Downsell Risk / Baseline: ${fmtSignedUSD(-total)}`);
   lines.push(`Hedge: ${fmtUSD(hedgeUSD)}`);
 
   // "Accounts with Hedge" — accounts with forecastHedgeUSD > 0
@@ -395,8 +469,12 @@ export function generateWeeklyForecast(input: ForecastInput): string {
   const { current, next } = bucketByQuarter(input.views, input.asOfDate);
   const lines: string[] = [];
 
-  const today = new Date().toISOString().slice(0, 10);
-  lines.push(`Expand 3 Quarterly Churn Forecast - ${today}`);
+  const clariRows = input.clariManagerForecastCsv
+    ? parseClariManagerForecastExportCsv(input.clariManagerForecastCsv)
+    : [];
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  lines.push(`Expand 3 Quarterly Churn Forecast - ${stamp}`);
   lines.push('');
 
   lines.push(
@@ -405,6 +483,7 @@ export function generateWeeklyForecast(input: ForecastInput): string {
       input.changeEvents,
       input.plan?.currentQuarterUSD,
       true,
+      clariRows,
     ),
   );
   lines.push(
@@ -413,6 +492,7 @@ export function generateWeeklyForecast(input: ForecastInput): string {
       input.changeEvents,
       input.plan?.nextQuarterUSD,
       false,
+      clariRows,
     ),
   );
 

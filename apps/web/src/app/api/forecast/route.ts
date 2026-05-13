@@ -8,15 +8,16 @@ export const dynamic = 'force-dynamic';
 /**
  * Generate the plaintext quarterly churn-forecast script.
  *
- * The previous markdown / Clari-CSV / dark-accounts tri-payload was
- * scoped to the weekly forecast UX. The 2026-04-29 redesign reduces
- * the surface to a single plaintext field aligned with the manager's
- * existing churn-call template.
+ * Accepts optional `clariManagerForecastCsv` (manager export) so headline
+ * Flash / Plan / Hedge match Clari’s latest populated Forecast Value
+ * week. Account/opportunity data still drives narrative sections.
  */
 export async function POST(req: Request): Promise<Response> {
   const body = (await req.json().catch(() => ({}))) as {
     asOfDate?: string;
     plan?: { currentQuarterUSD?: number; nextQuarterUSD?: number };
+    /** Pasted Clari manager forecast export — headline Flash / Plan / Hedge when present. */
+    clariManagerForecastCsv?: string;
   };
   const { views } = await getDashboardData();
   const { events } = await getWoWChangeEvents();
@@ -26,6 +27,7 @@ export async function POST(req: Request): Promise<Response> {
     changeEvents: events,
     asOfDate,
     plan: body.plan,
+    clariManagerForecastCsv: body.clariManagerForecastCsv,
   });
   return NextResponse.json({ text, asOfDate });
 }

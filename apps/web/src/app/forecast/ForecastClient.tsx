@@ -36,6 +36,7 @@ export function ForecastClient() {
   const [selectedKey, setSelectedKey] = useState<string>(today.key);
   const [planCurrentUSD, setPlanCurrentUSD] = useState<string>('');
   const [planNextUSD, setPlanNextUSD] = useState<string>('');
+  const [clariManagerForecastCsv, setClariManagerForecastCsv] = useState<string>('');
   const [response, setResponse] = useState<ForecastResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -53,10 +54,15 @@ export function ForecastClient() {
       if (cur != null) plan.currentQuarterUSD = cur;
       if (nxt != null) plan.nextQuarterUSD = nxt;
 
+      const payload: Record<string, unknown> = { asOfDate, plan };
+      if (clariManagerForecastCsv.trim()) {
+        payload.clariManagerForecastCsv = clariManagerForecastCsv;
+      }
+
       const r = await fetch('/api/forecast', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ asOfDate, plan }),
+        body: JSON.stringify(payload),
       });
       const j = (await r.json()) as ForecastResponse;
       setResponse(j);
@@ -91,8 +97,11 @@ export function ForecastClient() {
         <p className="mb-3 text-sm text-gray-600">
           Generates a plaintext churn-call script covering the selected
           quarter and the following quarter. Paste directly into Slack
-          or email — no formatting required. Plan amounts are optional;
-          leave blank to ship a fillable placeholder.
+          or email — no formatting required. Plan amounts are optional
+          (use negative dollars for churn/downsell targets, e.g.{' '}
+          <code className="rounded bg-gray-100 px-1">-2164000</code>).
+          Paste a Clari manager forecast export CSV so headline Flash /
+          Plan / Hedge match Clari&apos;s latest populated week.
         </p>
         <div className="flex flex-wrap items-end gap-3">
           <label className="text-sm">
@@ -116,7 +125,7 @@ export function ForecastClient() {
             <input
               type="text"
               inputMode="numeric"
-              placeholder="e.g. 250000"
+              placeholder="e.g. -2164000"
               value={planCurrentUSD}
               onChange={(e) => setPlanCurrentUSD(e.target.value)}
               className="rounded border border-gray-300 px-2 py-1"
@@ -129,7 +138,7 @@ export function ForecastClient() {
             <input
               type="text"
               inputMode="numeric"
-              placeholder="e.g. 300000"
+              placeholder="e.g. -300000"
               value={planNextUSD}
               onChange={(e) => setPlanNextUSD(e.target.value)}
               className="rounded border border-gray-300 px-2 py-1"
@@ -156,6 +165,18 @@ export function ForecastClient() {
           >
             Download .txt
           </button>
+        </div>
+        <div className="mt-3">
+          <div className="text-xs text-gray-500">
+            Clari manager forecast export CSV (optional)
+          </div>
+          <textarea
+            value={clariManagerForecastCsv}
+            onChange={(e) => setClariManagerForecastCsv(e.target.value)}
+            placeholder="Paste the export: User, Email, … Data Value rows"
+            rows={4}
+            className="mt-0.5 w-full max-w-3xl rounded border border-gray-300 px-2 py-1 font-mono text-xs"
+          />
         </div>
       </div>
 

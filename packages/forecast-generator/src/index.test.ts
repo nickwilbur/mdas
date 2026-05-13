@@ -15,7 +15,7 @@ import type {
   CanonicalOpportunity,
   ChangeEvent,
 } from '@mdas/canonical';
-import { generateWeeklyForecast } from './index.js';
+import { generateWeeklyForecast } from './index';
 
 const REFRESH_AT = '2026-04-28T18:00:00.000Z';
 const AS_OF = '2026-04-28'; // FY27 Q1 (Feb 2026 → Apr 2026)
@@ -208,7 +208,7 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: \$250,000/);
+    expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: -\$250,000/);
   });
 
   it('computes Total Risk from ATR for saveable accounts', () => {
@@ -227,7 +227,7 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    expect(md).toMatch(/Total Churn\/Downsell Risk \/ Baseline: \$500,000/);
+    expect(md).toMatch(/Total Churn\/Downsell Risk \/ Baseline: -\$500,000/);
   });
 
   it('computes Gap to Plan when plan is provided', () => {
@@ -238,10 +238,10 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       views: [view],
       changeEvents: [],
       asOfDate: AS_OF,
-      plan: { currentQuarterUSD: 250_000 },
+      plan: { currentQuarterUSD: -250_000 },
     });
-    // Flash $100k vs Plan $250k → -$150k (under plan = good)
-    expect(md).toMatch(/Gap to Plan: -\$150,000/);
+    // Flash -$100k vs Plan -$250k → +$150k (less churn loss than plan)
+    expect(md).toMatch(/Gap to Plan: \+\$150,000/);
   });
 
   it('emits [fill in] placeholders when Plan is not provided', () => {
@@ -342,6 +342,56 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).not.toContain('hygiene');
   });
 
+  it('treats negative Forecast Most Likely as churn dollars (not ATR − ML inflation)', () => {
+    const acc = mkAccount({ accountId: 'DNB', accountName: 'D&B' });
+    const opp = mkOpportunity({
+      accountId: 'DNB',
+      closeDate: '2026-05-27',
+      availableToRenewUSD: 1_124_973,
+      forecastMostLikely: -800_000,
+      knownChurnUSD: 0,
+    });
+    const view = mkView(acc, [opp], { bucket: 'Saveable Risk' });
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: '2026-05-13',
+    });
+    expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: -\$800,000/);
+    expect(md).not.toMatch(/Churn\/Downsell Flash \/ Most Likely: \$1,924,973/);
+  });
+
+  it('buckets August close dates into next fiscal quarter, not current, when current is FY27 Q2', () => {
+    const accQ2 = mkAccount({ accountId: 'C2', accountName: 'June Co' });
+    const oppQ2 = mkOpportunity({
+      accountId: 'C2',
+      knownChurnUSD: 100_000,
+      closeDate: '2026-06-15',
+    });
+    const accQ3 = mkAccount({ accountId: 'C3', accountName: 'August Co' });
+    const oppQ3 = mkOpportunity({
+      accountId: 'C3',
+      knownChurnUSD: 777_000,
+      closeDate: '2026-08-15',
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(accQ2, [oppQ2], { bucket: 'Confirmed Churn' }),
+        mkView(accQ3, [oppQ3], { bucket: 'Confirmed Churn' }),
+      ],
+      changeEvents: [],
+      asOfDate: '2026-05-01',
+    });
+    const currIdx = md.indexOf('Current Quarter');
+    const nextIdx = md.indexOf('Next Quarter');
+    const currSection = md.slice(currIdx, nextIdx);
+    const nextSection = md.slice(nextIdx);
+    expect(currSection).toMatch(/Flash \/ Most Likely: -\$100,000/);
+    expect(currSection).not.toContain('777');
+    expect(nextSection).toMatch(/August Co/);
+    expect(nextSection).toMatch(/Flash \/ Most Likely: -\$777,000/);
+  });
+
   it('partitions opportunities into the correct quarter by closeDate', () => {
     const accCurrent = mkAccount({ accountId: 'AC', accountName: 'Current Co' });
     const oppCurrent = mkOpportunity({
@@ -367,7 +417,7 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     const nextIdx = md.indexOf('Next Quarter');
     const currSection = md.slice(currIdx, nextIdx);
     const nextSection = md.slice(nextIdx);
-    expect(currSection).toMatch(/Flash \/ Most Likely: \$100,000/);
-    expect(nextSection).toMatch(/Flash \/ Most Likely: \$200,000/);
+    expect(currSection).toMatch(/Flash \/ Most Likely: -\$100,000/);
+    expect(nextSection).toMatch(/Flash \/ Most Likely: -\$200,000/);
   });
 });
