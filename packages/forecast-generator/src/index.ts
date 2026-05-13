@@ -109,27 +109,42 @@ function bucketByQuarter(
   return { current, next };
 }
 
+/** True when SFDC Type is a renewal (handles “Renewal”, “Existing Business - Renewal”, etc.). */
+function isRenewalLike(opp: CanonicalOpportunity): boolean {
+  return String(opp.type ?? '')
+    .toLowerCase()
+    .includes('renewal');
+}
+
 /**
- * Per-opportunity churn/downsell component in **negative dollars**
- * (Clari / manager convention). Used only for MDAS-estimated Flash
- * fallback when no Clari manager row is supplied — never overrides
- * `selectLatestClariForecastValue`.
+ * Per-opportunity churn/downsell for the **MDAS-estimated Flash** roll-up
+ * (negative dollars, aligned to Salesforce signals that drive Clari).
  *
- * - Known churn → negative of that USD amount.
- * - Negative Forecast Most Likely (SFDC churn/downsel) → use as-is.
- * - Otherwise retention gap: if ATR > positive ML, churn risk is
- *   `-(ATR - ML)`; if ML > ATR (expansion), do not treat as churn.
+ * Only **renewal** opportunities contribute via forecast / ACV delta.
+ * (Expand 3 scope is already enforced upstream in `getDashboardData`.)
+ *
+ * Inclusion matches the churn window definition:
+ *   - Known churn USD (positive in SFDC) → negative of that amount (any type).
+ *   - Else renewal only: forecast most likely (incl. override) negative → that value.
+ *   - Else renewal only: canonical acvDelta (derived / Billing ACV delta in SFDC) negative → that value.
+ *
+ * We do **not** sum `ATR − positive ML` (“retention gap”) — that inflated Flash
+ * vs manager / Clari roll-ups. When a Clari manager CSV is pasted, Flash still
+ * comes from `selectLatestClariForecastValue` and overrides this sum.
  */
 function opportunityChurnFlashUSD(opp: CanonicalOpportunity): number {
-  if (opp.knownChurnUSD != null && opp.knownChurnUSD > 0) {
-    return -opp.knownChurnUSD;
-  }
-  const atr = opp.availableToRenewUSD ?? 0;
-  const mlRaw = opp.forecastMostLikelyOverride ?? opp.forecastMostLikely;
-  if (mlRaw != null && mlRaw < 0) return mlRaw;
-  if (mlRaw == null) return 0;
-  const gap = atr - mlRaw;
-  return gap > 0 ? -gap : 0;
+  const known = opp.knownChurnUSD ?? 0;
+  if (known > 0) return -known;
+
+  if (!isRenewalLike(opp)) return 0;
+
+  const ml = opp.forecastMostLikelyOverride ?? opp.forecastMostLikely;
+  if (ml != null && ml < 0) return ml;
+
+  const ad = opp.acvDelta;
+  if (ad != null && ad < 0) return ad;
+
+  return 0;
 }
 
 /** MDAS-estimated Flash (sum of per-opp churn components). */

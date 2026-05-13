@@ -4,6 +4,9 @@ import { resolve } from 'node:path';
 export default defineConfig({
   test: { include: ['packages/**/*.test.ts', 'apps/**/*.test.ts', 'scripts/**/*.test.ts'] },
   resolve: {
+    // Prefer TypeScript over emitted `.js` in `packages/*/src/` so stale
+    // `tsc` artifacts (same basename as `.ts`) never shadow source during tests.
+    extensions: ['.mts', '.ts', '.tsx', '.mjs', '.js', '.jsx', '.json'],
     alias: {
       '@mdas/canonical': resolve(__dirname, 'packages/canonical/src/index.ts'),
       '@mdas/scoring': resolve(__dirname, 'packages/scoring/src/index.ts'),

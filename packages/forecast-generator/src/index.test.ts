@@ -342,6 +342,62 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).not.toContain('hygiene');
   });
 
+  it('does not treat ATR minus positive Most Likely as churn on renewals (avoids Flash inflation vs Clari)', () => {
+    const acc = mkAccount({ accountName: 'Big ATR Co' });
+    const opp = mkOpportunity({
+      type: 'Renewal',
+      availableToRenewUSD: 3_000_000,
+      forecastMostLikely: 2_500_000,
+      acvDelta: 0,
+      knownChurnUSD: 0,
+      closeDate: '2026-06-10',
+    });
+    const view = mkView(acc, [opp], { bucket: 'Saveable Risk' });
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: '2026-05-13',
+    });
+    expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: \$0/);
+  });
+
+  it('counts renewal Flash from negative ACV delta when Most Likely is not negative', () => {
+    const acc = mkAccount({ accountName: 'Delta Down Co' });
+    const opp = mkOpportunity({
+      type: 'Renewal',
+      availableToRenewUSD: 400_000,
+      forecastMostLikely: 350_000,
+      acvDelta: -42_000,
+      knownChurnUSD: 0,
+      closeDate: '2026-06-10',
+    });
+    const view = mkView(acc, [opp], { bucket: 'Saveable Risk' });
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: '2026-05-13',
+    });
+    expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: -\$42,000/);
+  });
+
+  it('ignores non-renewal opps for ML / ACV delta Flash (upsell path)', () => {
+    const acc = mkAccount({ accountName: 'Upsell Co' });
+    const opp = mkOpportunity({
+      type: 'New Business',
+      availableToRenewUSD: 1_000_000,
+      forecastMostLikely: -99_000,
+      acvDelta: -99_000,
+      closeDate: '2026-06-10',
+    });
+    const view = mkView(acc, [opp], { bucket: 'Saveable Risk' });
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: '2026-05-13',
+    });
+    expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: \$0/);
+  });
+
   it('treats negative Forecast Most Likely as churn dollars (not ATR − ML inflation)', () => {
     const acc = mkAccount({ accountId: 'DNB', accountName: 'D&B' });
     const opp = mkOpportunity({
