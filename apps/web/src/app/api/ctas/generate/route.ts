@@ -2,23 +2,17 @@ import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
 import { resolve } from 'path';
 import { randomUUID } from 'crypto';
+import {
+  listCtaJobsSortedRecent,
+  putCtaJob,
+  type CTAJob,
+} from '@/lib/cta-generation-jobs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// In-memory job store (sufficient for single-user local tool)
-interface CTAJob {
-  id: string;
-  status: 'running' | 'done' | 'error';
-  progress: { phase: string; current: number; total: number; label?: string } | null;
-  result: { scanDate: string; ctaCount: number; scanFilePath: string; logFilePath: string } | null;
-  error: string | null;
-  startedAt: string;
-  finishedAt: string | null;
-}
-
-// Global job map — survives across requests within the same server process
-const jobs = new Map<string, CTAJob>();
+/** Bound stderr accumulation from the child process (per job). */
+const MAX_STDERR_CAPTURE_CHARS = 64 * 1024;
 
 export async function POST(): Promise<Response> {
   const jobId = randomUUID();
@@ -31,7 +25,7 @@ export async function POST(): Promise<Response> {
     startedAt: new Date().toISOString(),
     finishedAt: null,
   };
-  jobs.set(jobId, job);
+  putCtaJob(job);
 
   // Spawn the generation script as a child process.
   // Next.js cwd is apps/web; project root is 2 levels up.
@@ -81,7 +75,7 @@ export async function POST(): Promise<Response> {
   });
 
   child.stderr.on('data', (data: Buffer) => {
-    stderr += data.toString();
+    stderr = (stderr + data.toString()).slice(-MAX_STDERR_CAPTURE_CHARS);
   });
 
   child.on('close', (code) => {
@@ -92,6 +86,17 @@ export async function POST(): Promise<Response> {
       job.status = 'error';
       job.error = stderr || `Process exited with code ${code}`;
     }
+    console.info(
+      JSON.stringify({
+        time: new Date().toISOString(),
+        level: 'info',
+        msg: 'cta.job.closed',
+        service: 'web',
+        jobId,
+        status: job.status,
+        exitCode: code,
+      }),
+    );
   });
 
   return NextResponse.json({ jobId });
@@ -99,11 +104,6 @@ export async function POST(): Promise<Response> {
 
 // GET: list active/recent jobs
 export async function GET(): Promise<Response> {
-  const list = Array.from(jobs.values())
-    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
-    .slice(0, 10);
+  const list = listCtaJobsSortedRecent(10);
   return NextResponse.json({ jobs: list });
 }
-
-// Export jobs map for the [jobId] route to read
-export { jobs };

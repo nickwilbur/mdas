@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { jobs } from '../route';
+import { getCtaJob } from '@/lib/cta-generation-jobs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -8,7 +8,7 @@ export async function GET(
   _req: Request,
   ctx: { params: { jobId: string } },
 ): Promise<Response> {
-  const job = jobs.get(ctx.params.jobId);
+  const job = getCtaJob(ctx.params.jobId);
   if (!job) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
