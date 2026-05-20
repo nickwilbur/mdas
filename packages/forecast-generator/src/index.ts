@@ -120,18 +120,23 @@ function isRenewalLike(opp: CanonicalOpportunity): boolean {
  * Forecast categories the manager has explicitly *removed* from the
  * churn-save line. Zuora's `fml_Manager_ForecastCategory__c` picklist
  * uses values like `Committed Upside`, `Targeted Upside`, `Upside`,
- * `Pipeline`, `Best Case`, `Commit`, `Omitted`, `Closed`. The set of
- * "carrying" values varies by quarter / instance, so we excluded-list
- * the small, stable "not carrying" set instead of allowlisting the
- * positive cases (which would silently drop valid renewals when Zuora
- * tweaks the picklist).
+ * `Pipeline`, `Best Case`, `Commit`, `Omitted`, `Closed`. We
+ * excluded-list the small stable "removed" set so renewals stay
+ * visible across picklist drift.
  *
- * Null `forecastCategory` is treated as EXCLUDED for hedge/close-gap —
- * if SFDC has no manager category at all, the opp has not been pulled
- * onto the manager's forecast line and shouldn't be reported as if it
- * had been. Previously we treated null as "include" so legacy snapshots
- * wouldn't go silent, but that re-introduced the very Pipedrive/Bamboo
- * leakage the filter was meant to fix (2026-05-20 follow-up).
+ * IMPORTANT: We do NOT drop the `*Upside` family — that was the
+ * 2026-05-20 second-pass bug. A renewal opp can be categorized as
+ * `Committed Upside` / `Targeted Upside` / `Upside` *and still* carry
+ * a negative Most Likely or negative ACV delta (i.e., the rep is
+ * forecasting a net downsell while also hedging some upside dollars).
+ * Finale, Zello, and Kustomer are the manager-verified examples —
+ * all three sit in Upside-family categories and are exactly the saves
+ * the manager is carrying in Clari. The churn-save vs upsell-only
+ * decision lives in `isChurnSaveTarget`, not the category filter.
+ *
+ * Null `forecastCategory` is treated as EXCLUDED — if SFDC has no
+ * manager category at all, the opp has not been pulled onto the
+ * manager's forecast line.
  */
 const DROPPED_FORECAST_CATEGORIES = new Set([
   'omit',
@@ -141,60 +146,56 @@ const DROPPED_FORECAST_CATEGORIES = new Set([
   'closed won',
 ]);
 
-/**
- * Zuora's manager picklist also carries `Upside` / `Targeted Upside` /
- * `Committed Upside` for renewal opps where the rep believes there's
- * net-new ACV to capture *at* the renewal. Per 2026-05-20 manager
- * feedback, those are *expansion* hedge dollars, not churn-save hedge
- * — Pipedrive's two Upside renewals were the prompting example. Drop
- * any category whose lowercased form contains "upside" so the
- * leadership-facing Hedge section is unambiguously about saves.
- */
-function isUpsideCategory(cat: string): boolean {
-  return cat.includes('upside');
-}
-
 function isCarriedForecastCategory(opp: CanonicalOpportunity): boolean {
   const cat = (opp.forecastCategory ?? '').trim().toLowerCase();
   if (cat === '') return false;
   if (DROPPED_FORECAST_CATEGORIES.has(cat)) return false;
-  if (isUpsideCategory(cat)) return false;
   return true;
 }
 
 /**
- * Per the 2026-05-20 manager feedback: Hedge / Close-Gap sections must
- * only surface **churn-save** opportunities, not expansion hedge. A
- * row qualifies when:
- *   - the opportunity is a renewal (Type contains "Renewal"), AND
- *   - the SFDC manager forecast category is one we're still carrying
- *     (Commit / Best Case / Pipeline — not Omit / Closed), AND
- *   - either the account is bucketed as Confirmed Churn / Saveable Risk,
- *     OR the opp itself shows a churn signal (known churn USD, negative
- *     ML, negative ACV delta, or any hedge dollars at all).
- *
- * The third clause keeps the "renewal at Best Case with hedge but
- * healthy account" case visible — those are exactly the saves the
- * manager is hedging in Clari.
+ * True when the renewal opp has a measurable down-forecast signal —
+ * the rep is forecasting renewal dollars below ATR baseline, which is
+ * the definition of a churn-save situation. We check the explicit
+ * dollar fields rather than relying on account bucket because the
+ * manager's Clari hedge list includes Healthy-bucketed accounts with
+ * down-forecast renewals (Kustomer is the verified example —
+ * Healthy/Yellow account, renewal at ML -$20K + ACV delta -$15K, on
+ * the hedge line in Clari).
  */
-function isChurnSaveTarget(view: AccountView, opp: CanonicalOpportunity): boolean {
-  if (!isRenewalLike(opp)) return false;
-  if (!isCarriedForecastCategory(opp)) return false;
-
-  if (view.bucket === 'Confirmed Churn' || view.bucket === 'Saveable Risk') {
-    return true;
-  }
+function hasDownForecastSignal(opp: CanonicalOpportunity): boolean {
   if ((opp.knownChurnUSD ?? 0) > 0) return true;
   const ml = opp.forecastMostLikelyOverride ?? opp.forecastMostLikely;
   if (ml != null && ml < 0) return true;
   if (opp.acvDelta != null && opp.acvDelta < 0) return true;
-  // Note: forecastHedgeUSD > 0 alone is intentionally NOT a signal here.
-  // A renewal on a Healthy account can carry hedge dollars when the rep
-  // is hedging upside, not churn risk (the upside-category check above
-  // catches the obvious case, but Zuora picklists drift — keep this
-  // belt-and-suspenders). Bucket and the explicit churn-dollar signals
-  // are the only ways an account makes the Hedge / Close-Gap list.
   return false;
+}
+
+/**
+ * Per the 2026-05-20 manager feedback (and the two follow-up
+ * corrections): Hedge / Close-Gap sections surface renewal opps the
+ * rep is actively forecasting *down* against ATR. A row qualifies
+ * when ALL of:
+ *   - the opportunity is a renewal (Type contains "Renewal");
+ *   - the SFDC manager forecast category is set and not in the
+ *     dropped set (Omitted / Closed*) — null category means the opp
+ *     hasn't been pulled onto the manager's forecast line at all;
+ *   - the opp itself carries a down-forecast signal (negative ML,
+ *     negative ACV delta, or known churn USD).
+ *
+ * Account bucket is intentionally NOT a gate — Kustomer is the
+ * verified counter-example (Healthy bucket, down-forecast renewal,
+ * on the manager's Clari hedge list). Forecast hedge dollars are
+ * also NOT a signal on their own — Pipedrive is the verified
+ * counter-example (renewals at `Upside` with $25K hedge but ML and
+ * ACV delta both $0, i.e., the rep is hedging pure upside, not a
+ * save).
+ */
+function isChurnSaveTarget(_view: AccountView, opp: CanonicalOpportunity): boolean {
+  if (!isRenewalLike(opp)) return false;
+  if (!isCarriedForecastCategory(opp)) return false;
+  if (!hasDownForecastSignal(opp)) return false;
+  return true;
 }
 
 /**

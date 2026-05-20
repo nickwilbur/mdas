@@ -639,17 +639,16 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(gapBlock).not.toContain('Omitted Co');
   });
 
-  // 2026-05-20 follow-up: Pipedrive's two renewals showed up in the
-  // Hedge list even after the renewal-only filter, because:
-  //   (a) the snapshot's forecastCategory was null (legacy null-tolerant
-  //       filter let everything through), AND
-  //   (b) the renewals carry $25K hedge each but the account is Healthy
-  //       (Yellow sentiment, Medium risk), so it's *expansion* hedge
-  //       hidden inside a renewal opp — Zuora's manager picklist labels
-  //       these "Upside" / "Targeted Upside" / "Committed Upside".
-  // Pins both fixes: null category excludes, and *Upside categories
-  // explicitly exclude even when the renewal carries hedge dollars.
-  it('excludes Healthy renewals with Upside-category hedge (the Pipedrive bug)', () => {
+  // 2026-05-20 follow-up: Pipedrive's two Upside renewals were
+  // appearing on the Hedge list even though the manager doesn't carry
+  // them in Clari. Snapshot data: forecastCategory 'Upside', $25K
+  // hedge, ML +$25K (or 0), ACV delta 0 — i.e., the rep is hedging
+  // *pure upside* (no down-forecast on the renewal). The third-pass
+  // filter excludes this case via the no-down-forecast-signal rule:
+  // negative ML / negative ACV delta / known churn is required.
+  // (We deliberately do NOT exclude the Upside category itself —
+  // see the Finale and Kustomer tests above.)
+  it('excludes Healthy Upside renewals with hedge but no down-forecast (the Pipedrive bug)', () => {
     const acc = mkAccount({
       accountId: 'PD',
       accountName: 'Pipedrive, Inc.',
@@ -660,6 +659,9 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       type: 'Renewal',
       forecastHedgeUSD: 25_000,
       forecastCategory: 'Upside',
+      forecastMostLikely: 25_000,
+      acvDelta: 0,
+      knownChurnUSD: 0,
       availableToRenewUSD: 711_610,
     });
     const md = generateWeeklyForecast({
@@ -681,6 +683,84 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(hedgeBlock).toMatch(/Accounts with Hedge \(churn-save renewals\): \$0/);
   });
 
+  // 2026-05-20 third-pass: the Upside category is not a reliable
+  // "expansion only" signal — Finale / Zello / Kustomer all sit in
+  // Upside-family categories AND show negative ML/ACV delta because
+  // the rep is forecasting a net downsell while also hedging some
+  // upside dollars. Pins that an Upside renewal with a down-forecast
+  // signal IS included (this was excluded by the over-aggressive
+  // 2026-05-20 second-pass fix).
+  it('includes Saveable Risk Upside renewal when ML is negative (Finale-like)', () => {
+    const acc = mkAccount({
+      accountId: 'FI',
+      accountName: 'Finale Inventory',
+      cseSentiment: 'Red',
+    });
+    const renewal = mkOpportunity({
+      accountId: 'FI',
+      type: 'Renewal',
+      forecastCategory: 'Committed Upside',
+      forecastHedgeUSD: 50_000,
+      forecastMostLikely: -75_000,
+      acvDelta: -38_900,
+      availableToRenewUSD: 102_500,
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [renewal], {
+          bucket: 'Saveable Risk',
+          risk: { level: 'High', source: 'cerebro', rationale: '' },
+        }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    const currSection = md.slice(0, md.indexOf('Next Quarter'));
+    const hedgeBlock = currSection.slice(
+      currSection.indexOf('Accounts with Hedge'),
+      currSection.indexOf('Key Saves'),
+    );
+    expect(hedgeBlock).toContain('Finale Inventory');
+    expect(hedgeBlock).toMatch(/Accounts with Hedge \(churn-save renewals\): \$50,000/);
+  });
+
+  // 2026-05-20 third-pass: Healthy-bucket accounts can also be on the
+  // manager's Clari hedge list when their renewal has a down forecast.
+  // Kustomer is the verified example — Healthy/Yellow, Targeted Upside
+  // renewal at ML -$20K. Pins that account bucket is NOT a gate.
+  it('includes Healthy renewal with down-forecast on Upside category (Kustomer-like)', () => {
+    const acc = mkAccount({
+      accountId: 'KU',
+      accountName: 'Kustomer, LLC.',
+      cseSentiment: 'Yellow',
+    });
+    const renewal = mkOpportunity({
+      accountId: 'KU',
+      type: 'Renewal',
+      forecastCategory: 'Targeted Upside',
+      forecastHedgeUSD: 15_000,
+      forecastMostLikely: -20_000,
+      acvDelta: -15_000,
+      availableToRenewUSD: 143_845,
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [renewal], {
+          bucket: 'Healthy',
+          risk: { level: 'Medium', source: 'cerebro', rationale: '' },
+        }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    const currSection = md.slice(0, md.indexOf('Next Quarter'));
+    const hedgeBlock = currSection.slice(
+      currSection.indexOf('Accounts with Hedge'),
+      currSection.indexOf('Key Saves'),
+    );
+    expect(hedgeBlock).toContain('Kustomer, LLC.');
+  });
+
   it('excludes renewals with null forecastCategory (not yet on manager forecast line)', () => {
     const acc = mkAccount({ accountId: 'X', accountName: 'No Category Co' });
     const renewalNoCategory = mkOpportunity({
@@ -688,6 +768,8 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       type: 'Renewal',
       forecastHedgeUSD: 40_000,
       forecastCategory: null,
+      forecastMostLikely: -30_000,
+      acvDelta: -30_000,
     });
     const md = generateWeeklyForecast({
       views: [
@@ -719,6 +801,8 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       forecastHedgeUSD: 0,
       forecastCategory: 'Best Case',
       availableToRenewUSD: 420_000,
+      forecastMostLikely: -50_000,
+      acvDelta: -50_000,
     });
     const md = generateWeeklyForecast({
       views: [
