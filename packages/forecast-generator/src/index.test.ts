@@ -349,14 +349,29 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: '2026-05-01', // FY27 Q2
     });
+    // Fallback / scoring-derived rationales never appear in Key Saves
+    // bullets — the bullets now compose deterministic chip lines from
+    // Cerebro Risk Category, CSE Sentiment, Renewal date, and Forecast
+    // ML, plus a one-sentence SC Next Steps when present. The bullets
+    // here still render (chip line for sentiment / renewal date), but
+    // never with the synthetic rationale text from `view.risk`.
     expect(md).not.toContain('no Cerebro data');
     expect(md).not.toContain('No Cerebro Risk Category');
     expect(md).not.toContain('of 7 Cerebro risks');
-    expect(md).toMatch(/- EverCommerce \(\$100,000\)\n/);
-    expect(md).toMatch(/- Tobii Dynavox \(\$55,800\)\n/);
+    // Bullets still render with the (sparse) chip line — no SC Next
+    // Steps means no prose tail, but the chip line carries Sentiment
+    // and Renewal date for the exec scan.
+    expect(md).toMatch(/- EverCommerce \(\$100,000\) - .*Sentiment: Green.*Renewal: 2026-06-01/);
+    expect(md).toMatch(/- Tobii Dynavox \(\$55,800\) - .*Sentiment: Yellow.*Renewal: 2026-06-01/);
   });
 
-  it('prefers SE_Next_Steps, then FLM/SLM notes, then sentiment commentary for Key Saves detail', () => {
+  it('uses SC Next Steps as the only Key Saves prose source; ignores FLM/SLM notes and CSE sentiment commentary', () => {
+    // Per 2026-05-20 manager feedback: Key Saves bullets read as
+    // unreadable rich-text dumps when we fell back to FLM/SLM notes or
+    // CSE sentiment commentary (often multi-paragraph "STATE AND
+    // RENEWAL RISK:" narratives the exec couldn't scan on a call). The
+    // new contract is: deterministic chip line + one sentence from SC
+    // Next Steps. No fallback to other prose sources.
     const a1 = mkAccount({ accountId: 'A1', accountName: 'NextSteps Co' });
     const o1 = mkOpportunity({
       accountId: 'A1',
@@ -375,7 +390,7 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       acv: 80_000,
       closeDate: '2026-06-01',
       scNextSteps: null,
-      flmNotes: null,
+      flmNotes: 'FLM-only note that must not appear',
       slmNotes: null,
     });
     const md = generateWeeklyForecast({
@@ -383,8 +398,15 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: '2026-05-01',
     });
-    expect(md).toContain('NextSteps Co ($100,000) - Schedule QBR with new VP Finance');
-    expect(md).toContain('Sentiment Co ($80,000) - Renewal at risk: legal review blocking PO');
+    // A1: chip line + SC Next Steps as the prose tail (after " | ").
+    expect(md).toMatch(
+      /- NextSteps Co \(\$100,000\) - .*Renewal: 2026-06-01.* \| Schedule QBR with new VP Finance/,
+    );
+    // A2: no SC Next Steps -> just chip line, no tail. FLM notes and
+    // sentiment commentary are deliberately suppressed.
+    expect(md).toContain('Sentiment Co ($80,000) - ');
+    expect(md).not.toContain('Renewal at risk: legal review blocking PO');
+    expect(md).not.toContain('FLM-only note that must not appear');
   });
 
   it('shows + for risk improvement and - for risk regression in WoW', () => {
@@ -573,20 +595,22 @@ describe('generateWeeklyForecast (churn-call script)', () => {
   // fields ship with <p>, <b>, anchor wrappers and HTML entities,
   // and (b) the 160-char cap chopped sentences mid-word. The cleaner
   // strips markup and the new 500-char cap honors word boundaries.
-  it('strips HTML and entities from Key Saves narrative and reads as prose', () => {
+  it('strips HTML and entities from SC Next Steps prose in Key Saves bullets', () => {
+    // SC Next Steps is the only prose source for Key Saves bullets;
+    // CSEs sometimes paste HTML-formatted next steps from Gainsight or
+    // an email thread. The cleaner must strip tags / decode entities
+    // so the bullet reads as prose, and the first sentence is kept.
     const acc = mkAccount({
       accountId: 'HTML',
       accountName: 'HTML Co',
-      cseSentimentCommentary: null,
-      cerebroRiskAnalysis: null,
     });
     const opp = mkOpportunity({
       accountId: 'HTML',
       closeDate: '2026-04-15',
       forecastMostLikely: -100_000,
       acvDelta: -100_000,
-      flmNotes:
-        '<p></p><p class="x"><b>STATE AND RENEWAL RISK:</b> Account is Red with planned 30% downsell. <a href="https://x/y">link</a>&nbsp;Key contacts have departed per Champify&#39;s data.</p>',
+      scNextSteps:
+        '<p></p><p class="x"><b>Schedule QBR</b> with new VP Finance by EOQ. <a href="https://x/y">link</a>&nbsp;Confirm Champify&#39;s renewal terms.</p>',
     });
     const md = generateWeeklyForecast({
       views: [
@@ -602,23 +626,25 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).not.toMatch(/<\/?(p|b|div|a|br)\b/);
     expect(md).not.toContain('&nbsp;');
     expect(md).not.toContain('&#39;');
-    // The cleaned, full prose appears verbatim (well under 500 chars,
-    // so no ellipsis).
-    expect(md).toContain(
-      "STATE AND RENEWAL RISK: Account is Red with planned 30% downsell. Key contacts have departed per Champify's data.",
-    );
+    // First sentence of the cleaned SC Next Steps appears in the
+    // prose tail of the bullet.
+    expect(md).toContain('Schedule QBR with new VP Finance by EOQ.');
   });
 
-  it('truncates very long narratives at a word boundary with an ellipsis', () => {
-    const longProse =
-      'STATE AND RENEWAL RISK: ' + 'word '.repeat(200).trim();
+  it('truncates very long SC Next Steps prose at a word boundary with an ellipsis', () => {
+    // Two-sentence prose. First sentence (the only one kept) is long
+    // enough to exceed the 200-char Key Saves cap and must truncate at
+    // a word boundary with an ellipsis, not a mid-word chop.
+    const longFirstSentence =
+      'Schedule QBR with new VP Finance and align on the following workstreams ' +
+      'detail '.repeat(40).trim();
     const acc = mkAccount({ accountId: 'LP', accountName: 'Long Prose Co' });
     const opp = mkOpportunity({
       accountId: 'LP',
       closeDate: '2026-04-15',
       forecastMostLikely: -100_000,
       acvDelta: -100_000,
-      flmNotes: longProse,
+      scNextSteps: longFirstSentence + '. Second sentence is dropped.',
     });
     const md = generateWeeklyForecast({
       views: [
@@ -630,10 +656,10 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    // Renders with an ellipsis, not a mid-word chop.
     expect(md).toMatch(/Long Prose Co \(\$\d/);
     expect(md).toContain('…');
-    expect(md).not.toMatch(/wo…/); // ellipsis lands after a whole word
+    expect(md).not.toMatch(/deta…/); // ellipsis lands after a whole word
+    expect(md).not.toContain('Second sentence is dropped');
   });
 
   // 2026-05-20 sixth-pass: even after the churn-save scoping, a
@@ -1287,5 +1313,196 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(callout, 'expected churn-save-targets call-out to appear').toBeTruthy();
     expect(callout![0]).toContain('Target Without Hedge');
     expect(callout![0]).toContain('$420,000 ATR');
+  });
+
+  // 2026-05-20 manager feedback: the WoW header was a static label; the
+  // exec couldn't see at a glance whether the week was net-positive or
+  // net-negative. Header now summarizes net forecast-ML change,
+  // regressions, improvements, and booked count.
+  it('summarizes net $ delta, regressions, improvements, and booked count in the WoW header', () => {
+    const regAcc = mkAccount({ accountId: 'REG', accountName: 'Regression Co' });
+    const regOpp = mkOpportunity({
+      opportunityId: 'O-REG',
+      accountId: 'REG',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -82_327,
+      acvDelta: -82_327,
+    });
+    const impAcc = mkAccount({ accountId: 'IMP', accountName: 'Improvement Co' });
+    const impOpp = mkOpportunity({
+      opportunityId: 'O-IMP',
+      accountId: 'IMP',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -749_973,
+      acvDelta: -749_973,
+    });
+    const bookAcc = mkAccount({ accountId: 'BOOK', accountName: 'Booked Co' });
+    const bookOpp = mkOpportunity({
+      opportunityId: 'O-BOOK',
+      accountId: 'BOOK',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -50_000,
+      acvDelta: -50_000,
+    });
+    const events: ChangeEvent[] = [
+      {
+        accountId: 'REG',
+        opportunityId: 'O-REG',
+        field: 'forecastMostLikely',
+        oldValue: -43_000,
+        newValue: -82_327,
+        occurredBetween: ['p', 'c'],
+        category: 'forecast',
+        label: 'ML moved',
+      },
+      {
+        accountId: 'IMP',
+        opportunityId: 'O-IMP',
+        field: 'forecastMostLikely',
+        oldValue: -850_000,
+        newValue: -749_973,
+        occurredBetween: ['p', 'c'],
+        category: 'forecast',
+        label: 'ML improved',
+      },
+      {
+        accountId: 'BOOK',
+        opportunityId: 'O-BOOK',
+        field: 'stageName',
+        oldValue: '7.0 - Closed/Won (Sales)',
+        newValue: '8.0 - Closed/Won (Finance)',
+        occurredBetween: ['p', 'c'],
+        category: 'forecast',
+        label: 'Stage moved',
+      },
+    ];
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(regAcc, [regOpp], { bucket: 'Saveable Risk' }),
+        mkView(impAcc, [impOpp], { bucket: 'Saveable Risk' }),
+        mkView(bookAcc, [bookOpp], { bucket: 'Saveable Risk' }),
+      ],
+      changeEvents: events,
+      asOfDate: AS_OF,
+    });
+    // Net = -39,327 + 100,027 = +60,700. One booked (BOOK).
+    expect(md).toMatch(
+      /Week-over-week Changes - Improvements and increased risk: net \+\$60,700 \(regressions -\$39,327, improvements \+\$100,027, 1 booked\)/,
+    );
+  });
+
+  it('renders "no movement this week" in the WoW header when nothing is in scope', () => {
+    const acc = mkAccount({ accountId: 'Q', accountName: 'Quiet Co' });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [
+          mkOpportunity({
+            accountId: 'Q',
+            closeDate: '2026-04-15',
+            forecastMostLikely: -100_000,
+            acvDelta: -100_000,
+          }),
+        ]),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).toContain(
+      'Week-over-week Changes - Improvements and increased risk: no movement this week',
+    );
+  });
+
+  // 2026-05-20 manager feedback: Key Saves bullets were unreadable
+  // multi-paragraph rich-text dumps. New contract: deterministic chip
+  // line (Risk / Sentiment / Renewal / ML) plus one sentence from SC
+  // Next Steps. No fallback to FLM/SLM notes, CSE sentiment commentary,
+  // or Cerebro risk analysis.
+  it('renders a chip line (Risk; Sentiment; Renewal; ML) for Key Saves bullets', () => {
+    const acc = mkAccount({
+      accountId: 'CHIP',
+      accountName: 'Chip Co',
+      cerebroRiskCategory: 'High',
+      cseSentiment: 'Red',
+    });
+    const opp = mkOpportunity({
+      accountId: 'CHIP',
+      closeDate: '2026-04-15',
+      acv: 200_000,
+      forecastMostLikely: -150_000,
+      acvDelta: -150_000,
+      scNextSteps: null,
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [opp], {
+          bucket: 'Saveable Risk',
+          risk: { level: 'High', source: 'cerebro', rationale: '' },
+        }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).toContain(
+      'Chip Co ($200,000) - Risk: High; Sentiment: Red; Renewal: 2026-04-15; ML: -$150,000',
+    );
+  });
+
+  it('appends only the first sentence of SC Next Steps to the chip line via " | "', () => {
+    const acc = mkAccount({
+      accountId: 'TAIL',
+      accountName: 'Tail Co',
+      cerebroRiskCategory: 'Medium',
+      cseSentiment: 'Yellow',
+    });
+    const opp = mkOpportunity({
+      accountId: 'TAIL',
+      closeDate: '2026-04-15',
+      acv: 90_000,
+      forecastMostLikely: -50_000,
+      acvDelta: -50_000,
+      scNextSteps:
+        'Schedule QBR with new VP Finance by EOQ. Second sentence we drop. Third also dropped.',
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [opp], {
+          bucket: 'Saveable Risk',
+          risk: { level: 'Medium', source: 'cerebro', rationale: '' },
+        }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).toContain(
+      'Tail Co ($90,000) - Risk: Medium; Sentiment: Yellow; Renewal: 2026-04-15; ML: -$50,000 | Schedule QBR with new VP Finance by EOQ.',
+    );
+    expect(md).not.toContain('Second sentence we drop');
+  });
+
+  it('omits chips for missing fields (sparse account still renders compact bullet)', () => {
+    const acc = mkAccount({
+      accountId: 'SPARSE',
+      accountName: 'Sparse Co',
+      cerebroRiskCategory: null,
+      cseSentiment: 'Green',
+    });
+    const opp = mkOpportunity({
+      accountId: 'SPARSE',
+      closeDate: '2026-06-01',
+      acv: 50_000,
+      forecastMostLikely: 0,
+      scNextSteps: null,
+    });
+    const md = generateWeeklyForecast({
+      views: [mkView(acc, [opp])],
+      changeEvents: [],
+      asOfDate: '2026-05-01',
+    });
+    // No Risk chip (null), no ML chip (0), no prose tail. Sentiment +
+    // Renewal still present.
+    expect(md).toContain('Sparse Co ($50,000) - Sentiment: Green; Renewal: 2026-06-01');
+    expect(md).not.toMatch(/Sparse Co .*Risk:/);
+    expect(md).not.toMatch(/Sparse Co .*ML:/);
+    expect(md).not.toMatch(/Sparse Co .* \| /);
   });
 });

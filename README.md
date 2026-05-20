@@ -225,6 +225,29 @@ not yet hedged in Clari* — lists renewals that pass the three checks
 above but currently carry $0 forecast hedge, so leadership can decide
 whether to pull them onto the hedge line.
 
+**Week-over-week header summary (2026-05-20):** The
+`Week-over-week Changes` header line summarizes the net forecast-ML
+delta across in-scope events (eligible churn-save accounts × renewal
+opps): `net $X (regressions -$Y, improvements +$Z, N booked)`. Only
+`forecastMostLikely` deltas contribute dollars (stage / close-date
+moves are listed in the per-account bullets but never synthesize a
+dollar value), and `N booked` counts distinct accounts whose renewal
+opp transitioned to a `Closed/Won` stage during the window. When no
+events are in scope the header reads `no movement this week`.
+
+**Key Saves bullet format (2026-05-20):** Each Key Saves bullet
+renders as `name ($amount) - <chip line> | <one sentence>`. The chip
+line is a deterministic, scannable set drawn from data the manager
+already reads in Clari — `Risk: <Cerebro Risk Category>; Sentiment:
+<CSE Sentiment>; Renewal: <close date>; ML: <signed USD>` — with
+empty chips omitted so sparse accounts still read compact. The prose
+tail is the **first sentence** of `SE_Next_Steps__c` (HTML-stripped
+via `cleanRichText`, capped at 200 chars at a word boundary) and
+nothing else. We deliberately do **not** fall back to FLM/SLM notes,
+CSE sentiment commentary, Cerebro risk analysis, or the synthetic
+scoring rationale; those sources produced multi-paragraph rich-text
+dumps that drowned the chip line on a leadership churn call.
+
 ## UI
 
 - `/` — Manager Dashboard with stat tiles + 3 columns (Confirmed Churn / Saveable Risk / Upsell) + Refresh button + Generate Update CTA

@@ -290,41 +290,6 @@ function colorBand(view: AccountView): 'red' | 'yellow' | 'green' {
 }
 
 /**
- * Internal / scoring-fallback rationales we do NOT paste into the
- * leadership-facing forecast. These come from
- * `@mdas/scoring::getRiskIdentifier` when Cerebro Risk Category is
- * absent (Glean's Cerebro datasource doesn't expose Risk Category at all
- * — see packages/adapters/read/cerebro-glean/src/mapper.ts header) or
- * when we only have sentiment to fall back to. They are useful in the
- * MDAS UI as a “why bucketed here” hint, but in a manager script they
- * read as apology copy. Suppress them so bullets only show real,
- * actionable narrative (`SE_Next_Steps__c`, FLM/SLM notes, sentiment
- * commentary, churn reason, real Cerebro Risk Analysis).
- */
-const FALLBACK_RATIONALE_PATTERNS: RegExp[] = [
-  /^\d+ of 7 Cerebro risks (is|are) True/i,
-  /^CSE Sentiment (Red|Yellow); no Cerebro data$/i,
-  /^Cerebro Risk Category \(no analysis text available\)$/i,
-  /^No Cerebro Risk Category and no fallback signals available$/i,
-  /^Cerebro Risk Category (Low|Medium|High|Critical)$/i,
-];
-
-function isPasteableNarrative(s: string | null | undefined): boolean {
-  const t = (s ?? '').trim();
-  if (t.length === 0) return false;
-  return !FALLBACK_RATIONALE_PATTERNS.some((re) => re.test(t));
-}
-
-function firstNonEmptyLine(s: string | null | undefined): string {
-  if (!s) return '';
-  for (const line of s.split('\n')) {
-    const t = line.trim();
-    if (t) return t;
-  }
-  return '';
-}
-
-/**
  * Salesforce / Gainsight rich-text fields (FLM/SLM notes, sentiment
  * commentary, Cerebro risk analysis) often arrive as HTML pasted by
  * the CSE or surfaced by Gainsight's editor — `<p>`, `<b>`, anchor
@@ -373,55 +338,6 @@ function truncateNarrative(s: string, maxLen = 500): string {
   return slice.slice(0, cutAt).trimEnd() + '…';
 }
 
-/**
- * “What’s needed” narrative for Key Saves bullets. Returns the first
- * substantive signal from the data the CSE / FLM has already captured;
- * never invents text and never echoes a scoring-fallback rationale.
- *
- * Order of preference:
- *   1. `SE_Next_Steps__c` (`opp.scNextSteps`) — most actionable.
- *   2. For Confirmed Churn: `Account.churnReasonSummary`.
- *   3. `FLM_Notes__c` / `SLM_Notes__c` — manager-authored.
- *   4. `cseSentimentCommentary` — the CSE’s own narrative.
- *   5. `cerebroRiskAnalysis` directly (only when present — Cerebro AI
- *      narrative). Never the synthetic `view.risk.rationale` strings.
- *
- * Sources are HTML-stripped via `cleanRichText` (SFDC/Gainsight rich
- * text routinely ships as tag-soup) and capped at 500 chars at a
- * word boundary. Per 2026-05-20 manager feedback the prior 160-char
- * cap produced unreadable mid-sentence truncations; 500 is enough to
- * carry the State and Renewal Risk paragraph that CSEs typically
- * structure their commentary around.
- *
- * If none of the above are present, returns `''` so the caller renders
- * `name ($amount)` with no apology copy.
- */
-function whatIsNeeded(view: AccountView, opp: CanonicalOpportunity): string {
-  const next = cleanRichText(opp.scNextSteps);
-  if (next) return truncateNarrative(next);
-
-  const churn = cleanRichText(view.account.churnReasonSummary);
-  if (view.bucket === 'Confirmed Churn' && churn) return truncateNarrative(churn);
-
-  const flm = cleanRichText(opp.flmNotes);
-  if (flm) return truncateNarrative(flm);
-  const slm = cleanRichText(opp.slmNotes);
-  if (slm) return truncateNarrative(slm);
-
-  const sentimentCommentary = cleanRichText(view.account.cseSentimentCommentary);
-  if (sentimentCommentary) return truncateNarrative(sentimentCommentary);
-
-  const cerebroAnalysis = cleanRichText(view.account.cerebroRiskAnalysis);
-  if (cerebroAnalysis && isPasteableNarrative(cerebroAnalysis)) {
-    return truncateNarrative(cerebroAnalysis);
-  }
-
-  const rationale = view.risk.rationale?.trim();
-  if (isPasteableNarrative(rationale)) return truncateNarrative(rationale!);
-
-  return '';
-}
-
 function keySaveBullet(
   accountName: string,
   usdLabel: string,
@@ -429,6 +345,110 @@ function keySaveBullet(
 ): string {
   const d = detail.trim();
   return d ? `  - ${accountName} (${usdLabel}) - ${d}` : `  - ${accountName} (${usdLabel})`;
+}
+
+/**
+ * One-line summary for the Week-over-week section header.
+ *
+ * Format: `net $X (regressions -$Y, improvements +$Z, N booked)`.
+ * When nothing moved, returns `no movement this week`.
+ *
+ * Per 2026-05-20 manager feedback the header was a static label; the
+ * exec couldn't tell at a glance whether the week was net-positive or
+ * net-negative without reading every bullet. We now surface the dollar
+ * roll-up (forecastMostLikely deltas only — see WowHeaderSummary) and a
+ * booked count (renewals that hit Closed/Won this week), so the
+ * leadership read is immediate.
+ */
+function formatWowHeaderSummary(h: WowHeaderSummary): string {
+  if (
+    h.net === 0 &&
+    h.regressions === 0 &&
+    h.improvements === 0 &&
+    h.booked === 0
+  ) {
+    return 'no movement this week';
+  }
+  const parts: string[] = [];
+  if (h.regressions !== 0) parts.push(`regressions ${fmtSignedUSD(h.regressions)}`);
+  if (h.improvements !== 0) parts.push(`improvements ${fmtSignedUSD(h.improvements)}`);
+  if (h.booked > 0) parts.push(`${h.booked} booked`);
+  const tail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+  return `net ${fmtSignedUSD(h.net)}${tail}`;
+}
+
+/**
+ * Compact, exec-readable chip line for a Key Saves bullet.
+ *
+ * Per 2026-05-20 manager feedback the prior implementation pasted
+ * 500-char rich-text dumps (often the CSE's State / Renewal Risk
+ * commentary) under each bullet — leadership found this unreadable on
+ * the churn call. We now lead with a structured chip line built from
+ * the same fields the manager already scans in Clari, and the prose
+ * "what's needed" follows it as a single short sentence (see
+ * `keySaveNeed`).
+ *
+ * Chips emitted (any with a value):
+ *   - Risk: Cerebro Risk Category (`Critical`/`High`/…) — leadership
+ *     anchor for whether the account is in the red bucket.
+ *   - Sentiment: CSE Sentiment (`Red`/`Yellow`/`Confirmed Churn`/…) —
+ *     the CSE's own gut on the account.
+ *   - Renewal: opportunity close date (ISO `YYYY-MM-DD`).
+ *   - ML: forecastMostLikely as signed USD. Down-forecasts are the
+ *     reason the bullet exists, so we show the number directly rather
+ *     than burying it in prose.
+ *
+ * Chips are joined with `; ` and omitted when the underlying field is
+ * empty so the line stays compact for sparse accounts.
+ */
+function keySaveChips(view: AccountView, opp: CanonicalOpportunity): string {
+  const chips: string[] = [];
+  const risk = view.account.cerebroRiskCategory;
+  if (risk) chips.push(`Risk: ${risk}`);
+  const sent = view.account.cseSentiment;
+  if (sent) chips.push(`Sentiment: ${sent}`);
+  if (opp.closeDate) chips.push(`Renewal: ${opp.closeDate}`);
+  const ml = opp.forecastMostLikely;
+  if (typeof ml === 'number' && Number.isFinite(ml) && ml !== 0) {
+    chips.push(`ML: ${fmtSignedUSD(ml)}`);
+  }
+  return chips.join('; ');
+}
+
+/**
+ * Single-sentence "what's needed" string for a Key Saves bullet.
+ *
+ * Per 2026-05-20 manager feedback we deliberately do NOT fall back to
+ * CSE sentiment commentary, FLM/SLM notes, Cerebro risk analysis, or
+ * the synthetic risk rationale — those sources produced multi-paragraph
+ * dumps that drowned the chip line. SC Next Steps is the only source
+ * authored as a forward-looking action by the rep on the deal, so it's
+ * the only source that maps cleanly onto a one-sentence ask.
+ *
+ * Returns the first sentence of `opp.scNextSteps`, HTML-stripped,
+ * capped at 200 chars at a word boundary. Empty string when SC Next
+ * Steps is empty, so the caller renders the bullet with just the chip
+ * line — which is itself a complete summary.
+ */
+function keySaveNeed(opp: CanonicalOpportunity): string {
+  const next = cleanRichText(opp.scNextSteps);
+  if (!next) return '';
+  const sentenceMatch = next.match(/^[^.!?]+[.!?]/);
+  const firstSentence = (sentenceMatch ? sentenceMatch[0] : next).trim();
+  return truncateNarrative(firstSentence, 200);
+}
+
+/**
+ * Composes the post-`($amount) - ` segment for a Key Saves bullet:
+ * chip line, then (when present) a single sentence of "what's needed".
+ * Returns `''` when neither has content so `keySaveBullet` drops the
+ * trailing ` - `.
+ */
+function keySaveDetail(view: AccountView, opp: CanonicalOpportunity): string {
+  const chips = keySaveChips(view, opp);
+  const need = keySaveNeed(opp);
+  if (chips && need) return `${chips} | ${need}`;
+  return chips || need;
 }
 
 /**
@@ -490,6 +510,32 @@ interface WowSummary {
   accountName: string;
   sign: '+' | '-';
   details: { sign: '+' | '-'; text: string }[];
+}
+
+/**
+ * Dollar / count roll-up across the WoW signals, used to populate the
+ * Week-over-week section header. Computed inside wowChanges() so the
+ * same scoping (eligible accounts × renewal opps) that gates the
+ * per-account bullets also gates the header math — leadership reads
+ * the header dollar value as "what changed in our churn-save forecast
+ * this week," and double-counting expansion movement would mislead.
+ *
+ * - regressions: sum of negative forecastMostLikely deltas across in-scope events.
+ * - improvements: sum of positive forecastMostLikely deltas across in-scope events.
+ * - net: regressions + improvements.
+ * - booked: count of distinct accounts whose renewal opp transitioned
+ *   to a Closed/Won stage during the window.
+ *
+ * Stage and close-date events are intentionally not assigned a dollar
+ * value here — the underlying forecastMostLikely change (when present)
+ * carries the dollars, and a stage-only move with no ML change should
+ * not synthesize a fake number.
+ */
+interface WowHeaderSummary {
+  net: number;
+  regressions: number;
+  improvements: number;
+  booked: number;
 }
 
 const RISK_RANK: Record<string, number> = {
@@ -608,7 +654,7 @@ function eventToSignal(e: ChangeEvent): SignalDetail | null {
 function wowChanges(
   rows: QuarterBucket['rows'],
   events: ChangeEvent[],
-): WowSummary[] {
+): { summaries: WowSummary[]; header: WowHeaderSummary } {
   // Same lens as Hedge / Close-Gap (2026-05-20 manager feedback): only
   // report week-over-week movement on accounts that are themselves
   // churn-save targets — renewal opps with a forecasted downsell or
@@ -673,6 +719,9 @@ function wowChanges(
   }
 
   const byAccount = new Map<string, SignalDetail[]>();
+  let regressions = 0;
+  let improvements = 0;
+  const bookedAccountIds = new Set<string>();
 
   for (const e of events) {
     if (!eligibleAccountIds.has(e.accountId)) continue;
@@ -683,6 +732,29 @@ function wowChanges(
     if (e.opportunityId != null && !renewalOppIds.has(e.opportunityId)) continue;
     const sig = eventToSignal(e);
     if (!sig) continue;
+
+    // Roll up header totals from the same events we render. ML deltas
+    // contribute dollars; stage→Closed/Won transitions on renewal opps
+    // contribute to the `booked` count.
+    if (e.field === 'forecastMostLikely') {
+      const o = asNumber(e.oldValue) ?? 0;
+      const n = asNumber(e.newValue) ?? 0;
+      const delta = n - o;
+      if (Math.abs(delta) >= ML_DELTA_THRESHOLD_USD) {
+        if (delta < 0) regressions += delta;
+        else improvements += delta;
+      }
+    } else if (
+      e.field === 'stageName' &&
+      e.opportunityId != null &&
+      renewalOppIds.has(e.opportunityId)
+    ) {
+      const newStage = String(e.newValue ?? '').toLowerCase();
+      if (newStage.includes('closed') && newStage.includes('won')) {
+        bookedAccountIds.add(e.accountId);
+      }
+    }
+
     const list = byAccount.get(e.accountId) ?? [];
     list.push(sig);
     byAccount.set(e.accountId, list);
@@ -704,10 +776,20 @@ function wowChanges(
 
   // Stable order: regressions first (leadership wants the bad news),
   // then improvements; alphabetical within each.
-  return summaries.sort((a, b) => {
+  const sorted = summaries.sort((a, b) => {
     if (a.sign !== b.sign) return a.sign === '-' ? -1 : 1;
     return a.accountName.localeCompare(b.accountName);
   });
+
+  return {
+    summaries: sorted,
+    header: {
+      net: regressions + improvements,
+      regressions,
+      improvements,
+      booked: bookedAccountIds.size,
+    },
+  };
 }
 
 /**
@@ -879,8 +961,10 @@ function renderQuarterSection(
   // Week-over-week — placed above Key Saves so leadership sees what
   // moved this week before drilling into per-account narrative.
   // (Moved from below Key Saves on 2026-05-20.)
-  const wow = wowChanges(bucket.rows, events);
-  lines.push(`Week-over-week Changes - Improvements and increased risk:`);
+  const { summaries: wow, header: wowHeader } = wowChanges(bucket.rows, events);
+  lines.push(
+    `Week-over-week Changes - Improvements and increased risk: ${formatWowHeaderSummary(wowHeader)}`,
+  );
   if (wow.length === 0) {
     lines.push(`  - No movement this week`);
   } else {
@@ -907,7 +991,7 @@ function renderQuarterSection(
         keySaveBullet(
           r.view.account.accountName,
           fmtUSD(r.usd),
-          whatIsNeeded(r.view, r.opp),
+          keySaveDetail(r.view, r.opp),
         ),
       );
     }
@@ -921,7 +1005,7 @@ function renderQuarterSection(
       keySaveBullet(
         r.view.account.accountName,
         fmtUSD(r.usd),
-        whatIsNeeded(r.view, r.opp),
+        keySaveDetail(r.view, r.opp),
       ),
     );
   }
@@ -934,7 +1018,7 @@ function renderQuarterSection(
       keySaveBullet(
         r.view.account.accountName,
         fmtUSD(r.usd),
-        whatIsNeeded(r.view, r.opp),
+        keySaveDetail(r.view, r.opp),
       ),
     );
   }
