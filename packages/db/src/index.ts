@@ -124,6 +124,30 @@ export async function listRefreshRuns(limit = 20): Promise<RefreshRun[]> {
   return r.rows;
 }
 
+/**
+ * List successful (or partial) refresh runs whose `started_at` is at
+ * or after the given ISO timestamp, oldest first. Used by the Health
+ * Snapshot trajectory loader to walk every snapshot taken since the
+ * start of the current fiscal quarter so it can build a per-day KPI
+ * series for the Glean Adaptive narrative call.
+ *
+ * Returned oldest-first so callers can iterate naturally; that's the
+ * opposite of `listRefreshRuns` but matches the trajectory use case
+ * (a time series read start → today, not "what's the latest").
+ */
+export async function listSuccessfulRunsSince(
+  sinceIso: string,
+): Promise<RefreshRun[]> {
+  const r = await query<RefreshRun>(
+    `SELECT * FROM refresh_runs
+       WHERE status IN ('success','partial')
+         AND started_at >= $1::timestamptz
+     ORDER BY started_at ASC`,
+    [sinceIso],
+  );
+  return r.rows;
+}
+
 export async function latestSuccessfulRun(): Promise<RefreshRun | null> {
   const r = await query<RefreshRun>(
     `SELECT * FROM refresh_runs WHERE status IN ('success','partial') ORDER BY started_at DESC LIMIT 1`,

@@ -15,7 +15,12 @@ import type {
   CanonicalOpportunity,
   ChangeEvent,
 } from '@mdas/canonical';
-import { generateWeeklyForecast } from './index';
+import {
+  computeQuarterKpis,
+  fiscalQuarterFromDate,
+  fiscalQuarterStart,
+  generateWeeklyForecast,
+} from './index';
 
 const REFRESH_AT = '2026-04-28T18:00:00.000Z';
 const AS_OF = '2026-04-28'; // FY27 Q1 (Feb 2026 → Apr 2026)
@@ -1315,6 +1320,129 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(callout![0]).toContain('$420,000 ATR');
   });
 
+  // 2026-05-20 manager feedback: leadership needs a qualitative
+  // health/trajectory summary inside each quarter block. The pure
+  // renderer doesn't call an LLM; it just splices the upstream-
+  // generated narrative string into a `Health Snapshot:` block
+  // between `Hedge:` and `Accounts with Hedge`. The narrative is
+  // built by the web API from Glean Adaptive chat over a trajectory
+  // series (all snapshots in the quarter to date).
+  describe('Health Snapshot section', () => {
+    it('renders the Health Snapshot between Hedge and Accounts with Hedge when provided', () => {
+      const acc = mkAccount({ accountId: 'A1', accountName: 'Account A' });
+      const opp = mkOpportunity({ accountId: 'A1' });
+      const md = generateWeeklyForecast({
+        views: [mkView(acc, [opp])],
+        changeEvents: [],
+        asOfDate: AS_OF,
+        healthSnapshot: {
+          currentQuarter:
+            'Q2 is flashing 14% over Plan and has widened by $150K over the last three weeks. Risk remains concentrated in Swing Education and Kustomer. No saves likely to close before EOQ without a leadership escalation.',
+        },
+      });
+      // Ordering: Hedge: line ⟶ blank ⟶ Health Snapshot: ⟶ narrative
+      // ⟶ blank ⟶ Accounts with Hedge.
+      const lines = md.split('\n');
+      const hedgeIdx = lines.findIndex((l) => l.startsWith('Hedge: '));
+      const snapshotIdx = lines.findIndex((l) => l === 'Health Snapshot:');
+      const accountsWithHedgeIdx = lines.findIndex((l) =>
+        l.startsWith('Accounts with Hedge (churn-save renewals):'),
+      );
+      expect(hedgeIdx).toBeGreaterThan(-1);
+      expect(snapshotIdx).toBeGreaterThan(hedgeIdx);
+      expect(accountsWithHedgeIdx).toBeGreaterThan(snapshotIdx);
+      // Blank line between Hedge and Health Snapshot header (visual
+      // separation per 2026-05-20 user feedback).
+      expect(lines[snapshotIdx - 1]).toBe('');
+      // Narrative renders on the next line, indented with 2 spaces
+      // (matches the bullet indentation used elsewhere in the script
+      // so the block reads as a contiguous indented paragraph rather
+      // than a flush-left wall of text).
+      expect(lines[snapshotIdx + 1]).toMatch(/^  Q2 is flashing /);
+      // Blank line between narrative and Accounts with Hedge.
+      expect(lines[accountsWithHedgeIdx - 1]).toBe('');
+    });
+
+    it('omits the Health Snapshot section entirely when not provided', () => {
+      const acc = mkAccount({ accountId: 'A1', accountName: 'Account A' });
+      const opp = mkOpportunity({ accountId: 'A1' });
+      const md = generateWeeklyForecast({
+        views: [mkView(acc, [opp])],
+        changeEvents: [],
+        asOfDate: AS_OF,
+      });
+      expect(md).not.toContain('Health Snapshot:');
+      // And the deterministic invariant that nothing inserted a stray
+      // blank line between Hedge and Accounts with Hedge in the
+      // no-snapshot path.
+      expect(md).toMatch(
+        /Hedge: \$\d.*\nAccounts with Hedge \(churn-save renewals\):/,
+      );
+    });
+
+    it('omits the Health Snapshot section when narrative is empty / whitespace', () => {
+      const acc = mkAccount({ accountId: 'A1', accountName: 'Account A' });
+      const opp = mkOpportunity({ accountId: 'A1' });
+      const md = generateWeeklyForecast({
+        views: [mkView(acc, [opp])],
+        changeEvents: [],
+        asOfDate: AS_OF,
+        healthSnapshot: { currentQuarter: '   ' },
+      });
+      expect(md).not.toContain('Health Snapshot:');
+    });
+
+    it('renders independent narratives per quarter', () => {
+      const acc = mkAccount({ accountId: 'A1', accountName: 'Account A' });
+      // One opp in current quarter (FY27 Q1) and one in next (FY27 Q2).
+      const oppCurrent = mkOpportunity({
+        opportunityId: 'O-CUR',
+        accountId: 'A1',
+        closeDate: '2026-04-15',
+      });
+      const oppNext = mkOpportunity({
+        opportunityId: 'O-NEXT',
+        accountId: 'A1',
+        closeDate: '2026-06-15',
+      });
+      const md = generateWeeklyForecast({
+        views: [mkView(acc, [oppCurrent, oppNext])],
+        changeEvents: [],
+        asOfDate: AS_OF,
+        healthSnapshot: {
+          currentQuarter: 'CURRENT-NARRATIVE-MARKER text for Q1.',
+          nextQuarter: 'NEXT-NARRATIVE-MARKER text for Q2.',
+        },
+      });
+      const currentIdx = md.indexOf('CURRENT-NARRATIVE-MARKER');
+      const nextQuarterHeader = md.indexOf('Next Quarter:');
+      const nextNarrativeIdx = md.indexOf('NEXT-NARRATIVE-MARKER');
+      expect(currentIdx).toBeGreaterThan(-1);
+      expect(currentIdx).toBeLessThan(nextQuarterHeader);
+      expect(nextNarrativeIdx).toBeGreaterThan(nextQuarterHeader);
+    });
+
+    it('renders the stale-marker narrative verbatim (caller signals LLM failure here)', () => {
+      // The pure renderer doesn't know what "failure" means — it just
+      // prints the string. The caller (apps/web forecast route) is
+      // responsible for substituting a clear marker like the one below
+      // when the Glean Adaptive call throws or times out.
+      const acc = mkAccount({ accountId: 'A1', accountName: 'Account A' });
+      const opp = mkOpportunity({ accountId: 'A1' });
+      const md = generateWeeklyForecast({
+        views: [mkView(acc, [opp])],
+        changeEvents: [],
+        asOfDate: AS_OF,
+        healthSnapshot: {
+          currentQuarter: '[Narrative unavailable — Glean call failed]',
+        },
+      });
+      expect(md).toContain(
+        'Health Snapshot:\n  [Narrative unavailable — Glean call failed]',
+      );
+    });
+  });
+
   // 2026-05-20 manager feedback: the WoW header was a static label; the
   // exec couldn't see at a glance whether the week was net-positive or
   // net-negative. Header now summarizes net forecast-ML change,
@@ -1591,5 +1719,140 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).not.toMatch(/Sparse Co .*Risk:/);
     expect(md).not.toMatch(/Sparse Co .*ML:/);
     expect(md).not.toMatch(/Sparse Co .* \| /);
+  });
+});
+
+// 2026-05-20 — Health Snapshot supporting helpers. computeQuarterKpis
+// surfaces the same Plan / Flash / Gap math the renderer uses as a
+// reusable struct so the web-app trajectory loader can build a
+// per-day series for the Glean Adaptive narrative call without
+// re-implementing the bucket / churn-component logic.
+describe('fiscalQuarterStart', () => {
+  it('returns Feb 1 of FY-1 for Q1 (Zuora FY starts February)', () => {
+    expect(
+      fiscalQuarterStart({ fy: 2027, q: 1, key: '2027-Q1', label: 'FY27 Q1' }),
+    ).toBe('2026-02-01');
+  });
+  it('returns May 1 of FY-1 for Q2', () => {
+    expect(
+      fiscalQuarterStart({ fy: 2027, q: 2, key: '2027-Q2', label: 'FY27 Q2' }),
+    ).toBe('2026-05-01');
+  });
+  it('returns Aug 1 of FY-1 for Q3', () => {
+    expect(
+      fiscalQuarterStart({ fy: 2027, q: 3, key: '2027-Q3', label: 'FY27 Q3' }),
+    ).toBe('2026-08-01');
+  });
+  it('returns Nov 1 of FY-1 for Q4 (Nov–Jan window crosses calendar boundary)', () => {
+    // FY27 Q4 = Nov 2026, Dec 2026, Jan 2027. Start = Nov 1, 2026.
+    expect(
+      fiscalQuarterStart({ fy: 2027, q: 4, key: '2027-Q4', label: 'FY27 Q4' }),
+    ).toBe('2026-11-01');
+  });
+  it('round-trips with fiscalQuarterFromDate (start-of-quarter date maps back to same quarter)', () => {
+    const fq = fiscalQuarterFromDate('2026-05-20')!;
+    const start = fiscalQuarterStart(fq);
+    const fqAtStart = fiscalQuarterFromDate(start)!;
+    expect(fqAtStart.key).toBe(fq.key);
+  });
+});
+
+describe('computeQuarterKpis', () => {
+  it('produces a snapshot whose Plan/Flash/Gap match the renderer for the same inputs', () => {
+    // Confirmed-churn renewal in FY27 Q1, -$100K known churn. Account
+    // ML override stays null so churn flash = -knownChurn.
+    const acc = mkAccount({ accountId: 'CK', accountName: 'Confirmed Churn Co' });
+    const opp = mkOpportunity({
+      opportunityId: 'O-CK',
+      accountId: 'CK',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      knownChurnUSD: 100_000,
+      acvDelta: 0,
+      forecastMostLikely: 0,
+      availableToRenewUSD: 300_000,
+    });
+    const view = mkView(acc, [opp], { bucket: 'Confirmed Churn' });
+    const kpis = computeQuarterKpis([view], AS_OF, 'current', -2_000_000);
+    expect(kpis.fiscalQuarterLabel).toBe('FY27 Q1');
+    // Flash is negative (the renderer prints it directly as signed
+    // USD). One -$100K known-churn opp.
+    expect(kpis.flashUSD).toBe(-100_000);
+    // Total Risk = -(sum of ATR for confirmed/saveable). One $300K
+    // ATR on a Confirmed-Churn account.
+    expect(kpis.totalRiskUSD).toBe(-300_000);
+    // Gap = Flash - Plan. Both negative.
+    expect(kpis.gapUSD).toBe(-100_000 - -2_000_000);
+    expect(kpis.accountCount).toBe(1);
+    expect(kpis.opportunityCount).toBe(1);
+  });
+
+  it('reports planUSD=null and gapUSD=null when caller passes null Plan', () => {
+    const acc = mkAccount({ accountId: 'A1' });
+    const opp = mkOpportunity({ accountId: 'A1' });
+    const kpis = computeQuarterKpis([mkView(acc, [opp])], AS_OF, 'current', null);
+    expect(kpis.planUSD).toBeNull();
+    expect(kpis.gapUSD).toBeNull();
+  });
+
+  it('counts each account once even when it has multiple opps in the quarter (worst-band wins)', () => {
+    const acc = mkAccount({
+      accountId: 'MULTI',
+      accountName: 'Multi-Opp Co',
+      cseSentiment: 'Red',
+    });
+    const opp1 = mkOpportunity({
+      opportunityId: 'O-1',
+      accountId: 'MULTI',
+      closeDate: '2026-04-15',
+    });
+    const opp2 = mkOpportunity({
+      opportunityId: 'O-2',
+      accountId: 'MULTI',
+      closeDate: '2026-04-20',
+    });
+    const view = mkView(acc, [opp1, opp2], { bucket: 'Saveable Risk' });
+    const kpis = computeQuarterKpis([view], AS_OF, 'current', null);
+    expect(kpis.accountCount).toBe(1);
+    expect(kpis.opportunityCount).toBe(2);
+    expect(kpis.redAccountCount).toBe(1);
+    expect(kpis.yellowAccountCount).toBe(0);
+  });
+
+  it('returns an empty-quarter snapshot when no opps land in the chosen quarter', () => {
+    // Opp closeDate in Q2; we ask for current = Q1.
+    const acc = mkAccount({ accountId: 'A1' });
+    const opp = mkOpportunity({ accountId: 'A1', closeDate: '2026-06-15' });
+    const kpis = computeQuarterKpis([mkView(acc, [opp])], AS_OF, 'current', null);
+    expect(kpis.fiscalQuarterLabel).toBe('FY27 Q1');
+    expect(kpis.flashUSD).toBe(0);
+    expect(kpis.totalRiskUSD).toBe(0);
+    expect(kpis.hedgeUSD).toBe(0);
+    expect(kpis.accountCount).toBe(0);
+    expect(kpis.opportunityCount).toBe(0);
+    expect(kpis.redAccountCount).toBe(0);
+  });
+
+  it('respects quarter selection (current vs next)', () => {
+    const acc = mkAccount({ accountId: 'A1' });
+    const oppCurrent = mkOpportunity({
+      opportunityId: 'O-C',
+      accountId: 'A1',
+      closeDate: '2026-04-15',
+      forecastHedgeUSD: 10_000,
+    });
+    const oppNext = mkOpportunity({
+      opportunityId: 'O-N',
+      accountId: 'A1',
+      closeDate: '2026-06-15',
+      forecastHedgeUSD: 50_000,
+    });
+    const view = mkView(acc, [oppCurrent, oppNext]);
+    const current = computeQuarterKpis([view], AS_OF, 'current', null);
+    const next = computeQuarterKpis([view], AS_OF, 'next', null);
+    expect(current.hedgeUSD).toBe(10_000);
+    expect(next.hedgeUSD).toBe(50_000);
+    expect(current.fiscalQuarterLabel).toBe('FY27 Q1');
+    expect(next.fiscalQuarterLabel).toBe('FY27 Q2');
   });
 });
