@@ -1479,6 +1479,93 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).not.toContain('Second sentence we drop');
   });
 
+  // 2026-05-20 manager feedback: Key Saves bullets were showing
+  // upsell / amendment opps with past-due close dates because
+  // topAccountsToCloseGap only filtered on colorBand + acv. Leadership
+  // can't "save" an Amendment / New Business / Contracted Ramp deal —
+  // the section is for renewals only. We now gate Key Saves on the
+  // same renewal + carried-forecast-category checks the Hedge /
+  // Close-Gap sections use.
+  it('excludes Amendment / New Business opps from Key Saves (renewals only)', () => {
+    const upsellAcc = mkAccount({
+      accountId: 'UP',
+      accountName: 'Upsell Co',
+      cseSentiment: 'Red',
+    });
+    const upsellOpp = mkOpportunity({
+      opportunityId: 'O-UP',
+      accountId: 'UP',
+      type: 'Amendment',
+      acv: 250_000,
+      closeDate: '2026-04-15',
+    });
+    const renewalAcc = mkAccount({
+      accountId: 'RN',
+      accountName: 'Renewal Co',
+      cseSentiment: 'Red',
+    });
+    const renewalOpp = mkOpportunity({
+      opportunityId: 'O-RN',
+      accountId: 'RN',
+      type: 'Renewal',
+      acv: 100_000,
+      closeDate: '2026-04-15',
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(upsellAcc, [upsellOpp], { bucket: 'Saveable Risk' }),
+        mkView(renewalAcc, [renewalOpp], { bucket: 'Saveable Risk' }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    // Slice the Key Saves block so we don't pick up "Upsell Co" from
+    // some other section (none today, but future-proof).
+    const keySavesBlock = md.slice(md.indexOf('Key Saves/Improvements'));
+    expect(keySavesBlock).not.toContain('Upsell Co');
+    expect(keySavesBlock).toContain('Renewal Co');
+  });
+
+  it('excludes opps with a closed / omitted forecast category from Key Saves', () => {
+    const closedAcc = mkAccount({
+      accountId: 'CL',
+      accountName: 'Closed Co',
+      cseSentiment: 'Red',
+    });
+    const closedOpp = mkOpportunity({
+      opportunityId: 'O-CL',
+      accountId: 'CL',
+      type: 'Renewal',
+      acv: 300_000,
+      closeDate: '2026-04-15',
+      forecastCategory: 'Closed Won',
+    });
+    const liveAcc = mkAccount({
+      accountId: 'LV',
+      accountName: 'Live Renewal Co',
+      cseSentiment: 'Red',
+    });
+    const liveOpp = mkOpportunity({
+      opportunityId: 'O-LV',
+      accountId: 'LV',
+      type: 'Renewal',
+      acv: 100_000,
+      closeDate: '2026-04-15',
+      forecastCategory: 'Commit',
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(closedAcc, [closedOpp], { bucket: 'Saveable Risk' }),
+        mkView(liveAcc, [liveOpp], { bucket: 'Saveable Risk' }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    const keySavesBlock = md.slice(md.indexOf('Key Saves/Improvements'));
+    expect(keySavesBlock).not.toContain('Closed Co');
+    expect(keySavesBlock).toContain('Live Renewal Co');
+  });
+
   it('omits chips for missing fields (sparse account still renders compact bullet)', () => {
     const acc = mkAccount({
       accountId: 'SPARSE',

@@ -235,6 +235,18 @@ dollar value), and `N booked` counts distinct accounts whose renewal
 opp transitioned to a `Closed/Won` stage during the window. When no
 events are in scope the header reads `no movement this week`.
 
+**Key Saves renewal-only filter (2026-05-20):** The red / yellow /
+green Key Saves lists now apply the same renewal-only filter as the
+Hedge / Close-Gap sections — `Opportunity.Type` must contain
+"Renewal" and `fml_Manager_ForecastCategory__c` must be populated and
+not in the dropped set (`Omitted`, `Closed`, `Closed Lost`,
+`Closed Won`). Without this gate `topAccountsToCloseGap` was
+surfacing Amendment / New Business / Contracted Ramp opps with
+past-due close dates, which leadership can't act on as saves. Note
+this is one filter looser than `isChurnSaveTarget`: we do not require
+a down-forecast signal here because the green band legitimately
+contains healthy renewals the manager wants to capture.
+
 **Key Saves bullet format (2026-05-20):** Each Key Saves bullet
 renders as `name ($amount) - <chip line> | <one sentence>`. The chip
 line is a deterministic, scannable set drawn from data the manager

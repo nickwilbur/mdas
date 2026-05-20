@@ -454,7 +454,20 @@ function keySaveDetail(view: AccountView, opp: CanonicalOpportunity): string {
 /**
  * Top N saveable / red accounts in the quarter ordered by dollar
  * exposure. Returns one row per account (de-duplicated when an account
- * has multiple opps in the same quarter, taking the largest).
+ * has multiple opps in the same quarter, taking the largest renewal).
+ *
+ * Per 2026-05-20 manager feedback: Key Saves was surfacing past-due
+ * Amendment / New Business / Contracted Ramp opps because the only
+ * filters were colorBand + acv > 0. An exec can't "save" an upsell
+ * amendment, and the past close dates on those rows were the
+ * tell-tale. We now restrict candidates to RENEWAL opps the manager
+ * is still carrying on the forecast line — same `isRenewalLike` +
+ * `isCarriedForecastCategory` filter the Hedge / Close-Gap sections
+ * already use. We stop short of the full `isChurnSaveTarget` check
+ * (which also requires a down-forecast signal) because the green band
+ * legitimately contains healthy renewals the manager wants to
+ * capture; an `acv > 0` renewal in forecast is a valid Key Save
+ * candidate regardless of its current ML.
  */
 function topAccountsToCloseGap(
   rows: QuarterBucket['rows'],
@@ -467,6 +480,8 @@ function topAccountsToCloseGap(
   >();
   for (const r of rows) {
     if (colorBand(r.view) !== band) continue;
+    if (!isRenewalLike(r.opp)) continue;
+    if (!isCarriedForecastCategory(r.opp)) continue;
     const usd = r.opp.acv ?? 0;
     if (usd <= 0) continue;
     const prev = seen.get(r.view.account.accountId);
