@@ -254,8 +254,8 @@ Reads Glean's `app:gainsight / type:calltoaction` documents (Gainsight CTAs / Ri
 
 While the worker waits on `SALESFORCE_*` + `GLEAN_MCP_TOKEN`, real
 Salesforce data can be bridged into the latest snapshot via Cascade's
-own Glean MCP integration (the same OAuth path Windsurf already uses,
-no service-account token required).
+own Glean MCP integration (the same OAuth path Cursor / Windsurf
+already use, no service-account token required).
 
 The bridge respects the data-source precedence rules above:
 Salesforce-flavored fields (account name, owner, CSE sentiment, ARR,

@@ -4,6 +4,11 @@ dist
 .DS_Store
 .env
 .env.local
+# Glean OAuth state: cached DCR client_id, refresh_token, endpoint
+# metadata. Written by scripts/glean-login.mjs, read by
+# scripts/glean-refresh.mjs. Contains refresh_token — treat as a
+# credential and never commit.
+.glean-oauth.json
 *.log
 coverage
 playwright-report

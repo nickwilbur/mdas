@@ -1,62 +1,88 @@
 #!/usr/bin/env node
 // refresh-glean-token.mjs
 //
-// Hack for local dev only. Reads the OAuth access_token Windsurf
-// negotiated with Glean's MCP server and writes it into the repo-root
-// `.env` as GLEAN_MCP_TOKEN. Run this whenever the in-app /api/glean/*
-// routes return 401 Invalid Secret — the token has a ~1-week TTL
-// (configurable per Glean tenant) and gets rotated by Windsurf's
-// silent-refresh logic in the background.
+// Refresh GLEAN_MCP_TOKEN in .env. Tries sources in order:
 //
-// Why this exists: Glean's MCP server requires OAuth 2.1 (Dynamic
-// Client Registration + PKCE + Okta SSO) and rejects static bearer
-// tokens. Windsurf already runs that flow on your behalf and stores
-// the resulting access_token AES-encrypted in VS Code's secret
-// storage, with the AES key in macOS Keychain ("Windsurf Safe
-// Storage"). This script just decrypts that one entry.
+//   1. In-repo refresh_token (.glean-oauth.json) — silent, no editor.
+//      This is the path we want everyone on. Bootstrap once with
+//      `node scripts/glean-login.mjs`.
+//   2. Cursor's encrypted MCP token store (macOS Keychain).
+//   3. Windsurf's encrypted MCP token store (macOS Keychain).
 //
-// Once we wire up our own Glean OAuth flow in the app
-// (AUTH_MODE=okta path → GleanOAuthClient), this script can be
-// deleted.
+// First source to produce a non-expired access_token wins. Override
+// with GLEAN_TOKEN_SOURCE=in-repo|cursor|windsurf to force one.
+//
+// Why all three: the in-repo path is the long-term target, but for
+// developers who already have Cursor/Windsurf authenticated against
+// Glean (and aren't ready to redo their OAuth dance) the editor scrape
+// is a zero-effort upgrade path. Both eventually drop out — see
+// docs/integrations/glean.md "Option B" for the per-user multi-user
+// path that obsoletes this script entirely.
 //
 // Usage:
 //   node scripts/refresh-glean-token.mjs
-//   # then: docker compose restart web
+//   # then: ./restart.sh   (or: docker compose restart web worker)
 //
-// Platform: macOS only. Linux/Windows would need DPAPI/libsecret
-// equivalents.
+// Platform: macOS for editor-scrape; any platform for in-repo refresh.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { createHash, pbkdf2Sync, createDecipheriv } from 'node:crypto';
+import { pbkdf2Sync, createDecipheriv } from 'node:crypto';
+import {
+  DEFAULT_MCP_URL,
+  fingerprint,
+  formatTtl,
+  jwtExpiry,
+  readStateFor,
+  refreshAccessToken,
+  writeEnvVar,
+  writeStateFor,
+} from './lib/glean-oauth.mjs';
 
-const REPO_ROOT = resolve(import.meta.dirname, '..');
-const ENV_PATH = resolve(REPO_ROOT, '.env');
-const VSCDB_PATH = resolve(
-  homedir(),
-  'Library/Application Support/Windsurf/User/globalStorage/state.vscdb',
-);
-const SECRET_KEY =
-  'secret://{"extensionId":"codeium.windsurf","key":"mcp_token_glean_default"}';
+const MCP_URL = process.env.GLEAN_MCP_URL || DEFAULT_MCP_URL;
+const GLEAN_SERVER_NAME = process.env.GLEAN_SERVER_NAME || 'default';
 
-function getKeychainPassword() {
+// ---------------------------------------------------------------------------
+// Source 1: in-repo refresh_token grant (preferred)
+
+async function loadInRepo() {
+  const state = readStateFor(MCP_URL);
+  if (!state) return { skipped: 'no .glean-oauth.json entry — run `node scripts/glean-login.mjs` to bootstrap' };
+  if (!state.refresh_token) return { skipped: '.glean-oauth.json has no refresh_token (was offline_access scope granted?)' };
+  if (!state.client_id || !state.token_endpoint) return { skipped: '.glean-oauth.json incomplete (missing client_id or token_endpoint)' };
+
+  let tokens;
   try {
-    return execFileSync('security', [
-      'find-generic-password',
-      '-s',
-      'Windsurf Safe Storage',
-      '-w',
-    ])
-      .toString()
-      .trim();
+    tokens = await refreshAccessToken({
+      tokenEndpoint: state.token_endpoint,
+      clientId: state.client_id,
+      refreshToken: state.refresh_token,
+    });
   } catch (err) {
-    throw new Error(
-      `Failed to read 'Windsurf Safe Storage' from macOS Keychain. ` +
-        `Make sure Windsurf has been launched at least once and is signed in. ` +
-        `(${err.message})`,
-    );
+    return { skipped: `refresh_token grant failed (${err.message})` };
   }
+  if (typeof tokens.access_token !== 'string') {
+    return { skipped: 'token response missing access_token' };
+  }
+  // Persist rotated refresh_token if the AS issued one.
+  const newRefresh =
+    typeof tokens.refresh_token === 'string' ? tokens.refresh_token : state.refresh_token;
+  writeStateFor(MCP_URL, {
+    ...state,
+    refresh_token: newRefresh,
+    last_refreshed_at: new Date().toISOString(),
+  });
+  return tokenResult(tokens.access_token);
+}
+
+// ---------------------------------------------------------------------------
+// Sources 2-3: scrape Cursor / Windsurf encrypted MCP token stores
+
+function getKeychainPassword(service) {
+  return execFileSync('security', ['find-generic-password', '-s', service, '-w'])
+    .toString()
+    .trim();
 }
 
 function decryptElectronSafeStorage(encrypted, password) {
@@ -77,94 +103,199 @@ function decryptElectronSafeStorage(encrypted, password) {
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 }
 
-function readEncryptedTokenBlob() {
-  if (!existsSync(VSCDB_PATH)) {
-    throw new Error(`Windsurf state DB not found at ${VSCDB_PATH}`);
-  }
-  // Shell out to the system sqlite3 CLI (always present on macOS) to
-  // avoid pulling in a native binding just for this dev script.
+function readEncryptedTokenBlob(vscdbPath, secretKey) {
+  if (!existsSync(vscdbPath)) return null;
   let raw;
   try {
     raw = execFileSync(
       'sqlite3',
-      [VSCDB_PATH, `SELECT value FROM ItemTable WHERE key = '${SECRET_KEY.replace(/'/g, "''")}';`],
+      [vscdbPath, `SELECT value FROM ItemTable WHERE key = '${secretKey.replace(/'/g, "''")}';`],
       { maxBuffer: 32 * 1024 * 1024 },
     );
-  } catch (err) {
-    throw new Error(`sqlite3 query failed: ${err.message}`);
+  } catch {
+    return null;
   }
   const text = raw.toString('utf8').trim();
-  if (!text) {
-    throw new Error(
-      `No Glean MCP token entry in Windsurf state DB. ` +
-        `Open Windsurf, run a Glean MCP tool once (search/chat/read_document), ` +
-        `then re-run this script.`,
-    );
-  }
-  // The value column stores the JSON-stringified Buffer ({type:'Buffer',data:[...]}).
+  if (!text) return null;
   const buf = JSON.parse(text);
   return Buffer.from(buf.data);
 }
 
-function jwtExpiry(jwt) {
-  const parts = jwt.split('.');
-  if (parts.length !== 3) return null;
-  try {
-    const payload = JSON.parse(
-      Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString(
-        'utf8',
-      ),
-    );
-    return typeof payload.exp === 'number' ? payload.exp : null;
-  } catch {
+// Walk a decrypted blob looking for a JWT-shaped access_token. Editors
+// disagree on shape: Cursor stores an array/object envelope; Windsurf
+// stores a flat { access_token, ... }.
+function extractAccessToken(blob) {
+  if (typeof blob === 'string') {
+    const t = blob.trim();
+    if (t.split('.').length === 3) return t;
     return null;
   }
+  if (blob && typeof blob === 'object') {
+    if (typeof blob.access_token === 'string') return blob.access_token;
+    if (typeof blob.accessToken === 'string') return blob.accessToken;
+    if (Array.isArray(blob)) {
+      for (const entry of blob) {
+        const t = extractAccessToken(entry);
+        if (t) return t;
+      }
+      return null;
+    }
+    for (const v of Object.values(blob)) {
+      const t = extractAccessToken(v);
+      if (t) return t;
+    }
+  }
+  return null;
 }
 
-function upsertEnvVar(envText, key, value) {
-  const line = `${key}=${value}`;
-  const re = new RegExp(`^${key}=.*$`, 'm');
-  if (re.test(envText)) {
-    return envText.replace(re, line);
-  }
-  // Append, ensuring the file ends with a newline.
-  const prefix = envText.endsWith('\n') || envText.length === 0 ? envText : envText + '\n';
-  return `${prefix}${line}\n`;
+function makeEditorLoader({ label, keychainService, vscdbPath, secretKey }) {
+  return function loadEditor() {
+    let password;
+    try {
+      password = getKeychainPassword(keychainService);
+    } catch (err) {
+      return { skipped: `Keychain '${keychainService}' not found (${err.message.split('\n')[0]})` };
+    }
+    const encrypted = readEncryptedTokenBlob(vscdbPath, secretKey);
+    if (!encrypted) return { skipped: `no token entry in ${vscdbPath}` };
+    let decrypted;
+    try {
+      decrypted = decryptElectronSafeStorage(encrypted, password);
+    } catch (err) {
+      return { skipped: `decrypt failed (${err.message})` };
+    }
+    const decryptedText = decrypted.toString('utf8');
+    let tokenBlob;
+    try {
+      tokenBlob = JSON.parse(decryptedText);
+    } catch {
+      tokenBlob = decryptedText;
+    }
+    const token = extractAccessToken(tokenBlob);
+    if (!token) {
+      const preview =
+        typeof tokenBlob === 'object'
+          ? `keys=${JSON.stringify(Object.keys(tokenBlob))}`
+          : `type=${typeof tokenBlob}`;
+      return { skipped: `no access_token in decrypted blob (${preview})` };
+    }
+    return tokenResult(token);
+  };
 }
 
-function main() {
-  const password = getKeychainPassword();
-  const encrypted = readEncryptedTokenBlob();
-  const decrypted = decryptElectronSafeStorage(encrypted, password);
-  const tokenBlob = JSON.parse(decrypted.toString('utf8'));
-  const accessToken = tokenBlob.access_token;
-  if (!accessToken || typeof accessToken !== 'string') {
-    throw new Error(
-      'Decrypted blob has no access_token. Got keys: ' +
-        JSON.stringify(Object.keys(tokenBlob)),
-    );
-  }
-  const exp = jwtExpiry(accessToken);
+function tokenResult(token) {
+  const exp = jwtExpiry(token);
   const now = Math.floor(Date.now() / 1000);
   const ttlSeconds = exp ? exp - now : null;
-
-  const envText = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8') : '';
-  const updated = upsertEnvVar(envText, 'GLEAN_MCP_TOKEN', accessToken);
-  writeFileSync(ENV_PATH, updated, { mode: 0o600 });
-
-  // Print a fingerprint, never the full token.
-  const fp = createHash('sha256').update(accessToken).digest('hex').slice(0, 12);
-  console.log('[refresh-glean-token] wrote GLEAN_MCP_TOKEN to .env');
-  console.log(`  fingerprint:  ${fp}`);
-  if (ttlSeconds !== null) {
-    const hours = Math.floor(ttlSeconds / 3600);
-    const days = Math.floor(hours / 24);
-    console.log(`  expires in:   ${days}d ${hours % 24}h (exp=${exp})`);
-  }
-  const scope = Array.isArray(tokenBlob.scope) ? tokenBlob.scope.join(' ') : tokenBlob.scope ?? '';
-  console.log(`  scope:        ${scope}`);
-  console.log('');
-  console.log('Next: docker compose restart web');
+  return { token, exp, ttlSeconds };
 }
 
-main();
+// ---------------------------------------------------------------------------
+// Source registry. Order matters: in-repo first.
+
+const SOURCES = [
+  { id: 'in-repo', label: 'in-repo refresh_token', load: loadInRepo },
+  {
+    id: 'cursor',
+    label: 'Cursor',
+    load: makeEditorLoader({
+      label: 'Cursor',
+      keychainService: 'Cursor Safe Storage',
+      vscdbPath: resolve(
+        homedir(),
+        'Library/Application Support/Cursor/User/globalStorage/state.vscdb',
+      ),
+      // Cursor stores the URL as unpadded base64 (no trailing '=').
+      secretKey: (() => {
+        const urlB64 = Buffer.from(MCP_URL, 'utf8').toString('base64').replace(/=+$/, '');
+        return `secret://{"extensionId":"anysphere.cursor-mcp","key":"[url:${urlB64}] mcp_tokens"}`;
+      })(),
+    }),
+  },
+  {
+    id: 'windsurf',
+    label: 'Windsurf',
+    load: makeEditorLoader({
+      label: 'Windsurf',
+      keychainService: 'Windsurf Safe Storage',
+      vscdbPath: resolve(
+        homedir(),
+        'Library/Application Support/Windsurf/User/globalStorage/state.vscdb',
+      ),
+      secretKey:
+        `secret://{"extensionId":"codeium.windsurf","key":"mcp_token_glean_${GLEAN_SERVER_NAME}"}`,
+    }),
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Main
+
+async function main() {
+  const forced = process.env.GLEAN_TOKEN_SOURCE;
+  const candidates = forced ? SOURCES.filter((s) => s.id === forced) : SOURCES;
+  if (forced && candidates.length === 0) {
+    throw new Error(
+      `Unknown GLEAN_TOKEN_SOURCE=${JSON.stringify(forced)}. ` +
+        `Expected one of: ${SOURCES.map((s) => s.id).join(', ')}.`,
+    );
+  }
+
+  const attempts = [];
+  let picked = null;
+  for (const source of candidates) {
+    let result;
+    try {
+      result = await source.load();
+    } catch (err) {
+      result = { skipped: `load threw: ${err.message}` };
+    }
+    attempts.push({ source, result });
+    if (result.token) {
+      const expired = result.ttlSeconds != null && result.ttlSeconds < 0;
+      if (!expired || forced) {
+        picked = { source, result };
+        break;
+      }
+    }
+  }
+
+  if (!picked) {
+    const lines = attempts.map((a) => {
+      if (a.result.token) {
+        return `  - ${a.source.label}: token found but expired ${formatTtl(a.result.ttlSeconds)} ago`;
+      }
+      return `  - ${a.source.label}: ${a.result.skipped}`;
+    });
+    throw new Error(
+      `No usable Glean MCP token found.\n${lines.join('\n')}\n\n` +
+        `Bootstrap the in-repo OAuth flow once:\n` +
+        `  node scripts/glean-login.mjs\n` +
+        `From then on, this script (and worker cron) refreshes silently.`,
+    );
+  }
+
+  const { source, result } = picked;
+  writeEnvVar('GLEAN_MCP_TOKEN', result.token);
+
+  console.log(`[refresh-glean-token] wrote GLEAN_MCP_TOKEN to .env (from ${source.label})`);
+  console.log(`  fingerprint:  ${fingerprint(result.token)}`);
+  if (result.ttlSeconds != null) {
+    console.log(`  expires in:   ${formatTtl(result.ttlSeconds)} (exp=${result.exp})`);
+  }
+  for (const a of attempts) {
+    if (a.source.id === source.id) continue;
+    if (a.result.token && a.result.ttlSeconds != null && a.result.ttlSeconds < 0) {
+      console.log(`  (skipped ${a.source.label}: expired ${formatTtl(a.result.ttlSeconds)} ago)`);
+    } else if (!a.result.token) {
+      console.log(`  (skipped ${a.source.label}: ${a.result.skipped})`);
+    }
+  }
+  console.log('');
+  console.log('Next: ./restart.sh');
+}
+
+main().catch((err) => {
+  console.error(`[refresh-glean-token] ERROR: ${err.message}`);
+  process.exit(1);
+});

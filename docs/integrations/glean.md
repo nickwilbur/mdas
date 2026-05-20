@@ -186,20 +186,38 @@ Verify: top-right of the app should show `Glean connected ⌘K`.
 
 Glean's MCP server requires **OAuth 2.1 with Dynamic Client Registration
 + PKCE**, not static bearer tokens. Static token attempts get
-`401 Invalid Secret`. Two ways to get a working token:
+`401 Invalid Secret`. Three ways to get a working token, in order of
+preference:
 
-1. **Borrow Windsurf's token** (`make glean-token`).
-   Windsurf already runs the OAuth flow via your Okta SSO and stores the
-   resulting access token AES-encrypted in macOS Keychain. The
-   `scripts/refresh-glean-token.mjs` helper decrypts it and writes the
-   value into `.env` as `GLEAN_MCP_TOKEN`. Tokens have ~1-week TTL — re-run
-   when `/api/glean/health` starts returning 401.
-   - Requires Windsurf to have used a Glean MCP tool at least once (so
-     the token is in its store).
-   - macOS only. Linux/Windows would need libsecret/DPAPI equivalents.
-   - **Don't commit `.env`** (already gitignored).
-2. **Implement OAuth in the app itself** (Option B below). Right thing to
-   do for any multi-user deployment.
+1. **In-repo OAuth login** (`make glean-login`, then `make glean-token`
+   to refresh). **Recommended.**
+   `scripts/glean-login.mjs` does the same OAuth 2.1 flow Cursor /
+   Windsurf do, but in-repo: discovers AS metadata via
+   `<glean-origin>/.well-known/oauth-authorization-server`, performs
+   Dynamic Client Registration (RFC 7591), runs the authorization
+   code + PKCE S256 grant against a loopback callback
+   (`http://127.0.0.1:<port>/callback`), opens your browser for Okta
+   SSO, then writes:
+   - `GLEAN_MCP_TOKEN` → `.env`
+   - `refresh_token` + DCR `client_id` + endpoint metadata →
+     `.glean-oauth.json` (gitignored, mode 0600).
+
+   From then on, `make glean-token` (or `make glean-refresh`) silently
+   renews the access token via the saved refresh_token. No browser, no
+   editor, runs anywhere Node + `fetch` work (macOS / Linux / Windows).
+   Re-run `make glean-login` only if Glean rotates the refresh_token
+   out from under you (password reset, SSO logout, server revocation).
+2. **Borrow your editor's token** (legacy path, still supported).
+   If Cursor or Windsurf has a fresh Glean MCP token in its encrypted
+   store, `make glean-token` scrapes it via `security` + safeStorage
+   decryption. Order is: in-repo → Cursor → Windsurf. Useful when
+   you've already done the OAuth dance in an editor and don't want to
+   redo it. macOS only.
+   - To force one source: `GLEAN_TOKEN_SOURCE=cursor make glean-token`
+     (or `=windsurf`, or `=in-repo`).
+3. **Implement OAuth in the app itself** (Option B below). Right thing
+   to do for any multi-user deployment, since path 1 still uses a
+   single service-style token shared across all users hitting MDAS.
 
 ##### Shell variable shadowing (gotcha)
 
