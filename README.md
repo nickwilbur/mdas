@@ -195,19 +195,34 @@ See the inline comments in each adapter for full SOQL and field mappings:
 
 **Churn-save filter on Hedge / Close-Gap (2026-05-20):** The
 `Accounts with Hedge` and `Accounts to Close Gap` lines surface only
-**renewal** opportunities that the manager is actively carrying in
-Clari (SFDC `fml_Manager_ForecastCategory__c` ∈ Commit / Best Case /
-Pipeline, falling back to `ForecastCategoryName`). Expansion / new-
-business hedge dollars are intentionally excluded from these two
-sections — they're not churn saves and shouldn't show up in the
-"reduce churn" lens. A nested call-out under `Accounts with Hedge` —
-*Churn-save targets not yet hedged in Clari* — lists renewals at
-Confirmed Churn or Saveable Risk that MDAS believes belong on the
-hedge line but currently carry $0 forecast hedge, so leadership can
-decide whether to add them. `Omit` and `Closed` categories are
-excluded everywhere. Snapshots without `forecastCategory`
-(pre-2026-05-20) are treated as "include" so legacy data doesn't go
-silent.
+**renewal** opportunities the manager has actively pulled onto the
+churn-save line in Clari. The filter requires:
+
+1. SFDC `Opportunity.Type` contains "Renewal" (excludes Amendment /
+   Contracted Ramp / New Business — those carry expansion hedge, not
+   save hedge);
+2. SFDC `fml_Manager_ForecastCategory__c` (preferred, falling back to
+   standard `ForecastCategoryName`) is **populated** and is **not** in
+   the dropped set (`Omitted`, `Closed`, `Closed Lost`, `Closed Won`)
+   and **does not contain** the substring `upside` (Zuora picklist
+   uses `Upside` / `Targeted Upside` / `Committed Upside` for renewals
+   where the rep is hedging *upside*, not churn risk — the original
+   2026-05-20 Pipedrive bug); and
+3. account-level signal that this is genuinely a save opportunity —
+   either the account is bucketed as Confirmed Churn / Saveable Risk,
+   or the opp itself carries explicit churn dollars (`knownChurnUSD >
+   0`, negative `Forecast Most Likely`, or negative ACV delta).
+   `forecastHedgeUSD > 0` alone is **not** a signal — a Healthy
+   account whose rep carries hedge on a renewal is not a save target.
+
+A nested call-out under `Accounts with Hedge` — *Churn-save targets
+not yet hedged in Clari* — lists renewals at Confirmed Churn or
+Saveable Risk that MDAS believes belong on the hedge line but
+currently carry $0 forecast hedge, so leadership can decide whether
+to add them. Snapshots without `forecastCategory` (pre-2026-05-20)
+are **excluded** rather than included — a missing manager category
+means the opp has not been pulled onto the manager's forecast line,
+so reporting it as if it had been would be wrong.
 
 ## UI
 

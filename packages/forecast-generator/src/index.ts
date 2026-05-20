@@ -117,26 +117,49 @@ function isRenewalLike(opp: CanonicalOpportunity): boolean {
 }
 
 /**
- * Forecast categories the manager is actively carrying on the churn line
- * (i.e., opps where a save still moves the Clari roll-up). Excludes
- * `Omit` (already conceded) and `Closed` (already booked). We deliberately
- * keep `Pipeline` because Saveable Risk renewals often sit there before
- * a CSE pulls them into Best Case as a hedge.
+ * Forecast categories the manager has explicitly *removed* from the
+ * churn-save line. Zuora's `fml_Manager_ForecastCategory__c` picklist
+ * uses values like `Committed Upside`, `Targeted Upside`, `Upside`,
+ * `Pipeline`, `Best Case`, `Commit`, `Omitted`, `Closed`. The set of
+ * "carrying" values varies by quarter / instance, so we excluded-list
+ * the small, stable "not carrying" set instead of allowlisting the
+ * positive cases (which would silently drop valid renewals when Zuora
+ * tweaks the picklist).
  *
- * Category is null-tolerant: snapshots written before 2026-05-20 don't
- * carry it. We treat null as "include" so legacy data doesn't go silent.
+ * Null `forecastCategory` is treated as EXCLUDED for hedge/close-gap —
+ * if SFDC has no manager category at all, the opp has not been pulled
+ * onto the manager's forecast line and shouldn't be reported as if it
+ * had been. Previously we treated null as "include" so legacy snapshots
+ * wouldn't go silent, but that re-introduced the very Pipedrive/Bamboo
+ * leakage the filter was meant to fix (2026-05-20 follow-up).
  */
-const CARRIED_FORECAST_CATEGORIES = new Set([
-  'commit',
-  'best case',
-  'bestcase',
-  'pipeline',
+const DROPPED_FORECAST_CATEGORIES = new Set([
+  'omit',
+  'omitted',
+  'closed',
+  'closed lost',
+  'closed won',
 ]);
+
+/**
+ * Zuora's manager picklist also carries `Upside` / `Targeted Upside` /
+ * `Committed Upside` for renewal opps where the rep believes there's
+ * net-new ACV to capture *at* the renewal. Per 2026-05-20 manager
+ * feedback, those are *expansion* hedge dollars, not churn-save hedge
+ * — Pipedrive's two Upside renewals were the prompting example. Drop
+ * any category whose lowercased form contains "upside" so the
+ * leadership-facing Hedge section is unambiguously about saves.
+ */
+function isUpsideCategory(cat: string): boolean {
+  return cat.includes('upside');
+}
 
 function isCarriedForecastCategory(opp: CanonicalOpportunity): boolean {
   const cat = (opp.forecastCategory ?? '').trim().toLowerCase();
-  if (cat === '') return true; // legacy / unknown — don't filter out
-  return CARRIED_FORECAST_CATEGORIES.has(cat);
+  if (cat === '') return false;
+  if (DROPPED_FORECAST_CATEGORIES.has(cat)) return false;
+  if (isUpsideCategory(cat)) return false;
+  return true;
 }
 
 /**
@@ -162,10 +185,15 @@ function isChurnSaveTarget(view: AccountView, opp: CanonicalOpportunity): boolea
     return true;
   }
   if ((opp.knownChurnUSD ?? 0) > 0) return true;
-  if ((opp.forecastHedgeUSD ?? 0) > 0) return true;
   const ml = opp.forecastMostLikelyOverride ?? opp.forecastMostLikely;
   if (ml != null && ml < 0) return true;
   if (opp.acvDelta != null && opp.acvDelta < 0) return true;
+  // Note: forecastHedgeUSD > 0 alone is intentionally NOT a signal here.
+  // A renewal on a Healthy account can carry hedge dollars when the rep
+  // is hedging upside, not churn risk (the upside-category check above
+  // catches the obvious case, but Zuora picklists drift — keep this
+  // belt-and-suspenders). Bucket and the explicit churn-dollar signals
+  // are the only ways an account makes the Hedge / Close-Gap list.
   return false;
 }
 

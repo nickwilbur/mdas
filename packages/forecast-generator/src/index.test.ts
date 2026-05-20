@@ -86,6 +86,7 @@ function mkOpportunity(
     acvDelta: 0,
     knownChurnUSD: 0,
     productLine: 'Zuora Billing',
+    forecastCategory: 'Commit',
     flmNotes: null,
     slmNotes: null,
     scNextSteps: null,
@@ -636,6 +637,74 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       currSection.indexOf('Key Saves'),
     );
     expect(gapBlock).not.toContain('Omitted Co');
+  });
+
+  // 2026-05-20 follow-up: Pipedrive's two renewals showed up in the
+  // Hedge list even after the renewal-only filter, because:
+  //   (a) the snapshot's forecastCategory was null (legacy null-tolerant
+  //       filter let everything through), AND
+  //   (b) the renewals carry $25K hedge each but the account is Healthy
+  //       (Yellow sentiment, Medium risk), so it's *expansion* hedge
+  //       hidden inside a renewal opp — Zuora's manager picklist labels
+  //       these "Upside" / "Targeted Upside" / "Committed Upside".
+  // Pins both fixes: null category excludes, and *Upside categories
+  // explicitly exclude even when the renewal carries hedge dollars.
+  it('excludes Healthy renewals with Upside-category hedge (the Pipedrive bug)', () => {
+    const acc = mkAccount({
+      accountId: 'PD',
+      accountName: 'Pipedrive, Inc.',
+      cseSentiment: 'Yellow',
+    });
+    const upsideRenewal = mkOpportunity({
+      accountId: 'PD',
+      type: 'Renewal',
+      forecastHedgeUSD: 25_000,
+      forecastCategory: 'Upside',
+      availableToRenewUSD: 711_610,
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [upsideRenewal], {
+          bucket: 'Healthy',
+          risk: { level: 'Medium', source: 'cerebro', rationale: '' },
+        }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    const currSection = md.slice(0, md.indexOf('Next Quarter'));
+    const hedgeBlock = currSection.slice(
+      currSection.indexOf('Accounts with Hedge'),
+      currSection.indexOf('Key Saves'),
+    );
+    expect(hedgeBlock).not.toContain('Pipedrive');
+    expect(hedgeBlock).toMatch(/Accounts with Hedge \(churn-save renewals\): \$0/);
+  });
+
+  it('excludes renewals with null forecastCategory (not yet on manager forecast line)', () => {
+    const acc = mkAccount({ accountId: 'X', accountName: 'No Category Co' });
+    const renewalNoCategory = mkOpportunity({
+      accountId: 'X',
+      type: 'Renewal',
+      forecastHedgeUSD: 40_000,
+      forecastCategory: null,
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [renewalNoCategory], {
+          bucket: 'Saveable Risk',
+          risk: { level: 'High', source: 'cerebro', rationale: '' },
+        }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    const currSection = md.slice(0, md.indexOf('Next Quarter'));
+    const hedgeBlock = currSection.slice(
+      currSection.indexOf('Accounts with Hedge'),
+      currSection.indexOf('Key Saves'),
+    );
+    expect(hedgeBlock).not.toContain('No Category Co');
   });
 
   it('flags churn-save targets not yet hedged in Clari as an explicit call-out', () => {
