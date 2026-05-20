@@ -53,6 +53,18 @@ export const isReadOnly: true = true;
 // retry-with-backoff path in GleanClient absorb occasional spikes.
 const DEFAULT_CONCURRENCY = 2;
 
+/**
+ * True if this snapshot of the account already carries Cerebro signal
+ * (Risk Category or any of the 7 risk booleans). Used to prioritise
+ * accounts that have **no** Cerebro data when an operator caps the scan.
+ */
+function hasAnyCerebroSignal(a: CanonicalAccount): boolean {
+  if (a.cerebroRiskCategory) return true;
+  const r = a.cerebroRisks;
+  if (!r) return false;
+  return Object.values(r).some((v) => v === true);
+}
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
@@ -105,13 +117,32 @@ export const cerebroGleanAdapter: ReadAdapter = {
       log?.info('cerebro.skip', { reason: 'prior snapshot has no accounts' });
       return { accounts: [], opportunities: [] };
     }
-    // Cap the enrichment scope. With Glean's per-minute rate limit, each
-    // search costs ~500ms even when serialized through the process-wide
-    // limiter; enriching 300+ accounts with 3 Glean adapters in parallel
-    // would push the refresh past 10 minutes. The cap defaults to 100,
-    // overridable via GLEAN_ENRICH_LIMIT. Set to 0 to disable the cap.
-    const limit = Number(process.env.GLEAN_ENRICH_LIMIT) || 50;
-    const priorAccounts = limit > 0 ? allAccounts.slice(0, limit) : allAccounts;
+    // Enrichment scope: by default cover **every** Expand 3 account so
+    // the manager-facing forecast script does not emit "no Cerebro data"
+    // rationales (downstream symptom observed 2026-05-13). The previous
+    // default of 50 silently dropped the long tail of accounts past the
+    // cap, leaving them on the scoring fallback path. Glean's per-minute
+    // rate limit is absorbed by the in-process limiter + retries; with
+    // CEREBRO_CONCURRENCY=2 each refresh enriches ~120 accounts/min.
+    //
+    // Operator override: `GLEAN_ENRICH_LIMIT=N` still caps the scan (set
+    // a positive number for emergency throttling). When a cap is set we
+    // prioritise accounts most likely to need data: those without any
+    // cerebroRisks signal yet, then by ARR. This makes a small cap
+    // useful instead of arbitrary.
+    const rawLimit = Number(process.env.GLEAN_ENRICH_LIMIT);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 0;
+    const priorAccounts =
+      limit === 0
+        ? allAccounts
+        : [...allAccounts]
+            .sort((a, b) => {
+              const aHas = hasAnyCerebroSignal(a) ? 1 : 0;
+              const bHas = hasAnyCerebroSignal(b) ? 1 : 0;
+              if (aHas !== bHas) return aHas - bHas; // missing first
+              return (b.allTimeARR ?? 0) - (a.allTimeARR ?? 0);
+            })
+            .slice(0, limit);
 
     const client = new GleanClient(creds);
     log?.info('cerebro.start', {
