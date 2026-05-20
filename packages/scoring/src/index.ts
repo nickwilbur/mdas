@@ -15,8 +15,8 @@ import {
 export const SCORING_VERSION = 'v0.1.0';
 
 // PR-B2 — F-15: stable structural equality for the WoW diff.
-export { deepEqual } from './deep-equal.js';
-import { deepEqual } from './deep-equal.js';
+export { deepEqual } from './deep-equal';
+import { deepEqual } from './deep-equal';
 
 // Composite Risk Score (v0.1 scaffold) — see ./risk-score.ts.
 // Audit ref: F-05 in docs/audit/01_findings.md.
@@ -26,7 +26,7 @@ export {
   type RiskScoreBand,
   type RiskScoreInputs,
   type RiskScoreSignal,
-} from './risk-score.js';
+} from './risk-score';
 
 const DAY = 24 * 60 * 60 * 1000;
 
