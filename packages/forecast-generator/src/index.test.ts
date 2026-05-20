@@ -389,9 +389,18 @@ describe('generateWeeklyForecast (churn-call script)', () => {
 
   it('shows + for risk improvement and - for risk regression in WoW', () => {
     const acc = mkAccount({ accountId: 'A2', accountName: 'Better Co' });
-    const view = mkView(acc, [mkOpportunity({ accountId: 'A2', closeDate: '2026-04-15' })], {
-      bucket: 'Saveable Risk',
-    });
+    const view = mkView(
+      acc,
+      [
+        mkOpportunity({
+          accountId: 'A2',
+          closeDate: '2026-04-15',
+          forecastMostLikely: -50_000,
+          acvDelta: -50_000,
+        }),
+      ],
+      { bucket: 'Saveable Risk' },
+    );
     const improved: ChangeEvent = {
       accountId: 'A2',
       field: 'cerebroRiskCategory',
@@ -411,10 +420,21 @@ describe('generateWeeklyForecast (churn-call script)', () => {
 
   it('flags churn-notice events as regressions (-)', () => {
     const acc = mkAccount({ accountId: 'A3', accountName: 'New Churn Co' });
-    const view = mkView(acc, [mkOpportunity({ accountId: 'A3', closeDate: '2026-04-15' })]);
+    const view = mkView(
+      acc,
+      [
+        mkOpportunity({
+          opportunityId: 'O-A3',
+          accountId: 'A3',
+          closeDate: '2026-04-15',
+          knownChurnUSD: 100_000,
+        }),
+      ],
+      { bucket: 'Confirmed Churn' },
+    );
     const churnEvent: ChangeEvent = {
       accountId: 'A3',
-      opportunityId: 'O3',
+      opportunityId: 'O-A3',
       field: 'fullChurnNotificationToOwnerDate',
       oldValue: null,
       newValue: '2026-04-25',
@@ -438,11 +458,14 @@ describe('generateWeeklyForecast (churn-call script)', () => {
   // set with the live D&B / DataStax / Turf Tank scenarios.
   it('surfaces stage moves to Closed Won (DataStax-like)', () => {
     const acc = mkAccount({ accountId: 'DS', accountName: 'DataStax' });
-    const view = mkView(
-      acc,
-      [mkOpportunity({ accountId: 'DS', closeDate: '2026-04-15' })],
-      { bucket: 'Saveable Risk' },
-    );
+    const renewal = mkOpportunity({
+      opportunityId: 'O-DS',
+      accountId: 'DS',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -209_259,
+      acvDelta: -209_259,
+    });
+    const view = mkView(acc, [renewal], { bucket: 'Saveable Risk' });
     const stageMove: ChangeEvent = {
       accountId: 'DS',
       opportunityId: 'O-DS',
@@ -463,11 +486,14 @@ describe('generateWeeklyForecast (churn-call script)', () => {
 
   it('surfaces forecast ML changes >= $25K (D&B-like)', () => {
     const acc = mkAccount({ accountId: 'DB', accountName: 'D&B' });
-    const view = mkView(
-      acc,
-      [mkOpportunity({ accountId: 'DB', closeDate: '2026-04-15' })],
-      { bucket: 'Saveable Risk' },
-    );
+    const renewal = mkOpportunity({
+      opportunityId: 'O-DB',
+      accountId: 'DB',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -749_973,
+      acvDelta: -749_973,
+    });
+    const view = mkView(acc, [renewal], { bucket: 'Saveable Risk' });
     const events: ChangeEvent[] = [
       {
         accountId: 'DB',
@@ -503,11 +529,14 @@ describe('generateWeeklyForecast (churn-call script)', () => {
 
   it('aggregates regression + improvement on same account; sign is - (Turf Tank-like)', () => {
     const acc = mkAccount({ accountId: 'TT', accountName: 'Turf Tank Aggregate' });
-    const view = mkView(
-      acc,
-      [mkOpportunity({ accountId: 'TT', closeDate: '2026-04-15' })],
-      { bucket: 'Saveable Risk' },
-    );
+    const renewal = mkOpportunity({
+      opportunityId: 'O-TT-1',
+      accountId: 'TT',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -82_327,
+      acvDelta: -82_327,
+    });
+    const view = mkView(acc, [renewal], { bucket: 'Saveable Risk' });
     const events: ChangeEvent[] = [
       {
         accountId: 'TT',
@@ -521,7 +550,6 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       },
       {
         accountId: 'TT',
-        opportunityId: 'O-TT-2',
         field: 'cseSentiment',
         oldValue: 'Yellow',
         newValue: 'Green',
@@ -540,16 +568,94 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).toMatch(/- Turf Tank Aggregate - ↓ Forecast ML -\$43,000 → -\$82,327 \(-\$39,327\); ↑ Sentiment Yellow → Green/);
   });
 
+  // 2026-05-20 fifth-pass: WoW scope = same churn-save lens as the
+  // Hedge / Close-Gap sections. Accounts whose only opps are
+  // expansions / new business / healthy renewals must not appear
+  // even when their opp-level fields move.
+  it('suppresses WoW changes on accounts with no churn-save renewal (expansion-only)', () => {
+    const acc = mkAccount({ accountId: 'EX', accountName: 'Expansion Only Co' });
+    const expansion = mkOpportunity({
+      opportunityId: 'O-EX',
+      accountId: 'EX',
+      closeDate: '2026-04-15',
+      type: 'Amendment',
+      forecastMostLikely: 100_000,
+      acvDelta: 50_000,
+    });
+    const view = mkView(acc, [expansion], { bucket: 'Healthy' });
+    const stageMove: ChangeEvent = {
+      accountId: 'EX',
+      opportunityId: 'O-EX',
+      field: 'stageName',
+      oldValue: '3.0 Define',
+      newValue: '8.0 - Closed/Won (Finance)',
+      occurredBetween: ['p', 'c'],
+      category: 'forecast',
+      label: 'Stage moved',
+    };
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [stageMove],
+      asOfDate: AS_OF,
+    });
+    const wow = md.slice(md.indexOf('Week-over-week'));
+    expect(wow).toMatch(/No movement this week/);
+  });
+
+  it('suppresses expansion-opp diffs on accounts that DO have a churn-save renewal', () => {
+    // Account is a valid churn-save target (renewal at ML -$50K) but
+    // the WoW event fires on its expansion Amendment opp. The opp-
+    // level diff should be dropped; only renewal-opp diffs and
+    // account-level signals count.
+    const acc = mkAccount({ accountId: 'MX', accountName: 'Mixed Co' });
+    const renewal = mkOpportunity({
+      opportunityId: 'O-MX-RENEW',
+      accountId: 'MX',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -50_000,
+      acvDelta: -50_000,
+    });
+    const expansion = mkOpportunity({
+      opportunityId: 'O-MX-EXP',
+      accountId: 'MX',
+      closeDate: '2026-04-20',
+      type: 'Amendment',
+      forecastMostLikely: 100_000,
+      acvDelta: 50_000,
+    });
+    const view = mkView(acc, [renewal, expansion], { bucket: 'Saveable Risk' });
+    const expansionStageMove: ChangeEvent = {
+      accountId: 'MX',
+      opportunityId: 'O-MX-EXP',
+      field: 'stageName',
+      oldValue: '3.0 Define',
+      newValue: '8.0 - Closed/Won (Finance)',
+      occurredBetween: ['p', 'c'],
+      category: 'forecast',
+      label: 'Stage moved',
+    };
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [expansionStageMove],
+      asOfDate: AS_OF,
+    });
+    const wow = md.slice(md.indexOf('Week-over-week'));
+    expect(wow).toMatch(/No movement this week/);
+  });
+
   it('suppresses forecast ML changes below the $25K threshold', () => {
     const acc = mkAccount({ accountId: 'TT', accountName: 'Tiny Move' });
-    const view = mkView(
-      acc,
-      [mkOpportunity({ accountId: 'TT', closeDate: '2026-04-15' })],
-      { bucket: 'Saveable Risk' },
-    );
+    const renewal = mkOpportunity({
+      opportunityId: 'O-TM',
+      accountId: 'TT',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -50_000,
+      acvDelta: -50_000,
+    });
+    const view = mkView(acc, [renewal], { bucket: 'Saveable Risk' });
     const tinyMove: ChangeEvent = {
       accountId: 'TT',
-      opportunityId: 'O',
+      opportunityId: 'O-TM',
       field: 'forecastMostLikely',
       oldValue: -50_000,
       newValue: -55_000,
@@ -568,14 +674,17 @@ describe('generateWeeklyForecast (churn-call script)', () => {
 
   it('suppresses stage moves that are not Closed-* and not a >=2 numeric jump', () => {
     const acc = mkAccount({ accountId: 'NM', accountName: 'No Move Co' });
-    const view = mkView(
-      acc,
-      [mkOpportunity({ accountId: 'NM', closeDate: '2026-04-15' })],
-      { bucket: 'Saveable Risk' },
-    );
+    const renewal = mkOpportunity({
+      opportunityId: 'O-NM',
+      accountId: 'NM',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -50_000,
+      acvDelta: -50_000,
+    });
+    const view = mkView(acc, [renewal], { bucket: 'Saveable Risk' });
     const oneStepMove: ChangeEvent = {
       accountId: 'NM',
-      opportunityId: 'O',
+      opportunityId: 'O-NM',
       field: 'stageName',
       oldValue: '4.0 Validate',
       newValue: '5.0 Propose',
@@ -594,14 +703,17 @@ describe('generateWeeklyForecast (churn-call script)', () => {
 
   it('suppresses close-date slips of less than 7 days', () => {
     const acc = mkAccount({ accountId: 'SD', accountName: 'Small Slip' });
-    const view = mkView(
-      acc,
-      [mkOpportunity({ accountId: 'SD', closeDate: '2026-04-15' })],
-      { bucket: 'Saveable Risk' },
-    );
+    const renewal = mkOpportunity({
+      opportunityId: 'O-SS',
+      accountId: 'SD',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -50_000,
+      acvDelta: -50_000,
+    });
+    const view = mkView(acc, [renewal], { bucket: 'Saveable Risk' });
     const slip: ChangeEvent = {
       accountId: 'SD',
-      opportunityId: 'O',
+      opportunityId: 'O-SS',
       field: 'closeDate',
       oldValue: '2026-04-10',
       newValue: '2026-04-13',
@@ -620,14 +732,17 @@ describe('generateWeeklyForecast (churn-call script)', () => {
 
   it('surfaces close-date slips >= 7 days as regressions', () => {
     const acc = mkAccount({ accountId: 'BS', accountName: 'Big Slip' });
-    const view = mkView(
-      acc,
-      [mkOpportunity({ accountId: 'BS', closeDate: '2026-04-15' })],
-      { bucket: 'Saveable Risk' },
-    );
+    const renewal = mkOpportunity({
+      opportunityId: 'O-BS',
+      accountId: 'BS',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -50_000,
+      acvDelta: -50_000,
+    });
+    const view = mkView(acc, [renewal], { bucket: 'Saveable Risk' });
     const slip: ChangeEvent = {
       accountId: 'BS',
-      opportunityId: 'O',
+      opportunityId: 'O-BS',
       field: 'closeDate',
       oldValue: '2026-04-01',
       newValue: '2026-04-30',

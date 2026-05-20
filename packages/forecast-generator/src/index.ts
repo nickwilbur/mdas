@@ -555,21 +555,45 @@ function wowChanges(
   rows: QuarterBucket['rows'],
   events: ChangeEvent[],
 ): WowSummary[] {
-  // Account scope: an account is "in this quarter" if any of its opps
-  // close in this fiscal quarter (existing semantics, drives the rows
-  // list). We surface WoW changes on any opp belonging to those
-  // accounts, even if the changed opp itself closes in a different
-  // quarter (e.g. an FY27 Q3 renewal updating while the account also
-  // has an FY27 Q2 amendment closing). The leadership lens is per-
-  // account, not per-opp.
-  const accountIds = new Set(rows.map((r) => r.view.account.accountId));
-  const nameById = new Map(
-    rows.map((r) => [r.view.account.accountId, r.view.account.accountName]),
-  );
+  // Same lens as Hedge / Close-Gap (2026-05-20 manager feedback): only
+  // report week-over-week movement on accounts that are themselves
+  // churn-save targets — renewal opps with a forecasted downsell or
+  // churn signal in the current snapshot. Expansion-only movement
+  // (new business, amendments without renewal exposure, healthy
+  // renewals trending up) is noise for the leadership churn call.
+  const eligibleAccountIds = new Set<string>();
+  // Track which opportunityIds on each eligible account are themselves
+  // renewals; opp-level events on non-renewal opps for an eligible
+  // account are dropped (e.g., an expansion Amendment's stage move on
+  // an account that also has a down-forecast renewal).
+  const renewalOppIds = new Set<string>();
+  const nameById = new Map<string, string>();
+
+  for (const r of rows) {
+    if (!isChurnSaveTarget(r.view, r.opp)) continue;
+    eligibleAccountIds.add(r.view.account.accountId);
+    nameById.set(r.view.account.accountId, r.view.account.accountName);
+  }
+  // Second pass: for every opportunity (in the quarter) on an
+  // eligible account, mark the renewal opps so we can scope opp-level
+  // diffs. We can't rely on isChurnSaveTarget here because a renewal
+  // on the account may not itself trigger the filter (e.g., a second
+  // renewal opp at $0 ML on the same account), but its diffs are still
+  // relevant context for the manager.
+  for (const r of rows) {
+    if (!eligibleAccountIds.has(r.view.account.accountId)) continue;
+    if (isRenewalLike(r.opp)) renewalOppIds.add(r.opp.opportunityId);
+  }
+
   const byAccount = new Map<string, SignalDetail[]>();
 
   for (const e of events) {
-    if (!accountIds.has(e.accountId)) continue;
+    if (!eligibleAccountIds.has(e.accountId)) continue;
+    // Opp-level events only count when the opp is a renewal on this
+    // account. Account-level events (no opportunityId) pass through —
+    // they're sentiment / risk / churn-notice signals that already
+    // describe the whole account.
+    if (e.opportunityId != null && !renewalOppIds.has(e.opportunityId)) continue;
     const sig = eventToSignal(e);
     if (!sig) continue;
     const list = byAccount.get(e.accountId) ?? [];
