@@ -47,6 +47,16 @@ export function fiscalQuarterKey(fy: number, q: number): string {
   return `${fy}-Q${q}`;
 }
 
+/** The fiscal quarter immediately after `currentKey` (e.g. `2027-Q2` → `2027-Q3`, `2027-Q4` → `2028-Q1`). */
+export function nextFiscalQuarterKey(currentKey: string): string | null {
+  const m = currentKey.match(/^(\d+)-Q([1-4])$/);
+  if (!m) return null;
+  const fy = parseInt(m[1]!, 10);
+  const q = parseInt(m[2]!, 10);
+  if (q === 4) return fiscalQuarterKey(fy + 1, 1);
+  return fiscalQuarterKey(fy, q + 1);
+}
+
 export function fiscalQuarterLabel(key: string): string {
   const [fy, q] = key.split('-');
   return `FY${(fy ?? '').slice(-2)} ${q ?? ''}`;

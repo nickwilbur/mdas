@@ -114,6 +114,7 @@ describe('getRiskIdentifier', () => {
     });
     expect(r.level).toBe('Unknown');
     expect(r.source).toBe('fallback');
+    expect(r.rationale).toBe('');
   });
 
   it('does not crash when cerebroRisks is null (defensive)', () => {
@@ -124,6 +125,7 @@ describe('getRiskIdentifier', () => {
     });
     expect(r.level).toBe('Unknown');
     expect(r.source).toBe('fallback');
+    expect(r.rationale).toBe('');
   });
 });
 

@@ -208,21 +208,91 @@ function colorBand(view: AccountView): 'red' | 'yellow' | 'green' {
 }
 
 /**
- * Pull a one-line "what's needed to secure" summary from the data the
- * CSE already captured. Order of preference:
- *   1. opp.scNextSteps (most actionable)
- *   2. account.churnReasonSummary (for confirmed churn)
- *   3. risk rationale
- *   4. literal "[fill in next step]" placeholder so the manager edits
+ * Internal / scoring-fallback rationales we do NOT paste into the
+ * leadership-facing forecast. These come from
+ * `@mdas/scoring::getRiskIdentifier` when Cerebro Risk Category is
+ * absent (Glean's Cerebro datasource doesn't expose Risk Category at all
+ * — see packages/adapters/read/cerebro-glean/src/mapper.ts header) or
+ * when we only have sentiment to fall back to. They are useful in the
+ * MDAS UI as a “why bucketed here” hint, but in a manager script they
+ * read as apology copy. Suppress them so bullets only show real,
+ * actionable narrative (`SE_Next_Steps__c`, FLM/SLM notes, sentiment
+ * commentary, churn reason, real Cerebro Risk Analysis).
+ */
+const FALLBACK_RATIONALE_PATTERNS: RegExp[] = [
+  /^\d+ of 7 Cerebro risks (is|are) True/i,
+  /^CSE Sentiment (Red|Yellow); no Cerebro data$/i,
+  /^Cerebro Risk Category \(no analysis text available\)$/i,
+  /^No Cerebro Risk Category and no fallback signals available$/i,
+  /^Cerebro Risk Category (Low|Medium|High|Critical)$/i,
+];
+
+function isPasteableNarrative(s: string | null | undefined): boolean {
+  const t = (s ?? '').trim();
+  if (t.length === 0) return false;
+  return !FALLBACK_RATIONALE_PATTERNS.some((re) => re.test(t));
+}
+
+function firstNonEmptyLine(s: string | null | undefined): string {
+  if (!s) return '';
+  for (const line of s.split('\n')) {
+    const t = line.trim();
+    if (t) return t;
+  }
+  return '';
+}
+
+/**
+ * One-line “what’s needed” for Key Saves bullets. Returns the first
+ * substantive signal from the data the CSE / FLM has already captured;
+ * never invents text and never echoes a scoring-fallback rationale.
+ *
+ * Order of preference:
+ *   1. `SE_Next_Steps__c` (`opp.scNextSteps`) — most actionable.
+ *   2. For Confirmed Churn: `Account.churnReasonSummary`.
+ *   3. `FLM_Notes__c` / `SLM_Notes__c` — manager-authored.
+ *   4. `cseSentimentCommentary` — the CSE’s own one-liner.
+ *   5. `cerebroRiskAnalysis` directly (only when present — Cerebro AI
+ *      narrative). Never the synthetic `view.risk.rationale` strings.
+ *
+ * If none of the above are present, returns `''` so the caller renders
+ * `name ($amount)` with no apology copy.
  */
 function whatIsNeeded(view: AccountView, opp: CanonicalOpportunity): string {
-  const next = opp.scNextSteps?.split('\n')[0]?.trim();
+  const next = firstNonEmptyLine(opp.scNextSteps);
   if (next) return next.slice(0, 160);
+
   const churn = view.account.churnReasonSummary?.trim();
   if (view.bucket === 'Confirmed Churn' && churn) return churn.slice(0, 160);
+
+  const flm = firstNonEmptyLine(opp.flmNotes);
+  if (flm) return flm.slice(0, 160);
+  const slm = firstNonEmptyLine(opp.slmNotes);
+  if (slm) return slm.slice(0, 160);
+
+  const sentimentCommentary = firstNonEmptyLine(
+    view.account.cseSentimentCommentary,
+  );
+  if (sentimentCommentary) return sentimentCommentary.slice(0, 160);
+
+  const cerebroAnalysis = firstNonEmptyLine(view.account.cerebroRiskAnalysis);
+  if (cerebroAnalysis && isPasteableNarrative(cerebroAnalysis)) {
+    return cerebroAnalysis.slice(0, 160);
+  }
+
   const rationale = view.risk.rationale?.trim();
-  if (rationale) return rationale.slice(0, 160);
-  return '[fill in next step]';
+  if (isPasteableNarrative(rationale)) return rationale!.slice(0, 160);
+
+  return '';
+}
+
+function keySaveBullet(
+  accountName: string,
+  usdLabel: string,
+  detail: string,
+): string {
+  const d = detail.trim();
+  return d ? `  - ${accountName} (${usdLabel}) - ${d}` : `  - ${accountName} (${usdLabel})`;
 }
 
 /**
@@ -425,7 +495,11 @@ function renderQuarterSection(
     if (reds.length === 0) lines.push(`  - None`);
     for (const r of reds) {
       lines.push(
-        `  - ${r.view.account.accountName} (${fmtUSD(r.usd)}) - ${whatIsNeeded(r.view, r.opp)}`,
+        keySaveBullet(
+          r.view.account.accountName,
+          fmtUSD(r.usd),
+          whatIsNeeded(r.view, r.opp),
+        ),
       );
     }
   }
@@ -435,7 +509,11 @@ function renderQuarterSection(
   if (yellows.length === 0) lines.push(`  - None`);
   for (const r of yellows) {
     lines.push(
-      `  - ${r.view.account.accountName} (${fmtUSD(r.usd)}) - ${whatIsNeeded(r.view, r.opp)}`,
+      keySaveBullet(
+        r.view.account.accountName,
+        fmtUSD(r.usd),
+        whatIsNeeded(r.view, r.opp),
+      ),
     );
   }
 
@@ -444,7 +522,11 @@ function renderQuarterSection(
   if (greens.length === 0) lines.push(`  - None`);
   for (const r of greens) {
     lines.push(
-      `  - ${r.view.account.accountName} (${fmtUSD(r.usd)}) - ${whatIsNeeded(r.view, r.opp)}`,
+      keySaveBullet(
+        r.view.account.accountName,
+        fmtUSD(r.usd),
+        whatIsNeeded(r.view, r.opp),
+      ),
     );
   }
   lines.push('');

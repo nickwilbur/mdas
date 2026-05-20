@@ -96,7 +96,8 @@ export function getRiskIdentifier(account: CanonicalAccount): RiskIdentifier {
   return {
     level: 'Unknown',
     source: 'fallback',
-    rationale: 'No Cerebro Risk Category and no fallback signals available',
+    /** Empty: there is no Cerebro narrative to show; UIs should not invent filler. */
+    rationale: '',
   };
 }
 

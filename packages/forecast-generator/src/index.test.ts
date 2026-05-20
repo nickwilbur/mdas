@@ -289,6 +289,101 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md.slice(greenIdx)).toContain('Green Co');
   });
 
+  it('does not paste scoring-fallback rationales into Key Saves bullets', () => {
+    // Reproduces the FY27 Q2 output where green-band rows trailed
+    // "No Cerebro Risk Category and no fallback signals available".
+    // The bullet must show only "name ($amount)" when the only
+    // available rationale is a fallback string.
+    const greenAcc = mkAccount({
+      accountId: 'GREEN-NO-DATA',
+      accountName: 'EverCommerce',
+      cerebroRiskCategory: null,
+      cerebroRisks: {
+        utilizationRisk: null,
+        engagementRisk: null,
+        suiteRisk: null,
+        shareRisk: null,
+        legacyTechRisk: null,
+        expertiseRisk: null,
+        pricingRisk: null,
+      },
+      cseSentiment: 'Green',
+    });
+    const greenOpp = mkOpportunity({
+      accountId: 'GREEN-NO-DATA',
+      acv: 100_000,
+      closeDate: '2026-06-01',
+      scNextSteps: null,
+      flmNotes: null,
+      slmNotes: null,
+    });
+    const yellowAcc = mkAccount({
+      accountId: 'YELLOW-NO-DATA',
+      accountName: 'Tobii Dynavox',
+      cerebroRiskCategory: null,
+      cseSentiment: 'Yellow',
+    });
+    const yellowOpp = mkOpportunity({
+      accountId: 'YELLOW-NO-DATA',
+      acv: 55_800,
+      closeDate: '2026-06-01',
+      scNextSteps: null,
+      flmNotes: null,
+      slmNotes: null,
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(greenAcc, [greenOpp]),
+        mkView(yellowAcc, [yellowOpp], {
+          bucket: 'Saveable Risk',
+          risk: {
+            level: 'Medium',
+            source: 'fallback',
+            rationale: 'CSE Sentiment Yellow; no Cerebro data',
+          },
+        }),
+      ],
+      changeEvents: [],
+      asOfDate: '2026-05-01', // FY27 Q2
+    });
+    expect(md).not.toContain('no Cerebro data');
+    expect(md).not.toContain('No Cerebro Risk Category');
+    expect(md).not.toContain('of 7 Cerebro risks');
+    expect(md).toMatch(/- EverCommerce \(\$100,000\)\n/);
+    expect(md).toMatch(/- Tobii Dynavox \(\$55,800\)\n/);
+  });
+
+  it('prefers SE_Next_Steps, then FLM/SLM notes, then sentiment commentary for Key Saves detail', () => {
+    const a1 = mkAccount({ accountId: 'A1', accountName: 'NextSteps Co' });
+    const o1 = mkOpportunity({
+      accountId: 'A1',
+      acv: 100_000,
+      closeDate: '2026-06-01',
+      scNextSteps: 'Schedule QBR with new VP Finance',
+      flmNotes: 'ignored when scNextSteps present',
+    });
+    const a2 = mkAccount({
+      accountId: 'A2',
+      accountName: 'Sentiment Co',
+      cseSentimentCommentary: 'Renewal at risk: legal review blocking PO',
+    });
+    const o2 = mkOpportunity({
+      accountId: 'A2',
+      acv: 80_000,
+      closeDate: '2026-06-01',
+      scNextSteps: null,
+      flmNotes: null,
+      slmNotes: null,
+    });
+    const md = generateWeeklyForecast({
+      views: [mkView(a1, [o1]), mkView(a2, [o2])],
+      changeEvents: [],
+      asOfDate: '2026-05-01',
+    });
+    expect(md).toContain('NextSteps Co ($100,000) - Schedule QBR with new VP Finance');
+    expect(md).toContain('Sentiment Co ($80,000) - Renewal at risk: legal review blocking PO');
+  });
+
   it('shows + for risk improvement and - for risk regression in WoW', () => {
     const acc = mkAccount({ accountId: 'A2', accountName: 'Better Co' });
     const view = mkView(acc, [mkOpportunity({ accountId: 'A2', closeDate: '2026-04-15' })], {
