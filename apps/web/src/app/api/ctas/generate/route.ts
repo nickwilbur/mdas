@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
+import { existsSync } from 'fs';
 import { resolve } from 'path';
 import { randomUUID } from 'crypto';
 import {
@@ -31,15 +32,12 @@ export async function POST(): Promise<Response> {
   // Next.js cwd is apps/web; project root is 2 levels up.
   // Also check for monorepo root markers to be safe.
   let projectRoot = resolve(process.cwd(), '../..');
-  try {
-    const { existsSync } = require('fs');
-    if (!existsSync(resolve(projectRoot, 'scripts/generate-ctas.ts'))) {
-      // Fallback: try from process.cwd() directly (in case cwd IS the root)
-      if (existsSync(resolve(process.cwd(), 'scripts/generate-ctas.ts'))) {
-        projectRoot = process.cwd();
-      }
+  if (!existsSync(resolve(projectRoot, 'scripts/generate-ctas.ts'))) {
+    // Fallback: try from process.cwd() directly (in case cwd IS the root).
+    if (existsSync(resolve(process.cwd(), 'scripts/generate-ctas.ts'))) {
+      projectRoot = process.cwd();
     }
-  } catch { /* proceed with default */ }
+  }
 
   const child = spawn('npx', ['tsx', 'scripts/generate-ctas.ts'], {
     cwd: projectRoot,

@@ -3,6 +3,8 @@
  * and data merging. No I/O — all functions take data in and return data out.
  */
 
+import { safeHttpUrl } from './url-safety';
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface RichCTA {
@@ -396,6 +398,15 @@ export function generateSlackMessage(cta: RichCTA): string {
   const dl = deadlinePhrase(cta.deadline);
   const ask = managerAsk(cta);
   parts.push(ask.replace(/\?$/, '') + ` ${dl}?`);
+
+  // ── 4. Renewal opp link in Slack mrkdwn (<url|label>).
+  //      Skipped when the URL is missing or not a safe http(s) URL —
+  //      a tampered scan file must not be able to inject a javascript:
+  //      link that fires when a teammate clicks the Slack message.
+  const safeRenewalUrl = safeHttpUrl(cta.renewal_opportunity_url);
+  if (safeRenewalUrl) {
+    parts.push(`<${safeRenewalUrl}|Renewal opp>`);
+  }
 
   return parts.join(' ');
 }

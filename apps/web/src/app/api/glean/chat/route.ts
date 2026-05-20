@@ -19,7 +19,7 @@ interface ChatBody {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  const out = await withGleanErrors(async () => {
+  return withGleanErrors(async () => {
     const body = (await req.json()) as Partial<ChatBody>;
     const incoming = body.messages ?? [];
     if (incoming.length === 0) {
@@ -45,5 +45,4 @@ export async function POST(req: Request): Promise<Response> {
       citations: reply.citations,
     });
   });
-  return out instanceof Response ? out : out;
 }

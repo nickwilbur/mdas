@@ -122,9 +122,15 @@ describe('generateSlackMessage with link data CTA', () => {
     expect(msg).toContain('TestCo');
     expect(msg).toContain('renews 8/15');
     expect(msg).toContain('$50K');
-    expect(msg).toContain('sentiment is red');
-    // Links should NOT appear in Slack message text (they're in the card UI)
-    expect(msg).not.toContain('lightning.force.com');
+    // v2 voice: per cta-utils.test.ts the message must NOT use the
+    // legacy "sentiment is X" template — narrativizeSignals renders
+    // the actual driver ("Low usage" → "usage flagged red") instead.
+    expect(msg).not.toContain('sentiment is red');
+    expect(msg).toMatch(/usage flagged red|usage/i);
+    // Renewal opp link is appended in Slack mrkdwn format at the very end
+    // of the message (intentional v2 change — the card UI also shows a
+    // separate link badge). Slack channel URLs never appear in the text.
+    expect(msg).toContain('<https://zuora.lightning.force.com/lightning/r/Opportunity/006TEST/view|Renewal opp>');
     expect(msg).not.toContain('slack.com/archives');
   });
 });

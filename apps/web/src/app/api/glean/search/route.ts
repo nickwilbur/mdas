@@ -47,8 +47,14 @@ function trim(d: GleanDocument): TrimmedDoc {
   };
 }
 
+function clampPageSize(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(n)) return 25;
+  return Math.min(Math.max(Math.trunc(n), 1), 100);
+}
+
 export async function POST(req: Request): Promise<Response> {
-  const out = await withGleanErrors(async () => {
+  return withGleanErrors(async () => {
     const body = (await req.json()) as Partial<SearchBody>;
     const query = (body.query ?? '').trim();
     if (!query) {
@@ -63,7 +69,7 @@ export async function POST(req: Request): Promise<Response> {
       query,
       datasources: body.datasources?.length ? body.datasources : undefined,
       facetFilters: body.facetFilters,
-      pageSize: Math.min(Math.max(body.pageSize ?? 25, 1), 100),
+      pageSize: clampPageSize(body.pageSize),
     });
     const docs = resp.documents ?? resp.results ?? [];
     return NextResponse.json({
@@ -71,5 +77,4 @@ export async function POST(req: Request): Promise<Response> {
       principal,
     });
   });
-  return out instanceof Response ? out : out;
 }

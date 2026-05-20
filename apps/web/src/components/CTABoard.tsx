@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import clsx from 'clsx';
 import { Check, Copy, ExternalLink, ChevronDown, ChevronUp, Filter } from 'lucide-react';
+import { safeHttpUrl, isLikelySfdcId } from '@/lib/url-safety';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -158,6 +159,17 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
   const borderColor = RISK_BORDER[cta.risk_color] ?? 'border-l-gray-300';
   const days = daysUntil(cta.deadline);
 
+  // Defence-in-depth: CTA fields originate from a scan markdown / JSONL
+  // file on disk. Validate every URL we render so a tampered file can't
+  // inject javascript:/data: URLs into <a href>, and gate the computed
+  // SFDC Lightning URL on a real-looking SFDC object id to prevent
+  // path-style injection like Account/..%2Flogout.
+  const safeRenewalOppUrl = safeHttpUrl(cta.renewal_opportunity_url);
+  const safeSlackChannelUrl = safeHttpUrl(cta.destination_slack_channel);
+  const sfdcAccountUrl = isLikelySfdcId(cta.salesforce_account_id)
+    ? `https://zuora.lightning.force.com/lightning/r/Account/${cta.salesforce_account_id}/view`
+    : null;
+
   return (
     <div className={clsx('rounded-lg border border-gray-200 border-l-4 bg-white shadow-sm', borderColor)}>
       {/* Compact header row */}
@@ -165,9 +177,9 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <span className="text-sm" title={cta.risk_color}>{riskEmoji}</span>
           <h3 className="text-sm font-semibold text-gray-900 truncate">{cta.account_name}</h3>
-          {cta.renewal_opportunity_url ? (
+          {safeRenewalOppUrl ? (
             <a
-              href={cta.renewal_opportunity_url}
+              href={safeRenewalOppUrl}
               className="inline-flex items-center gap-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-100"
               target="_blank"
               rel="noopener noreferrer"
@@ -175,9 +187,9 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
             >
               <ExternalLink className="h-2.5 w-2.5" /> SFDC Opp
             </a>
-          ) : cta.salesforce_account_id ? (
+          ) : sfdcAccountUrl ? (
             <a
-              href={`https://zuora.lightning.force.com/lightning/r/Account/${cta.salesforce_account_id}/view`}
+              href={sfdcAccountUrl}
               className="inline-flex items-center gap-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-100"
               target="_blank"
               rel="noopener noreferrer"
@@ -186,9 +198,9 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
               <ExternalLink className="h-2.5 w-2.5" /> SFDC
             </a>
           ) : null}
-          {cta.destination_slack_channel && (
+          {safeSlackChannelUrl && (
             <a
-              href={cta.destination_slack_channel}
+              href={safeSlackChannelUrl}
               className="inline-flex items-center gap-0.5 rounded bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 hover:bg-purple-100"
               target="_blank"
               rel="noopener noreferrer"
@@ -245,11 +257,11 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
         <span><span className="font-medium text-gray-600">Deadline</span> <span className={deadlineColor(cta.deadline)}>{cta.deadline}</span></span>
         <span className="text-gray-300">|</span>
         <span><span className="font-medium text-gray-600">Check-back</span> {cta.check_back_date}</span>
-        {cta.destination_slack_channel && (
+        {safeSlackChannelUrl && (
           <>
             <span className="text-gray-300">|</span>
             <a
-              href={cta.destination_slack_channel}
+              href={safeSlackChannelUrl}
               className="inline-flex items-center gap-0.5 text-blue-600 hover:underline"
               target="_blank"
               rel="noopener noreferrer"
@@ -258,11 +270,11 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
             </a>
           </>
         )}
-        {cta.renewal_opportunity_url ? (
+        {safeRenewalOppUrl ? (
           <>
             <span className="text-gray-300">|</span>
             <a
-              href={cta.renewal_opportunity_url}
+              href={safeRenewalOppUrl}
               className="inline-flex items-center gap-0.5 text-blue-600 hover:underline"
               target="_blank"
               rel="noopener noreferrer"
@@ -270,11 +282,11 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
               <ExternalLink className="h-3 w-3" /> SFDC Opp
             </a>
           </>
-        ) : cta.salesforce_account_id ? (
+        ) : sfdcAccountUrl ? (
           <>
             <span className="text-gray-300">|</span>
             <a
-              href={`https://zuora.lightning.force.com/lightning/r/Account/${cta.salesforce_account_id}/view`}
+              href={sfdcAccountUrl}
               className="inline-flex items-center gap-0.5 text-blue-600 hover:underline"
               target="_blank"
               rel="noopener noreferrer"

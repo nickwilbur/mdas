@@ -391,6 +391,19 @@ describe('generateSlackMessage', () => {
     const msg = generateSlackMessage(MINIMAL_CTA);
     expect(msg).not.toContain('Renewal opp');
   });
+
+  // Security regression: a tampered scan file could try to embed a
+  // javascript: URL hoping Slack (or our preview tooling) renders it
+  // as a clickable trampoline. safeHttpUrl drops anything non-http(s).
+  it('strips javascript: URLs out of the Renewal opp link', () => {
+    const cta: RichCTA = {
+      ...MINIMAL_CTA,
+      renewal_opportunity_url: 'javascript:alert(1)',
+    };
+    const msg = generateSlackMessage(cta);
+    expect(msg).not.toContain('javascript:');
+    expect(msg).not.toContain('Renewal opp');
+  });
 });
 
 // ── Regression: JSONL-only stubs must not render as cards ────────────────

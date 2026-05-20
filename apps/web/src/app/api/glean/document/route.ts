@@ -16,7 +16,7 @@ interface DocBody {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  const out = await withGleanErrors(async () => {
+  return withGleanErrors(async () => {
     const body = (await req.json()) as Partial<DocBody>;
     const urls = (body.urls ?? []).filter((u) => typeof u === 'string').slice(0, 5);
     if (urls.length === 0) {
@@ -40,5 +40,4 @@ export async function POST(req: Request): Promise<Response> {
       })),
     });
   });
-  return out instanceof Response ? out : out;
 }
