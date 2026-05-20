@@ -193,6 +193,22 @@ See the inline comments in each adapter for full SOQL and field mappings:
 
 `packages/forecast-generator/src/index.ts`. Pure function: `(views, changeEvents, asOfDate) ⇒ markdown`. Sections: Headline, Confirmed Churn, Saveable Risk, Upsell, CSE Hygiene Call-Outs, Asks of Leadership, Talk Track, Source Evidence. Every dollar figure comes from the snapshot; every account mention has at least one source link in the footer.
 
+**Churn-save filter on Hedge / Close-Gap (2026-05-20):** The
+`Accounts with Hedge` and `Accounts to Close Gap` lines surface only
+**renewal** opportunities that the manager is actively carrying in
+Clari (SFDC `fml_Manager_ForecastCategory__c` ∈ Commit / Best Case /
+Pipeline, falling back to `ForecastCategoryName`). Expansion / new-
+business hedge dollars are intentionally excluded from these two
+sections — they're not churn saves and shouldn't show up in the
+"reduce churn" lens. A nested call-out under `Accounts with Hedge` —
+*Churn-save targets not yet hedged in Clari* — lists renewals at
+Confirmed Churn or Saveable Risk that MDAS believes belong on the
+hedge line but currently carry $0 forecast hedge, so leadership can
+decide whether to add them. `Omit` and `Closed` categories are
+excluded everywhere. Snapshots without `forecastCategory`
+(pre-2026-05-20) are treated as "include" so legacy data doesn't go
+silent.
+
 ## UI
 
 - `/` — Manager Dashboard with stat tiles + 3 columns (Confirmed Churn / Saveable Risk / Upsell) + Refresh button + Generate Update CTA

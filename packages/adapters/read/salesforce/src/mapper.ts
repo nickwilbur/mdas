@@ -87,6 +87,8 @@ export interface SfdcOpportunityRow extends SalesforceQueryRecord {
   Churn_Downsell_Reason__c: string | null;
   Churn_Destription__c: string | null; // sic — actual API name; label "Churn Reason Summary"
   Product_Line__c: string | null;
+  ForecastCategoryName: string | null;
+  fml_Manager_ForecastCategory__c: string | null;
 }
 
 export interface SfdcWorkshopRow extends SalesforceQueryRecord {
@@ -232,6 +234,8 @@ export function mapOpportunity(
     acvDelta: row.fml_DerivedACVDelta_USD__c ?? row.Billing_ACV_Delta_USD__c,
     knownChurnUSD: row.Known_Churn_USD__c,
     productLine: row.Product_Line__c,
+    forecastCategory:
+      row.fml_Manager_ForecastCategory__c ?? row.ForecastCategoryName ?? null,
 
     flmNotes: row.FLM_Notes__c,
     slmNotes: row.SLM_Notes__c,

@@ -67,7 +67,8 @@ SELECT
   Sales_Engineer__c, Sales_Engineer__r.Name,
   Full_Churn_Notification_to_Owner_Date__c, Full_Churn_Final_Email_Sent_Date__c,
   Churn_Downsell_Reason__c, Churn_Destription__c,
-  Product_Line__c
+  Product_Line__c,
+  ForecastCategoryName, fml_Manager_ForecastCategory__c
 FROM Opportunity
 WHERE FranchisePicklist__c = 'Expand 3'
   AND Main_Franchise__c = 'North America'

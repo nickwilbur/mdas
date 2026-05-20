@@ -176,6 +176,8 @@ const SAMPLE_OPP_ROW: SfdcOpportunityRow = {
   Churn_Downsell_Reason__c: null,
   Churn_Destription__c: null,
   Product_Line__c: 'Core Zuora',
+  ForecastCategoryName: 'Pipeline',
+  fml_Manager_ForecastCategory__c: 'Best Case',
 };
 
 describe('mapOpportunity', () => {
@@ -271,6 +273,35 @@ describe('mapOpportunity', () => {
       CTX,
     );
     expect(out.fullChurnNotificationToOwnerDate).toBe('2026-04-23');
+  });
+
+  // 2026-05-20: forecastCategory powers the new churn-save filter in
+  // the forecast generator (Hedge / Close-Gap sections). Prefer the
+  // manager-derived field; fall back to standard ForecastCategoryName;
+  // null when neither is set.
+  it('prefers fml_Manager_ForecastCategory__c over ForecastCategoryName for forecastCategory', () => {
+    const out = mapOpportunity(SAMPLE_OPP_ROW, CTX);
+    expect(out.forecastCategory).toBe('Best Case');
+  });
+
+  it('falls back to ForecastCategoryName when fml_Manager_ForecastCategory__c is null', () => {
+    const out = mapOpportunity(
+      { ...SAMPLE_OPP_ROW, fml_Manager_ForecastCategory__c: null },
+      CTX,
+    );
+    expect(out.forecastCategory).toBe('Pipeline');
+  });
+
+  it('returns null forecastCategory when both fields are null', () => {
+    const out = mapOpportunity(
+      {
+        ...SAMPLE_OPP_ROW,
+        fml_Manager_ForecastCategory__c: null,
+        ForecastCategoryName: null,
+      },
+      CTX,
+    );
+    expect(out.forecastCategory).toBeNull();
   });
 
   it('resolves salesEngineer.name from Sales_Engineer__r.Name when present', () => {

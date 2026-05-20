@@ -318,6 +318,7 @@ interface Build {
     acvDelta?: number;
     knownChurn?: number;
     productLine?: string;
+    forecastCategory?: string;
     flmNotes?: string;
     scNextSteps?: string;
     salesEngineerName?: string | null;
@@ -419,6 +420,7 @@ function buildAccount(
     acvDelta: o.acvDelta ?? 0,
     knownChurnUSD: o.knownChurn ?? 0,
     productLine: o.productLine ?? null,
+    forecastCategory: o.forecastCategory ?? null,
     flmNotes: o.flmNotes ?? '',
     slmNotes: null,
     scNextSteps: o.scNextSteps ?? '',
@@ -485,6 +487,7 @@ const builds: Build[] = REAL_EXPAND_3_ACCOUNTS.map((acc, i) => ({
       acvDelta: 0,
       knownChurn: i === 0 ? 500_000 + i * 100_000 : 0,
       productLine: acc.products[0],
+      forecastCategory: i === 0 ? 'Omit' : i === 1 ? 'Best Case' : 'Commit',
       flmNotes: '',
       scNextSteps: i === 1 ? 'Schedule executive meeting to discuss renewal terms.' : '',
       // Per-opportunity Sales Engineer (NOT inherited from account.assignedCSE).

@@ -117,6 +117,59 @@ function isRenewalLike(opp: CanonicalOpportunity): boolean {
 }
 
 /**
+ * Forecast categories the manager is actively carrying on the churn line
+ * (i.e., opps where a save still moves the Clari roll-up). Excludes
+ * `Omit` (already conceded) and `Closed` (already booked). We deliberately
+ * keep `Pipeline` because Saveable Risk renewals often sit there before
+ * a CSE pulls them into Best Case as a hedge.
+ *
+ * Category is null-tolerant: snapshots written before 2026-05-20 don't
+ * carry it. We treat null as "include" so legacy data doesn't go silent.
+ */
+const CARRIED_FORECAST_CATEGORIES = new Set([
+  'commit',
+  'best case',
+  'bestcase',
+  'pipeline',
+]);
+
+function isCarriedForecastCategory(opp: CanonicalOpportunity): boolean {
+  const cat = (opp.forecastCategory ?? '').trim().toLowerCase();
+  if (cat === '') return true; // legacy / unknown — don't filter out
+  return CARRIED_FORECAST_CATEGORIES.has(cat);
+}
+
+/**
+ * Per the 2026-05-20 manager feedback: Hedge / Close-Gap sections must
+ * only surface **churn-save** opportunities, not expansion hedge. A
+ * row qualifies when:
+ *   - the opportunity is a renewal (Type contains "Renewal"), AND
+ *   - the SFDC manager forecast category is one we're still carrying
+ *     (Commit / Best Case / Pipeline — not Omit / Closed), AND
+ *   - either the account is bucketed as Confirmed Churn / Saveable Risk,
+ *     OR the opp itself shows a churn signal (known churn USD, negative
+ *     ML, negative ACV delta, or any hedge dollars at all).
+ *
+ * The third clause keeps the "renewal at Best Case with hedge but
+ * healthy account" case visible — those are exactly the saves the
+ * manager is hedging in Clari.
+ */
+function isChurnSaveTarget(view: AccountView, opp: CanonicalOpportunity): boolean {
+  if (!isRenewalLike(opp)) return false;
+  if (!isCarriedForecastCategory(opp)) return false;
+
+  if (view.bucket === 'Confirmed Churn' || view.bucket === 'Saveable Risk') {
+    return true;
+  }
+  if ((opp.knownChurnUSD ?? 0) > 0) return true;
+  if ((opp.forecastHedgeUSD ?? 0) > 0) return true;
+  const ml = opp.forecastMostLikelyOverride ?? opp.forecastMostLikely;
+  if (ml != null && ml < 0) return true;
+  if (opp.acvDelta != null && opp.acvDelta < 0) return true;
+  return false;
+}
+
+/**
  * Per-opportunity churn/downsell for the **MDAS-estimated Flash** roll-up
  * (negative dollars, aligned to Salesforce signals that drive Clari).
  *
@@ -444,21 +497,36 @@ function renderQuarterSection(
   lines.push(`Total Churn/Downsell Risk / Baseline: ${fmtSignedUSD(-total)}`);
   lines.push(`Hedge: ${fmtUSD(hedgeUSD)}`);
 
-  // "Accounts with Hedge" — accounts with forecastHedgeUSD > 0
-  const hedgeAccounts: { view: AccountView; opp: CanonicalOpportunity; usd: number }[] = [];
-  const hedgeSeen = new Map<string, { view: AccountView; opp: CanonicalOpportunity; usd: number }>();
+  // "Accounts with Hedge" — only renewal opps the manager is carrying
+  // in Clari (Commit / Best Case / Pipeline) on accounts where a save
+  // is still in play. Expansion-hedge opps (e.g., Pipedrive/BambooHR
+  // upsells) are intentionally excluded — leadership reads this list
+  // as "renewal saves we've already hedged in the forecast."
+  const hedgeSeen = new Map<
+    string,
+    { view: AccountView; opp: CanonicalOpportunity; usd: number }
+  >();
   for (const r of bucket.rows) {
-    const hedgeUSD = r.opp.forecastHedgeUSD ?? 0;
-    if (hedgeUSD <= 0) continue;
+    if (!isChurnSaveTarget(r.view, r.opp)) continue;
+    const oppHedgeUSD = r.opp.forecastHedgeUSD ?? 0;
+    if (oppHedgeUSD <= 0) continue;
     const prev = hedgeSeen.get(r.view.account.accountId);
-    if (!prev || hedgeUSD > prev.usd) {
-      hedgeSeen.set(r.view.account.accountId, { view: r.view, opp: r.opp, usd: hedgeUSD });
+    if (!prev || oppHedgeUSD > prev.usd) {
+      hedgeSeen.set(r.view.account.accountId, {
+        view: r.view,
+        opp: r.opp,
+        usd: oppHedgeUSD,
+      });
     }
   }
   const sortedHedgeAccounts = Array.from(hedgeSeen.values())
     .sort((a, b) => b.usd - a.usd)
     .slice(0, 5);
-  lines.push(`Accounts with Hedge: ${fmtUSD(hedgeUSD)}`);
+  const churnSaveHedgeTotal = sortedHedgeAccounts.reduce(
+    (s, r) => s + r.usd,
+    0,
+  );
+  lines.push(`Accounts with Hedge (churn-save renewals): ${fmtUSD(churnSaveHedgeTotal)}`);
   if (sortedHedgeAccounts.length === 0) {
     lines.push(`  - None identified`);
   } else {
@@ -467,19 +535,82 @@ function renderQuarterSection(
     }
   }
 
-  // "Accounts to Close Gap" — biggest red exposures (where saves move
-  // the needle most) followed by the largest hedge in green.
-  const gapAccounts = [
-    ...topAccountsToCloseGap(bucket.rows, 'red', 3),
-    ...topAccountsToCloseGap(bucket.rows, 'yellow', 2),
-  ].slice(0, 5);
-  const totalGapACV = gapAccounts.reduce((sum, r) => sum + r.usd, 0);
-  lines.push(`Accounts to Close Gap: ${fmtUSD(totalGapACV)}`);
+  // Churn-save targets MDAS believes belong in the hedge list but that
+  // currently carry $0 forecast hedge — i.e., renewals at Confirmed
+  // Churn / Saveable Risk (or with explicit churn dollars) that the CSE
+  // hasn't yet pulled onto the Clari hedge line. This is the explicit
+  // "we should call them out" ask: surface saves that aren't yet on
+  // the manager's roll-up so leadership can decide to hedge them.
+  const hedgedIds = new Set(sortedHedgeAccounts.map((r) => r.view.account.accountId));
+  const targetsWithoutHedgeSeen = new Map<
+    string,
+    { view: AccountView; opp: CanonicalOpportunity; usd: number }
+  >();
+  for (const r of bucket.rows) {
+    if (!isChurnSaveTarget(r.view, r.opp)) continue;
+    if ((r.opp.forecastHedgeUSD ?? 0) > 0) continue;
+    if (hedgedIds.has(r.view.account.accountId)) continue;
+    const atr = r.opp.availableToRenewUSD ?? r.opp.acv ?? 0;
+    if (atr <= 0) continue;
+    const prev = targetsWithoutHedgeSeen.get(r.view.account.accountId);
+    if (!prev || atr > prev.usd) {
+      targetsWithoutHedgeSeen.set(r.view.account.accountId, {
+        view: r.view,
+        opp: r.opp,
+        usd: atr,
+      });
+    }
+  }
+  const targetsWithoutHedge = Array.from(targetsWithoutHedgeSeen.values())
+    .sort((a, b) => b.usd - a.usd)
+    .slice(0, 5);
+  const targetsWithoutHedgeTotal = targetsWithoutHedge.reduce(
+    (s, r) => s + r.usd,
+    0,
+  );
+  lines.push(
+    `  Churn-save targets not yet hedged in Clari (ATR exposed): ${fmtUSD(targetsWithoutHedgeTotal)}`,
+  );
+  if (targetsWithoutHedge.length === 0) {
+    lines.push(`    - None identified`);
+  } else {
+    for (const r of targetsWithoutHedge) {
+      lines.push(
+        `    - ${r.view.account.accountName} (${fmtUSD(r.usd)} ATR) - ${r.opp.closeDate}`,
+      );
+    }
+  }
+
+  // "Accounts to Close Gap" — same churn-save filter, then rank by ATR
+  // (dollars that move the gap-to-Plan needle), not by total ACV. We
+  // still bias toward red over yellow because that's where save effort
+  // is highest leverage.
+  const gapSeen = new Map<
+    string,
+    { view: AccountView; opp: CanonicalOpportunity; usd: number; band: 'red' | 'yellow' }
+  >();
+  for (const r of bucket.rows) {
+    if (!isChurnSaveTarget(r.view, r.opp)) continue;
+    const band = colorBand(r.view);
+    if (band !== 'red' && band !== 'yellow') continue;
+    const atr = r.opp.availableToRenewUSD ?? r.opp.acv ?? 0;
+    if (atr <= 0) continue;
+    const prev = gapSeen.get(r.view.account.accountId);
+    if (!prev || atr > prev.usd) {
+      gapSeen.set(r.view.account.accountId, { view: r.view, opp: r.opp, usd: atr, band });
+    }
+  }
+  const allGap = Array.from(gapSeen.values());
+  const gapReds = allGap.filter((r) => r.band === 'red').sort((a, b) => b.usd - a.usd).slice(0, 3);
+  const gapYellows = allGap.filter((r) => r.band === 'yellow').sort((a, b) => b.usd - a.usd).slice(0, 2);
+  const gapAccounts = [...gapReds, ...gapYellows].slice(0, 5);
+  const totalGapATR = gapAccounts.reduce((sum, r) => sum + r.usd, 0);
+  lines.push(`Accounts to Close Gap (churn-save renewals): ${fmtUSD(totalGapATR)}`);
   if (gapAccounts.length === 0) {
     lines.push(`  - None identified`);
   } else {
     for (const r of gapAccounts) {
-      lines.push(`  - ${r.view.account.accountName} (${fmtUSD(r.usd)}) - ${r.opp.closeDate}`);
+      lines.push(`  - ${r.view.account.accountName} (${fmtUSD(r.usd)} ATR) - ${r.opp.closeDate}`);
     }
   }
   lines.push('');

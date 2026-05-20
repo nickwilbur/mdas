@@ -181,6 +181,18 @@ export interface CanonicalOpportunity {
   knownChurnUSD: number | null;
   productLine: string | null;
 
+  /**
+   * Manager-facing forecast category for the opportunity. Prefers the
+   * Zuora-derived `fml_Manager_ForecastCategory__c` when present, falling
+   * back to standard SFDC `ForecastCategoryName`. Free-form string but
+   * normalized values are typically `Commit | Best Case | Pipeline | Omit
+   * | Closed`. Used by the weekly forecast generator to scope churn-save
+   * call-outs to opps the manager is actually carrying on the line.
+   * Optional for backward compatibility with snapshots written before
+   * 2026-05-20.
+   */
+  forecastCategory?: string | null;
+
   flmNotes: string | null;
   slmNotes: string | null;
   scNextSteps: string | null;

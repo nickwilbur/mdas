@@ -134,7 +134,9 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       'Gap to Plan:',
       'Total Churn/Downsell Risk / Baseline:',
       'Hedge:',
-      'Accounts to Close Gap:',
+      'Accounts with Hedge (churn-save renewals):',
+      'Churn-save targets not yet hedged in Clari (ATR exposed):',
+      'Accounts to Close Gap (churn-save renewals):',
       'Key Saves/Improvements to close the gap from Total Churn/Downsell risk to Flash:',
       'Accounts in yellow - path to add hedge to the line:',
       'Accounts in green - path to capture the existing hedge already in the line:',
@@ -570,5 +572,100 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     const nextSection = md.slice(nextIdx);
     expect(currSection).toMatch(/Flash \/ Most Likely: -\$100,000/);
     expect(nextSection).toMatch(/Flash \/ Most Likely: -\$200,000/);
+  });
+
+  // 2026-05-20 manager feedback: Hedge / Close-Gap sections must only
+  // surface churn-save opps, not expansion hedge. Pins the new
+  // isChurnSaveTarget filter end-to-end.
+  it('excludes expansion-opp hedge from the Hedge section (renewal-only)', () => {
+    const acc = mkAccount({ accountId: 'PD', accountName: 'Pipedrive' });
+    const expansionOpp = mkOpportunity({
+      opportunityId: 'O-EXP',
+      opportunityName: 'Pipedrive Expansion',
+      accountId: 'PD',
+      type: 'New Business - Expansion',
+      forecastHedgeUSD: 75_000,
+      forecastCategory: 'Best Case',
+    });
+    const md = generateWeeklyForecast({
+      views: [mkView(acc, [expansionOpp], { bucket: 'Healthy' })],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    const currSection = md.slice(0, md.indexOf('Next Quarter'));
+    const hedgeBlock = currSection.slice(
+      currSection.indexOf('Accounts with Hedge'),
+      currSection.indexOf('Key Saves'),
+    );
+    expect(hedgeBlock).not.toContain('Pipedrive');
+    expect(hedgeBlock).toMatch(/Accounts with Hedge \(churn-save renewals\): \$0/);
+  });
+
+  it('excludes Omit-category renewals from Hedge / Close-Gap (already conceded)', () => {
+    const acc = mkAccount({
+      accountId: 'OM',
+      accountName: 'Omitted Co',
+      cseSentiment: 'Red',
+    });
+    const omittedRenewal = mkOpportunity({
+      accountId: 'OM',
+      type: 'Renewal',
+      forecastHedgeUSD: 50_000,
+      forecastCategory: 'Omit',
+      availableToRenewUSD: 300_000,
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [omittedRenewal], {
+          bucket: 'Confirmed Churn',
+          risk: { level: 'Critical', source: 'cerebro', rationale: '' },
+        }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    // Account should not appear in the Hedge or Close-Gap totals/rows.
+    const currSection = md.slice(0, md.indexOf('Next Quarter'));
+    const hedgeBlock = currSection.slice(
+      currSection.indexOf('Accounts with Hedge'),
+      currSection.indexOf('Accounts to Close Gap'),
+    );
+    expect(hedgeBlock).not.toContain('Omitted Co');
+    const gapBlock = currSection.slice(
+      currSection.indexOf('Accounts to Close Gap'),
+      currSection.indexOf('Key Saves'),
+    );
+    expect(gapBlock).not.toContain('Omitted Co');
+  });
+
+  it('flags churn-save targets not yet hedged in Clari as an explicit call-out', () => {
+    const acc = mkAccount({
+      accountId: 'TG',
+      accountName: 'Target Without Hedge',
+      cseSentiment: 'Red',
+    });
+    const renewalNoHedge = mkOpportunity({
+      accountId: 'TG',
+      type: 'Renewal',
+      forecastHedgeUSD: 0,
+      forecastCategory: 'Best Case',
+      availableToRenewUSD: 420_000,
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [renewalNoHedge], {
+          bucket: 'Saveable Risk',
+          risk: { level: 'High', source: 'cerebro', rationale: '' },
+        }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    const callout = md.match(
+      /Churn-save targets not yet hedged in Clari \(ATR exposed\):[\s\S]*?(?=\nAccounts to Close Gap)/,
+    );
+    expect(callout, 'expected churn-save-targets call-out to appear').toBeTruthy();
+    expect(callout![0]).toContain('Target Without Hedge');
+    expect(callout![0]).toContain('$420,000 ATR');
   });
 });
