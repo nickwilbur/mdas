@@ -406,15 +406,36 @@ function topAccountsToCloseGap(
 }
 
 /**
- * Week-over-week changes scoped to the quarter's accounts. Risk and
- * sentiment movements are translated into +/- per template:
- *   '+' = improvement (risk down, sentiment up, churn rescinded)
- *   '-' = regression (risk up, new churn notice, sentiment down)
+ * Week-over-week changes scoped to the quarter's accounts.
+ *
+ * Per 2026-05-20 manager feedback: the WoW section was silently
+ * dropping every opportunity-level diff (stage moves, forecast ML
+ * changes, close-date slips) because the original implementation only
+ * surfaced account-level risk/sentiment/churn-notice events. Leadership
+ * lost visibility into the most actionable signals — DataStax going to
+ * Closed Won, D&B's forecast improving by $100K, etc.
+ *
+ * Now surfaces forecast-relevant signals with thresholds to keep the
+ * list signal-dense rather than noisy:
+ *   - cerebroRiskCategory change (any)
+ *   - cseSentiment change (any)
+ *   - churn-notice category event (any — already gated on prev=null)
+ *   - stageName change WHERE the new stage starts with "Closed" OR the
+ *     numeric prefix jumps ≥ 2 (e.g. 3.0 → 5.0). Skips 4.0 → 5.0.
+ *   - forecastMostLikely change WHERE |delta| ≥ $25,000.
+ *   - closeDate change WHERE |delta| ≥ 7 days.
+ *
+ * Multiple events on the same account are aggregated into a single
+ * line with "; "-joined detail per account. The account-level sign is
+ * "-" if ANY of its events is a regression (leadership-first), else
+ * "+". This pins the existing test expectations (one bullet per
+ * account with the strongest signal) while now actually reporting
+ * what changed.
  */
 interface WowSummary {
   accountName: string;
   sign: '+' | '-';
-  detail: string;
+  details: { sign: '+' | '-'; text: string }[];
 }
 
 const RISK_RANK: Record<string, number> = {
@@ -430,51 +451,149 @@ const SENT_RANK: Record<string, number> = {
   'Confirmed Churn': 0,
 };
 
+const ML_DELTA_THRESHOLD_USD = 25_000;
+const CLOSE_DATE_DELTA_THRESHOLD_DAYS = 7;
+
+function stageNumericPrefix(stage: string): number | null {
+  const m = stage.trim().match(/^(\d+(?:\.\d+)?)/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function asNumber(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function asDateMs(v: unknown): number | null {
+  if (typeof v !== 'string' || v.trim() === '') return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+}
+
+interface SignalDetail {
+  sign: '+' | '-';
+  text: string;
+}
+
+/**
+ * Translate a single ChangeEvent into a leadership-relevant signal or
+ * null if the event should be suppressed (sub-threshold, hygiene-only,
+ * etc.). Pure function — keeps wowChanges() purely orchestrating.
+ */
+function eventToSignal(e: ChangeEvent): SignalDetail | null {
+  if (e.field === 'cerebroRiskCategory') {
+    const oldR = RISK_RANK[String(e.oldValue)] ?? 0;
+    const newR = RISK_RANK[String(e.newValue)] ?? 0;
+    if (newR === oldR) return null;
+    return {
+      sign: newR < oldR ? '+' : '-',
+      text: `Risk ${e.oldValue ?? '∅'} → ${e.newValue ?? '∅'}`,
+    };
+  }
+  if (e.field === 'cseSentiment') {
+    const oldS = SENT_RANK[String(e.oldValue)] ?? 0;
+    const newS = SENT_RANK[String(e.newValue)] ?? 0;
+    if (newS === oldS) return null;
+    return {
+      sign: newS > oldS ? '+' : '-',
+      text: `Sentiment ${e.oldValue ?? '∅'} → ${e.newValue ?? '∅'}`,
+    };
+  }
+  if (e.category === 'churn-notice') {
+    return { sign: '-', text: 'Churn notice submitted' };
+  }
+  if (e.field === 'stageName') {
+    const oldStage = String(e.oldValue ?? '');
+    const newStage = String(e.newValue ?? '');
+    const newStartsClosed = /^\s*\d*\.?\d*\s*-?\s*Closed/i.test(newStage) ||
+      newStage.toLowerCase().includes('closed');
+    const oldPref = stageNumericPrefix(oldStage);
+    const newPref = stageNumericPrefix(newStage);
+    const jumpedFar =
+      oldPref != null && newPref != null && Math.abs(newPref - oldPref) >= 2;
+    if (!newStartsClosed && !jumpedFar) return null;
+    // Sign: Closed Won / Closed/Won → +; Closed Lost / Closed/Lost → -;
+    // mid-funnel forward jump (3.0 → 5.0) → +; backward jump → -.
+    const nl = newStage.toLowerCase();
+    let sign: '+' | '-' = '+';
+    if (nl.includes('closed') && nl.includes('lost')) sign = '-';
+    else if (nl.includes('closed') && nl.includes('won')) sign = '+';
+    else if (oldPref != null && newPref != null) sign = newPref > oldPref ? '+' : '-';
+    return { sign, text: `Stage ${oldStage} → ${newStage}` };
+  }
+  if (e.field === 'forecastMostLikely') {
+    const o = asNumber(e.oldValue) ?? 0;
+    const n = asNumber(e.newValue) ?? 0;
+    const delta = n - o;
+    if (Math.abs(delta) < ML_DELTA_THRESHOLD_USD) return null;
+    return {
+      sign: delta >= 0 ? '+' : '-',
+      text: `Forecast ML ${fmtSignedUSD(o)} → ${fmtSignedUSD(n)} (${fmtSignedUSD(delta)})`,
+    };
+  }
+  if (e.field === 'closeDate') {
+    const o = asDateMs(e.oldValue);
+    const n = asDateMs(e.newValue);
+    if (o == null || n == null) return null;
+    const deltaDays = Math.round((n - o) / (1000 * 60 * 60 * 24));
+    if (Math.abs(deltaDays) < CLOSE_DATE_DELTA_THRESHOLD_DAYS) return null;
+    return {
+      sign: deltaDays <= 0 ? '+' : '-',
+      text: `Close ${e.oldValue} → ${e.newValue} (${deltaDays > 0 ? '+' : ''}${deltaDays}d)`,
+    };
+  }
+  return null;
+}
+
 function wowChanges(
   rows: QuarterBucket['rows'],
   events: ChangeEvent[],
 ): WowSummary[] {
+  // Account scope: an account is "in this quarter" if any of its opps
+  // close in this fiscal quarter (existing semantics, drives the rows
+  // list). We surface WoW changes on any opp belonging to those
+  // accounts, even if the changed opp itself closes in a different
+  // quarter (e.g. an FY27 Q3 renewal updating while the account also
+  // has an FY27 Q2 amendment closing). The leadership lens is per-
+  // account, not per-opp.
   const accountIds = new Set(rows.map((r) => r.view.account.accountId));
   const nameById = new Map(
     rows.map((r) => [r.view.account.accountId, r.view.account.accountName]),
   );
-  const out = new Map<string, WowSummary>(); // accountId → summary
+  const byAccount = new Map<string, SignalDetail[]>();
 
   for (const e of events) {
     if (!accountIds.has(e.accountId)) continue;
-    const name = nameById.get(e.accountId) ?? e.accountId;
-
-    if (e.field === 'cerebroRiskCategory') {
-      const oldR = RISK_RANK[String(e.oldValue)] ?? 0;
-      const newR = RISK_RANK[String(e.newValue)] ?? 0;
-      if (newR === oldR) continue;
-      const sign: '+' | '-' = newR < oldR ? '+' : '-';
-      out.set(e.accountId, {
-        accountName: name,
-        sign,
-        detail: `Risk ${e.oldValue ?? '∅'} → ${e.newValue ?? '∅'}`,
-      });
-    } else if (e.field === 'cseSentiment') {
-      const oldS = SENT_RANK[String(e.oldValue)] ?? 0;
-      const newS = SENT_RANK[String(e.newValue)] ?? 0;
-      if (newS === oldS) continue;
-      const sign: '+' | '-' = newS > oldS ? '+' : '-';
-      out.set(e.accountId, {
-        accountName: name,
-        sign,
-        detail: `Sentiment ${e.oldValue ?? '∅'} → ${e.newValue ?? '∅'}`,
-      });
-    } else if (e.category === 'churn-notice') {
-      out.set(e.accountId, {
-        accountName: name,
-        sign: '-',
-        detail: 'Churn notice submitted',
-      });
-    }
+    const sig = eventToSignal(e);
+    if (!sig) continue;
+    const list = byAccount.get(e.accountId) ?? [];
+    list.push(sig);
+    byAccount.set(e.accountId, list);
   }
+
+  const summaries: WowSummary[] = [];
+  for (const [accountId, details] of byAccount.entries()) {
+    if (details.length === 0) continue;
+    const name = nameById.get(accountId) ?? accountId;
+    // Account-level sign: regression wins (leadership-first).
+    const sign: '+' | '-' = details.some((d) => d.sign === '-') ? '-' : '+';
+    // Stable detail order: regressions first, then improvements.
+    const orderedDetails = [...details].sort((a, b) => {
+      if (a.sign !== b.sign) return a.sign === '-' ? -1 : 1;
+      return 0;
+    });
+    summaries.push({ accountName: name, sign, details: orderedDetails });
+  }
+
   // Stable order: regressions first (leadership wants the bad news),
   // then improvements; alphabetical within each.
-  return Array.from(out.values()).sort((a, b) => {
+  return summaries.sort((a, b) => {
     if (a.sign !== b.sign) return a.sign === '-' ? -1 : 1;
     return a.accountName.localeCompare(b.accountName);
   });
@@ -698,7 +817,10 @@ function renderQuarterSection(
     lines.push(`  - No movement this week`);
   } else {
     for (const w of wow) {
-      lines.push(`  ${w.sign} ${w.accountName} - ${w.detail}`);
+      const detail = w.details
+        .map((d) => `${d.sign === '-' ? '↓' : '↑'} ${d.text}`)
+        .join('; ');
+      lines.push(`  ${w.sign} ${w.accountName} - ${detail}`);
     }
   }
   lines.push('');

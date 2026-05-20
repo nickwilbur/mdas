@@ -406,7 +406,7 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [improved],
       asOfDate: AS_OF,
     });
-    expect(md).toMatch(/\+ Better Co - Risk High → Low/);
+    expect(md).toMatch(/\+ Better Co - ↑ Risk High → Low/);
   });
 
   it('flags churn-notice events as regressions (-)', () => {
@@ -427,7 +427,220 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [churnEvent],
       asOfDate: AS_OF,
     });
-    expect(md).toMatch(/- New Churn Co - Churn notice submitted/);
+    expect(md).toMatch(/- New Churn Co - ↓ Churn notice submitted/);
+  });
+
+  // 2026-05-20 fourth-pass: opportunity-level diffs (stage moves,
+  // forecast ML, close-date slips) were silently dropped by the old
+  // wowChanges() which only knew about cerebroRiskCategory /
+  // cseSentiment / churn-notice. Leadership lost visibility into the
+  // most actionable WoW signals. Pin the new forecast-relevant signal
+  // set with the live D&B / DataStax / Turf Tank scenarios.
+  it('surfaces stage moves to Closed Won (DataStax-like)', () => {
+    const acc = mkAccount({ accountId: 'DS', accountName: 'DataStax' });
+    const view = mkView(
+      acc,
+      [mkOpportunity({ accountId: 'DS', closeDate: '2026-04-15' })],
+      { bucket: 'Saveable Risk' },
+    );
+    const stageMove: ChangeEvent = {
+      accountId: 'DS',
+      opportunityId: 'O-DS',
+      field: 'stageName',
+      oldValue: '7.0 - Closed/Won (Sales)',
+      newValue: '8.0 - Closed/Won (Finance)',
+      occurredBetween: ['p', 'c'],
+      category: 'forecast',
+      label: 'Stage moved',
+    };
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [stageMove],
+      asOfDate: AS_OF,
+    });
+    expect(md).toMatch(/\+ DataStax - ↑ Stage 7\.0 - Closed\/Won \(Sales\) → 8\.0 - Closed\/Won \(Finance\)/);
+  });
+
+  it('surfaces forecast ML changes >= $25K (D&B-like)', () => {
+    const acc = mkAccount({ accountId: 'DB', accountName: 'D&B' });
+    const view = mkView(
+      acc,
+      [mkOpportunity({ accountId: 'DB', closeDate: '2026-04-15' })],
+      { bucket: 'Saveable Risk' },
+    );
+    const events: ChangeEvent[] = [
+      {
+        accountId: 'DB',
+        opportunityId: 'O-DB',
+        field: 'stageName',
+        oldValue: '3.0 Define',
+        newValue: '5.0 Propose',
+        occurredBetween: ['p', 'c'],
+        category: 'forecast',
+        label: 'Stage moved',
+      },
+      {
+        accountId: 'DB',
+        opportunityId: 'O-DB',
+        field: 'forecastMostLikely',
+        oldValue: -850_000,
+        newValue: -749_973,
+        occurredBetween: ['p', 'c'],
+        category: 'forecast',
+        label: 'ML changed',
+      },
+    ];
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: events,
+      asOfDate: AS_OF,
+    });
+    // Both signals aggregated on the same line. Sign is "+" because
+    // both events are improvements (stage forward jump, ML less
+    // negative).
+    expect(md).toMatch(/\+ D&B - ↑ Stage 3\.0 Define → 5\.0 Propose; ↑ Forecast ML -\$850,000 → -\$749,973 \(\+\$100,027\)/);
+  });
+
+  it('aggregates regression + improvement on same account; sign is - (Turf Tank-like)', () => {
+    const acc = mkAccount({ accountId: 'TT', accountName: 'Turf Tank Aggregate' });
+    const view = mkView(
+      acc,
+      [mkOpportunity({ accountId: 'TT', closeDate: '2026-04-15' })],
+      { bucket: 'Saveable Risk' },
+    );
+    const events: ChangeEvent[] = [
+      {
+        accountId: 'TT',
+        opportunityId: 'O-TT-1',
+        field: 'forecastMostLikely',
+        oldValue: -43_000,
+        newValue: -82_327,
+        occurredBetween: ['p', 'c'],
+        category: 'forecast',
+        label: 'ML changed',
+      },
+      {
+        accountId: 'TT',
+        opportunityId: 'O-TT-2',
+        field: 'cseSentiment',
+        oldValue: 'Yellow',
+        newValue: 'Green',
+        occurredBetween: ['p', 'c'],
+        category: 'sentiment',
+        label: 'Sentiment improved',
+      },
+    ];
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: events,
+      asOfDate: AS_OF,
+    });
+    // Account-level sign is "-" because at least one event is a
+    // regression (ML went more negative).
+    expect(md).toMatch(/- Turf Tank Aggregate - ↓ Forecast ML -\$43,000 → -\$82,327 \(-\$39,327\); ↑ Sentiment Yellow → Green/);
+  });
+
+  it('suppresses forecast ML changes below the $25K threshold', () => {
+    const acc = mkAccount({ accountId: 'TT', accountName: 'Tiny Move' });
+    const view = mkView(
+      acc,
+      [mkOpportunity({ accountId: 'TT', closeDate: '2026-04-15' })],
+      { bucket: 'Saveable Risk' },
+    );
+    const tinyMove: ChangeEvent = {
+      accountId: 'TT',
+      opportunityId: 'O',
+      field: 'forecastMostLikely',
+      oldValue: -50_000,
+      newValue: -55_000,
+      occurredBetween: ['p', 'c'],
+      category: 'forecast',
+      label: 'ML moved',
+    };
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [tinyMove],
+      asOfDate: AS_OF,
+    });
+    const wow = md.slice(md.indexOf('Week-over-week'));
+    expect(wow).toMatch(/No movement this week/);
+  });
+
+  it('suppresses stage moves that are not Closed-* and not a >=2 numeric jump', () => {
+    const acc = mkAccount({ accountId: 'NM', accountName: 'No Move Co' });
+    const view = mkView(
+      acc,
+      [mkOpportunity({ accountId: 'NM', closeDate: '2026-04-15' })],
+      { bucket: 'Saveable Risk' },
+    );
+    const oneStepMove: ChangeEvent = {
+      accountId: 'NM',
+      opportunityId: 'O',
+      field: 'stageName',
+      oldValue: '4.0 Validate',
+      newValue: '5.0 Propose',
+      occurredBetween: ['p', 'c'],
+      category: 'forecast',
+      label: 'Stage advanced',
+    };
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [oneStepMove],
+      asOfDate: AS_OF,
+    });
+    const wow = md.slice(md.indexOf('Week-over-week'));
+    expect(wow).toMatch(/No movement this week/);
+  });
+
+  it('suppresses close-date slips of less than 7 days', () => {
+    const acc = mkAccount({ accountId: 'SD', accountName: 'Small Slip' });
+    const view = mkView(
+      acc,
+      [mkOpportunity({ accountId: 'SD', closeDate: '2026-04-15' })],
+      { bucket: 'Saveable Risk' },
+    );
+    const slip: ChangeEvent = {
+      accountId: 'SD',
+      opportunityId: 'O',
+      field: 'closeDate',
+      oldValue: '2026-04-10',
+      newValue: '2026-04-13',
+      occurredBetween: ['p', 'c'],
+      category: 'forecast',
+      label: 'Close slipped',
+    };
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [slip],
+      asOfDate: AS_OF,
+    });
+    const wow = md.slice(md.indexOf('Week-over-week'));
+    expect(wow).toMatch(/No movement this week/);
+  });
+
+  it('surfaces close-date slips >= 7 days as regressions', () => {
+    const acc = mkAccount({ accountId: 'BS', accountName: 'Big Slip' });
+    const view = mkView(
+      acc,
+      [mkOpportunity({ accountId: 'BS', closeDate: '2026-04-15' })],
+      { bucket: 'Saveable Risk' },
+    );
+    const slip: ChangeEvent = {
+      accountId: 'BS',
+      opportunityId: 'O',
+      field: 'closeDate',
+      oldValue: '2026-04-01',
+      newValue: '2026-04-30',
+      occurredBetween: ['p', 'c'],
+      category: 'forecast',
+      label: 'Close slipped',
+    };
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [slip],
+      asOfDate: AS_OF,
+    });
+    expect(md).toMatch(/- Big Slip - ↓ Close 2026-04-01 → 2026-04-30 \(\+29d\)/);
   });
 
   it('omits hygiene call-outs entirely (leadership lens)', () => {
