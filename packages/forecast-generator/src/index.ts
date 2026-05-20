@@ -90,6 +90,47 @@ const fmtSignedUSD = (n: number) => {
   return n > 0 ? `+$${abs}` : `-$${abs}`;
 };
 
+/**
+ * Render the Gap-to-Plan line value, including a parenthetical
+ * percentage variance against Plan when both Flash and Plan are
+ * known.
+ *
+ * Conventions match the leadership churn-call vocabulary (verified
+ * 2026-05-20 via prior-art search across the NoAM FY27 Renewal
+ * Script and Sam Lawley's Expand 1 sections):
+ *
+ *   - Plan and Flash are negative loss dollars (e.g., Plan
+ *     -$2,164,000 = "we plan to lose $2.16M this quarter").
+ *   - "Under plan" = Flash is further from zero than Plan = we're
+ *     losing MORE than planned = bad. The variance % is the share
+ *     of Plan we're missing by.
+ *   - "Over plan" = Flash is closer to zero than Plan = losing less
+ *     than planned = good ("beating plan").
+ *   - "At plan" when Flash exactly equals Plan.
+ *
+ * Examples:
+ *   Plan -$2,164,000, Flash -$2,473,435  → "-$309,435 (14.3% under plan)"
+ *   Plan -$2,164,000, Flash -$1,800,000  → "+$364,000 (16.8% over plan)"
+ *   Plan -$2,164,000, Flash -$2,164,000  → "$0 (at plan)"
+ *   Plan undefined                        → "[fill in once Plan is set]"
+ *   Plan = 0 (degenerate)                 → just the dollar value; no %.
+ */
+function formatGapToPlan(flashUSD: number, planUSD: number | undefined): string {
+  if (planUSD == null) return '[fill in once Plan is set]';
+  const gap = flashUSD - planUSD;
+  const dollar = fmtSignedUSD(gap);
+  // Avoid divide-by-zero on a degenerate Plan input.
+  if (planUSD === 0) return dollar;
+  if (gap === 0) return `${dollar} (at plan)`;
+  // Percentage is the share of Plan magnitude we missed by. Direction
+  // is decided by sign of gap: negative gap = under plan (worse),
+  // positive gap = over plan (better).
+  const pct = (Math.abs(gap) / Math.abs(planUSD)) * 100;
+  const pctStr = pct >= 10 ? pct.toFixed(0) : pct.toFixed(1);
+  const direction = gap < 0 ? 'under plan' : 'over plan';
+  return `${dollar} (${pctStr}% ${direction})`;
+}
+
 interface QuarterBucket {
   label: string;
   key: string;
@@ -972,9 +1013,7 @@ function renderQuarterSection(
   lines.push(
     `Churn/Downsell Flash / Most Likely: ${fmtSignedUSD(flash)}`,
   );
-  lines.push(
-    `Gap to Plan: ${resolvedPlan != null ? fmtSignedUSD(flash - resolvedPlan) : '[fill in once Plan is set]'}`,
-  );
+  lines.push(`Gap to Plan: ${formatGapToPlan(flash, resolvedPlan)}`);
   lines.push(`Total Churn/Downsell Risk / Baseline: ${fmtSignedUSD(-total)}`);
   lines.push(`Hedge: ${fmtUSD(hedgeUSD)}`);
 
