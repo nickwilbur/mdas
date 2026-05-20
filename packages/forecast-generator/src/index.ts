@@ -5,13 +5,13 @@ import {
   timeframeMatchesFiscalQuarter,
   type ClariForecastSelection,
   type ClariManagerForecastRow,
-} from './clari-manager-forecast';
-import { fiscalQuarterFromDate, fiscalQuarterLabel } from './fiscal';
+} from './clari-manager-forecast.js';
+import { fiscalQuarterFromDate, fiscalQuarterLabel } from './fiscal.js';
 
 // PR-C3 — re-export Clari CSV + dark-account helpers from the public
 // surface of @mdas/forecast-generator.
-export { generateClariCsv, findDarkAccounts } from './clari-csv';
-export type { ClariCsvOptions, DarkAccount } from './clari-csv';
+export { generateClariCsv, findDarkAccounts } from './clari-csv.js';
+export type { ClariCsvOptions, DarkAccount } from './clari-csv.js';
 
 export {
   parseClariManagerForecastExportCsv,
@@ -19,12 +19,12 @@ export {
   selectLatestClariForecastValue,
   timeframeMatchesFiscalQuarter,
   CLARI_FORECAST_SOURCE_LABEL,
-} from './clari-manager-forecast';
+} from './clari-manager-forecast.js';
 export type {
   ClariForecastSelection,
   ClariManagerForecastRow,
   SelectClariForecastValueOpts,
-} from './clari-manager-forecast';
+} from './clari-manager-forecast.js';
 
 export interface ForecastInput {
   views: AccountView[];

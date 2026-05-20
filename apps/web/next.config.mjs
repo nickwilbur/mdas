@@ -23,5 +23,35 @@ const nextConfig = {
     '@mdas/scoring',
     '@mdas/forecast-generator',
   ],
+  // Resolve ESM-style `.js` import suffixes against their `.ts` source.
+  //
+  // Internal packages (e.g. @mdas/scoring, @mdas/forecast-generator)
+  // are authored in TypeScript with the
+  // `moduleResolution: bundler` + ESM-on-disk convention, which
+  // requires relative imports to carry an explicit extension. They
+  // write `from './foo.js'` so the same source compiles cleanly under
+  // both Node ESM (after a `tsc` emit to .js) and `tsx` (which reads
+  // .ts directly via path stripping).
+  //
+  // Next.js's default webpack resolver doesn't know about this
+  // mapping for files inside `transpilePackages`, so a bare
+  // `from './foo.js'` resolves to a literal `foo.js` that doesn't
+  // exist on disk and the build fails with "Module not found".
+  // The `extensionAlias` field tells webpack: "when you see a
+  // request ending in .js, also try .ts (and .tsx) before giving up".
+  // This matches the TS recommendation in
+  // https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html#--moduleresolution-bundler
+  // and removes the foot-gun without touching package source.
+  webpack(config) {
+    config.resolve = config.resolve ?? {};
+    config.resolve.extensionAlias = {
+      ...(config.resolve.extensionAlias ?? {}),
+      '.js': ['.ts', '.tsx', '.js'],
+      '.jsx': ['.tsx', '.jsx'],
+      '.mjs': ['.mts', '.mjs'],
+      '.cjs': ['.cts', '.cjs'],
+    };
+    return config;
+  },
 };
 export default withBundleAnalyzer(nextConfig);
