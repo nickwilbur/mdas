@@ -793,6 +793,7 @@ function renderQuarterSection(
       lines.push(`  - ${r.view.account.accountName} (${fmtUSD(r.usd)}) - ${r.opp.closeDate}`);
     }
   }
+  lines.push('');
 
   // Churn-save targets MDAS believes belong in the hedge list but that
   // currently carry $0 forecast hedge — i.e., renewals at Confirmed
@@ -828,17 +829,18 @@ function renderQuarterSection(
     0,
   );
   lines.push(
-    `  Churn-save targets not yet hedged in Clari (ATR exposed): ${fmtUSD(targetsWithoutHedgeTotal)}`,
+    `Churn-save targets not yet hedged in Clari (ATR exposed): ${fmtUSD(targetsWithoutHedgeTotal)}`,
   );
   if (targetsWithoutHedge.length === 0) {
-    lines.push(`    - None identified`);
+    lines.push(`  - None identified`);
   } else {
     for (const r of targetsWithoutHedge) {
       lines.push(
-        `    - ${r.view.account.accountName} (${fmtUSD(r.usd)} ATR) - ${r.opp.closeDate}`,
+        `  - ${r.view.account.accountName} (${fmtUSD(r.usd)} ATR) - ${r.opp.closeDate}`,
       );
     }
   }
+  lines.push('');
 
   // "Accounts to Close Gap" — same churn-save filter, then rank by ATR
   // (dollars that move the gap-to-Plan needle), not by total ACV. We
