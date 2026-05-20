@@ -27,6 +27,7 @@ import 'server-only';
 import { gleanForRequest } from './glean-server';
 import type { GleanChatRequestMessage } from '@mdas/adapter-shared/glean';
 import type { ForecastTrajectory, TrajectoryPoint } from './forecast-trajectory';
+import { cleanGleanChatReply } from './clean-glean-chat-reply';
 
 const FAILURE_MARKER_PREFIX = '[Narrative unavailable — Glean call failed';
 
@@ -80,7 +81,7 @@ async function runOneNarrative(
       { author: 'USER', fragments: [{ text: prompt }] },
     ];
     const reply = await client.chat({ messages, stream: false });
-    const text = reply.text?.trim();
+    const text = cleanGleanChatReply(reply.text);
     if (!text) return failureMarker('empty reply from Glean chat');
     return text;
   } catch (err) {
