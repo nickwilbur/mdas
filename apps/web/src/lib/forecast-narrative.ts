@@ -28,7 +28,14 @@ import { gleanForRequest } from './glean-server';
 import type { GleanChatRequestMessage } from '@mdas/adapter-shared/glean';
 import type { ForecastTrajectory, TrajectoryPoint } from './forecast-trajectory';
 
-const FAILURE_MARKER = '[Narrative unavailable — Glean call failed]';
+const FAILURE_MARKER_PREFIX = '[Narrative unavailable — Glean call failed';
+
+function failureMarker(reason: string | undefined): string {
+  const cleaned = (reason ?? '').trim().replace(/\s+/g, ' ').slice(0, 200);
+  return cleaned
+    ? `${FAILURE_MARKER_PREFIX}: ${cleaned}]`
+    : `${FAILURE_MARKER_PREFIX}]`;
+}
 
 /**
  * Generate per-quarter Health Snapshot narratives from a trajectory
@@ -74,20 +81,21 @@ async function runOneNarrative(
     ];
     const reply = await client.chat({ messages, stream: false });
     const text = reply.text?.trim();
-    if (!text) return FAILURE_MARKER;
+    if (!text) return failureMarker('empty reply from Glean chat');
     return text;
   } catch (err) {
     // Log structured for ops, but never throw — a Glean outage must
     // not block the manager from pasting the rest of the script
     // into the leadership call.
+    const message = (err as Error)?.message ?? String(err);
     // eslint-disable-next-line no-console
     console.warn('forecast.healthSnapshot.glean_failed', {
       quarter,
       asOfDate,
       pointCount: points.length,
-      message: (err as Error)?.message,
+      message,
     });
-    return FAILURE_MARKER;
+    return failureMarker(message);
   }
 }
 

@@ -10,7 +10,12 @@ import { generateHealthSnapshots } from '@/lib/forecast-narrative';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const NARRATIVE_FAILURE_MARKER = '[Narrative unavailable — Glean call failed]';
+function narrativeFailureMarker(reason: string | undefined): string {
+  const cleaned = (reason ?? '').trim().replace(/\s+/g, ' ').slice(0, 200);
+  return cleaned
+    ? `[Narrative unavailable — Glean call failed: ${cleaned}]`
+    : `[Narrative unavailable — Glean call failed]`;
+}
 
 /**
  * Generate the plaintext quarterly churn-forecast script.
@@ -65,14 +70,15 @@ export async function POST(req: Request): Promise<Response> {
       );
       healthSnapshot = await generateHealthSnapshots(req, trajectory);
     } catch (err) {
+      const message = (err as Error)?.message ?? String(err);
       // eslint-disable-next-line no-console
       console.warn('forecast.healthSnapshot.failed', {
         asOfDate,
-        message: (err as Error)?.message,
+        message,
       });
       healthSnapshot = {
-        currentQuarter: NARRATIVE_FAILURE_MARKER,
-        nextQuarter: NARRATIVE_FAILURE_MARKER,
+        currentQuarter: narrativeFailureMarker(message),
+        nextQuarter: narrativeFailureMarker(message),
       };
     }
 
