@@ -126,44 +126,79 @@ export async function loadForecastTrajectory(
   const currentPoints: TrajectoryPoint[] = [];
   const nextPoints: TrajectoryPoint[] = [];
 
+  // Cache the next-quarter Plan lookup outside the loop — asOfDate is
+  // fixed for the request, so nextKeyFrom(asOfDate) is the same on
+  // every iteration.
+  const nextQuarterKey = nextKeyFrom(asOfDate);
+  const clariNextPlan = clariSelectionPlan(clariRows, nextQuarterKey);
+
   for (const day of orderedDays) {
     const run = lastPerDay.get(day)!;
-    const views = await buildViewsForRun(run.id);
+    // Per-snapshot build / KPI failures must not kill the whole
+    // trajectory series. The canonical model evolves over time
+    // (e.g., the 2026-05-20 forecastCategory field was added) and
+    // an older snapshot can have a payload that confuses
+    // buildAccountView or one of the scoring helpers. Skip those
+    // points; the LLM prompt is honest about gaps.
+    let views: AccountView[];
+    try {
+      views = await buildViewsForRun(run.id);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('forecast.trajectory.buildViews.failed', {
+        refreshId: run.id,
+        day,
+        message: (err as Error)?.message,
+      });
+      continue;
+    }
 
     const resolvedCurrentPlan = plan?.currentQuarterUSD ?? clariCurrentPlan;
-    const currentKpis = computeQuarterKpis(
-      views,
-      asOfDate,
-      'current',
-      resolvedCurrentPlan ?? null,
-    );
-    if (currentKpis.fiscalQuarterKey) {
-      currentPoints.push({
-        date: day,
+    try {
+      const currentKpis = computeQuarterKpis(
+        views,
+        asOfDate,
+        'current',
+        resolvedCurrentPlan ?? null,
+      );
+      if (currentKpis.fiscalQuarterKey) {
+        currentPoints.push({
+          date: day,
+          refreshId: run.id,
+          refreshStartedAt: run.started_at,
+          kpis: currentKpis,
+        });
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('forecast.trajectory.currentKpis.failed', {
         refreshId: run.id,
-        refreshStartedAt: run.started_at,
-        kpis: currentKpis,
+        day,
+        message: (err as Error)?.message,
       });
     }
 
-    // Next-quarter Plan is looked up from Clari with the per-snapshot
-    // key (always the same key here since asOfDate is fixed) so we
-    // pull it once outside the loop only if/when a snapshot returns
-    // a non-empty next-quarter key. Keep it inline for clarity:
-    const nextKpis = computeQuarterKpis(
-      views,
-      asOfDate,
-      'next',
-      plan?.nextQuarterUSD ??
-        clariSelectionPlan(clariRows, nextKeyFrom(asOfDate)) ??
-        null,
-    );
-    if (nextKpis.fiscalQuarterKey) {
-      nextPoints.push({
-        date: day,
+    try {
+      const nextKpis = computeQuarterKpis(
+        views,
+        asOfDate,
+        'next',
+        plan?.nextQuarterUSD ?? clariNextPlan ?? null,
+      );
+      if (nextKpis.fiscalQuarterKey) {
+        nextPoints.push({
+          date: day,
+          refreshId: run.id,
+          refreshStartedAt: run.started_at,
+          kpis: nextKpis,
+        });
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('forecast.trajectory.nextKpis.failed', {
         refreshId: run.id,
-        refreshStartedAt: run.started_at,
-        kpis: nextKpis,
+        day,
+        message: (err as Error)?.message,
       });
     }
   }

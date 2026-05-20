@@ -24,6 +24,11 @@ interface ForecastResponse {
   asOfDate: string;
 }
 
+interface ForecastErrorResponse {
+  error: string;
+  detail?: string;
+}
+
 // Anchor date for the selected quarter (start of quarter, used by the
 // API to bucket opps into Current vs Next). Q1 = Feb, Q2 = May, etc.
 function quarterStartIso(fq: FiscalQuarter): string {
@@ -88,8 +93,28 @@ export function ForecastClient() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const j = (await r.json()) as ForecastResponse;
-      setResponse(j);
+      // Defensive parse: an empty body (e.g., 500 with no JSON) used
+      // to surface to the user as "Unexpected end of JSON input"
+      // SyntaxError from inside this component. Read text first,
+      // then attempt to parse so we can render a useful error.
+      const raw = await r.text();
+      let parsed: ForecastResponse | ForecastErrorResponse | null = null;
+      if (raw) {
+        try {
+          parsed = JSON.parse(raw) as ForecastResponse | ForecastErrorResponse;
+        } catch {
+          parsed = null;
+        }
+      }
+      if (!r.ok || !parsed || 'error' in parsed) {
+        const errMsg =
+          parsed && 'error' in parsed
+            ? `${parsed.error}${parsed.detail ? `: ${parsed.detail}` : ''}`
+            : `Forecast generation failed (HTTP ${r.status})${raw ? `: ${raw.slice(0, 200)}` : ''}`;
+        setResponse({ text: errMsg, asOfDate });
+        return;
+      }
+      setResponse(parsed);
       persistPlansFromInputs();
     } finally {
       setBusy(false);
