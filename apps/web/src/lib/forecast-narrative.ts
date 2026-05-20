@@ -123,7 +123,9 @@ function buildPrompt(
       const gap = k.gapUSD != null ? signedUsd(k.gapUSD) : 'unknown';
       const hedge = usd(k.hedgeUSD);
       const total = signedUsd(k.totalRiskUSD);
-      return `${p.date} | Plan ${plan} | Flash ${flash} | Gap ${gap} | TotalRisk ${total} | Hedge ${hedge} | Red ${k.redAccountCount} | Yellow ${k.yellowAccountCount} | Accounts ${k.accountCount}`;
+      const pct = flashToPlanPct(k.flashUSD, k.planUSD);
+      const pctStr = pct != null ? `${pct.toFixed(0)}%` : 'n/a';
+      return `${p.date} | Plan ${plan} | Flash ${flash} | %ToPlan ${pctStr} | Gap ${gap} | TotalRisk ${total} | Hedge ${hedge} | Red ${k.redAccountCount} | Yellow ${k.yellowAccountCount} | Accounts ${k.accountCount}`;
     })
     .join('\n');
 
@@ -142,17 +144,44 @@ function buildPrompt(
     `  2. How is it trending across the snapshots so far this quarter?`,
     `  3. One subjective callout that is NOT obvious from the dollar figures.`,
     ``,
+    `TONE CALIBRATION — read this carefully:`,
+    `  Churn/Downsell Plan and Flash are NEGATIVE numbers (they are losses we plan to absorb). %ToPlan is Flash / Plan as a percentage. Higher % = closer to budget, which is GOOD. Calibrate language to the bucket:`,
+    `    >= 100%  beating plan — confident, "ahead of plan", "tracking favorably"`,
+    `    95-100%  on track — "in line with plan", "tracking close to plan", "manageable variance"`,
+    `    85-95%   manageable variance — "modestly behind plan", "small gap to close"; do NOT call this "unhealthy"`,
+    `    70-85%   needs attention — "behind plan", "real gap to close", "need to compress risk"`,
+    `    < 70%    at risk — "materially behind plan", "significant gap"`,
+    `  Default to neutral-to-confident framing. Lead with what's working before calling out risk. Never use catastrophic words ("unhealthy", "thinner margin for error", "worsened materially", "in trouble") unless the bucket is "needs attention" or worse. A small WoW improvement on an 85-95% quarter is GOOD news, not faint praise.`,
+    ``,
     `STYLE:`,
-    `  - Leadership vocabulary: "Gap to Plan", "flashing N% to Plan" (negative = behind, positive = beating), "Status quo from last week" for no movement.`,
-    `  - Do NOT restate the raw dollar figures verbatim. They appear above and below this paragraph already. Reference direction and magnitude qualitatively ("widened materially", "modestly improved", "flat through the quarter").`,
+    `  - Leadership vocabulary: "Gap to Plan", "flashing N% to Plan" (use the %ToPlan column from the latest snapshot), "Status quo from last week" for no movement, "Path to Improve" for hedge capture.`,
+    `  - Do NOT restate the raw dollar figures verbatim. They appear above and below this paragraph already. Reference direction and magnitude qualitatively, scaled to the bucket above.`,
     `  - Honest. If the trajectory is flat, say so. If we have only one snapshot, say so explicitly (do not fabricate a trend).`,
     `  - First person plural ("we", "the team"). Past tense for what changed; present tense for the current read.`,
+    `  - Avoid hedge-fund alarm words ("materially worsened", "thinner margin", "deteriorated"). Use plain-English magnitude words ("slightly", "modestly", "meaningfully", "materially") that match the bucket.`,
     ``,
     `TRAJECTORY SERIES (${seriesSpan}, oldest first):`,
     trajectoryTable,
     ``,
     `Reply with ONLY the paragraph. No preamble, no signoff, no markdown.`,
   ].join('\n');
+}
+
+/**
+ * Flash / Plan as a percentage. Both inputs are negative (loss
+ * dollars) so the ratio is positive and naturally ordered:
+ *   - 100% means Flash exactly equals Plan.
+ *   - >100% means Flash is closer to zero than Plan (better than plan).
+ *   - <100% means Flash is further from zero than Plan (worse than plan).
+ *
+ * Returns null when Plan is unknown or zero (zero-Plan would divide
+ * by zero; null lets the prompt render "n/a" and the model treats
+ * the quarter as cold-start).
+ */
+function flashToPlanPct(flash: number, plan: number | null): number | null {
+  if (plan == null || plan === 0) return null;
+  // Both negative → ratio of magnitudes is the right anchor for tone.
+  return (Math.abs(plan) / Math.abs(flash)) * 100;
 }
 
 function usd(n: number): string {
