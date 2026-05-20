@@ -104,11 +104,18 @@ export async function loadForecastTrajectory(
   // Dedupe to "last refresh of each calendar day". Map preserves
   // insertion order, but we walk newest-first and only keep the
   // first hit per day → guaranteed to grab the last-of-day refresh.
-  const lastPerDay = new Map<string, RefreshRun>();
+  //
+  // pg hydrates timestamptz columns to JS Date by default, even
+  // though our RefreshRun interface narrows the type to `string`
+  // (the JSON-serialized representation the API uses). Coerce to
+  // ISO before slicing so this works regardless of whether the row
+  // came back as Date (live DB query) or string (JSON round-trip).
+  const lastPerDay = new Map<string, { day: string; startedAtIso: string; run: RefreshRun }>();
   for (let i = runs.length - 1; i >= 0; i -= 1) {
     const r = runs[i]!;
-    const day = r.started_at.slice(0, 10);
-    if (!lastPerDay.has(day)) lastPerDay.set(day, r);
+    const startedAtIso = toIsoString(r.started_at);
+    const day = startedAtIso.slice(0, 10);
+    if (!lastPerDay.has(day)) lastPerDay.set(day, { day, startedAtIso, run: r });
   }
   const orderedDays = Array.from(lastPerDay.keys()).sort();
 
@@ -133,7 +140,8 @@ export async function loadForecastTrajectory(
   const clariNextPlan = clariSelectionPlan(clariRows, nextQuarterKey);
 
   for (const day of orderedDays) {
-    const run = lastPerDay.get(day)!;
+    const entry = lastPerDay.get(day)!;
+    const { run, startedAtIso } = entry;
     // Per-snapshot build / KPI failures must not kill the whole
     // trajectory series. The canonical model evolves over time
     // (e.g., the 2026-05-20 forecastCategory field was added) and
@@ -165,7 +173,7 @@ export async function loadForecastTrajectory(
         currentPoints.push({
           date: day,
           refreshId: run.id,
-          refreshStartedAt: run.started_at,
+          refreshStartedAt: startedAtIso,
           kpis: currentKpis,
         });
       }
@@ -189,7 +197,7 @@ export async function loadForecastTrajectory(
         nextPoints.push({
           date: day,
           refreshId: run.id,
-          refreshStartedAt: run.started_at,
+          refreshStartedAt: startedAtIso,
           kpis: nextKpis,
         });
       }
@@ -259,4 +267,31 @@ function nextKeyFrom(asOfDate: string): string {
   d.setUTCMonth(d.getUTCMonth() + 3);
   const fq = fiscalQuarterFromDate(d.toISOString());
   return fq?.key ?? '';
+}
+
+/**
+ * Coerce a timestamp value of unknown shape into an ISO 8601 string.
+ *
+ * pg hydrates `timestamptz` columns to JS `Date` by default even
+ * though our `RefreshRun` TypeScript interface narrows the field to
+ * `string` (the JSON-serialized representation the API consumes).
+ * Direct DB-query consumers (like this trajectory loader) thus get
+ * `Date` at runtime; serialized consumers (like the dashboard API
+ * that hands views to the browser) get `string`. This helper makes
+ * both paths converge on a single ISO string format.
+ *
+ * Anything else (number, null, undefined) falls back to `new Date()`
+ * → ISO; safer than throwing because the trajectory loader is
+ * non-critical and we'd rather skip a malformed row than 500.
+ */
+function toIsoString(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === 'string') {
+    // Pass strings through when they're already ISO-like; otherwise
+    // parse + re-emit so downstream `.slice(0, 10)` is safe.
+    const parsed = new Date(v);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : v;
+  }
+  if (typeof v === 'number') return new Date(v).toISOString();
+  return new Date().toISOString();
 }
