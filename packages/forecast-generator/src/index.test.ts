@@ -138,10 +138,10 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       'Accounts with Hedge (churn-save renewals):',
       'Churn-save targets not yet hedged in Clari (ATR exposed):',
       'Accounts to Close Gap (churn-save renewals):',
+      'Week-over-week Changes - Improvements and increased risk:',
       'Key Saves/Improvements to close the gap from Total Churn/Downsell risk to Flash:',
       'Accounts in yellow - path to add hedge to the line:',
       'Accounts in green - path to capture the existing hedge already in the line:',
-      'Week-over-week Changes - Improvements and increased risk:',
       'Next Quarter:',
     ];
     let cursor = 0;
@@ -566,6 +566,74 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     // Account-level sign is "-" because at least one event is a
     // regression (ML went more negative).
     expect(md).toMatch(/- Turf Tank Aggregate - ↓ Forecast ML -\$43,000 → -\$82,327 \(-\$39,327\); ↑ Sentiment Yellow → Green/);
+  });
+
+  // 2026-05-20 seventh-pass: Key Saves narrative was rendering as
+  // truncated HTML tag-soup because (a) SFDC/Gainsight rich-text
+  // fields ship with <p>, <b>, anchor wrappers and HTML entities,
+  // and (b) the 160-char cap chopped sentences mid-word. The cleaner
+  // strips markup and the new 500-char cap honors word boundaries.
+  it('strips HTML and entities from Key Saves narrative and reads as prose', () => {
+    const acc = mkAccount({
+      accountId: 'HTML',
+      accountName: 'HTML Co',
+      cseSentimentCommentary: null,
+      cerebroRiskAnalysis: null,
+    });
+    const opp = mkOpportunity({
+      accountId: 'HTML',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -100_000,
+      acvDelta: -100_000,
+      flmNotes:
+        '<p></p><p class="x"><b>STATE AND RENEWAL RISK:</b> Account is Red with planned 30% downsell. <a href="https://x/y">link</a>&nbsp;Key contacts have departed per Champify&#39;s data.</p>',
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [opp], {
+          bucket: 'Saveable Risk',
+          risk: { level: 'High', source: 'cerebro', rationale: '' },
+        }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    // No HTML tags or raw entities leak through.
+    expect(md).not.toMatch(/<\/?(p|b|div|a|br)\b/);
+    expect(md).not.toContain('&nbsp;');
+    expect(md).not.toContain('&#39;');
+    // The cleaned, full prose appears verbatim (well under 500 chars,
+    // so no ellipsis).
+    expect(md).toContain(
+      "STATE AND RENEWAL RISK: Account is Red with planned 30% downsell. Key contacts have departed per Champify's data.",
+    );
+  });
+
+  it('truncates very long narratives at a word boundary with an ellipsis', () => {
+    const longProse =
+      'STATE AND RENEWAL RISK: ' + 'word '.repeat(200).trim();
+    const acc = mkAccount({ accountId: 'LP', accountName: 'Long Prose Co' });
+    const opp = mkOpportunity({
+      accountId: 'LP',
+      closeDate: '2026-04-15',
+      forecastMostLikely: -100_000,
+      acvDelta: -100_000,
+      flmNotes: longProse,
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [opp], {
+          bucket: 'Saveable Risk',
+          risk: { level: 'High', source: 'cerebro', rationale: '' },
+        }),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    // Renders with an ellipsis, not a mid-word chop.
+    expect(md).toMatch(/Long Prose Co \(\$\d/);
+    expect(md).toContain('…');
+    expect(md).not.toMatch(/wo…/); // ellipsis lands after a whole word
   });
 
   // 2026-05-20 sixth-pass: even after the churn-save scoping, a

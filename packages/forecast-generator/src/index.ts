@@ -325,7 +325,56 @@ function firstNonEmptyLine(s: string | null | undefined): string {
 }
 
 /**
- * One-line “what’s needed” for Key Saves bullets. Returns the first
+ * Salesforce / Gainsight rich-text fields (FLM/SLM notes, sentiment
+ * commentary, Cerebro risk analysis) often arrive as HTML pasted by
+ * the CSE or surfaced by Gainsight's editor — `<p>`, `<b>`, anchor
+ * tags wrapping internal links, embedded `&nbsp;` / `&amp;` /
+ * `&#39;`, and the occasional decorative `<div class="tk0j8o1 ...">`.
+ * Rendering that raw in the leadership churn-call script reads as
+ * truncated tag-soup. This helper strips markup, decodes the
+ * entities the CSE notes actually use, and collapses whitespace so
+ * the prose is paste-ready.
+ */
+function cleanRichText(s: string | null | undefined): string {
+  if (!s) return '';
+  let t = String(s);
+  // Drop anchor tags wholesale — the visible text is almost always
+  // empty (the SFDC/Gainsight UI renders these as inline icons) and
+  // the href is noise in a plaintext script.
+  t = t.replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, '');
+  // Replace block-level closers and <br> with single spaces so the
+  // resulting prose flows; then strip remaining tags.
+  t = t.replace(/<\/(p|div|li|h\d|ul|ol)>/gi, ' ');
+  t = t.replace(/<br\s*\/?>(\s*)/gi, ' ');
+  t = t.replace(/<[^>]+>/g, '');
+  // Decode the small set of HTML entities CSE notes actually contain.
+  // (We deliberately don't import a full entity decoder — every other
+  // entity in observed snapshot data falls into this set.)
+  t = t
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+  // Collapse runs of whitespace (including the spaces we just
+  // inserted) and trim.
+  t = t.replace(/\s+/g, ' ').trim();
+  return t;
+}
+
+/** Cap narrative at maxLen graphemes, ellipsizing at a word boundary. */
+function truncateNarrative(s: string, maxLen = 500): string {
+  if (s.length <= maxLen) return s;
+  const slice = s.slice(0, maxLen);
+  const lastSpace = slice.lastIndexOf(' ');
+  const cutAt = lastSpace > maxLen * 0.7 ? lastSpace : maxLen;
+  return slice.slice(0, cutAt).trimEnd() + '…';
+}
+
+/**
+ * “What’s needed” narrative for Key Saves bullets. Returns the first
  * substantive signal from the data the CSE / FLM has already captured;
  * never invents text and never echoes a scoring-fallback rationale.
  *
@@ -333,37 +382,42 @@ function firstNonEmptyLine(s: string | null | undefined): string {
  *   1. `SE_Next_Steps__c` (`opp.scNextSteps`) — most actionable.
  *   2. For Confirmed Churn: `Account.churnReasonSummary`.
  *   3. `FLM_Notes__c` / `SLM_Notes__c` — manager-authored.
- *   4. `cseSentimentCommentary` — the CSE’s own one-liner.
+ *   4. `cseSentimentCommentary` — the CSE’s own narrative.
  *   5. `cerebroRiskAnalysis` directly (only when present — Cerebro AI
  *      narrative). Never the synthetic `view.risk.rationale` strings.
+ *
+ * Sources are HTML-stripped via `cleanRichText` (SFDC/Gainsight rich
+ * text routinely ships as tag-soup) and capped at 500 chars at a
+ * word boundary. Per 2026-05-20 manager feedback the prior 160-char
+ * cap produced unreadable mid-sentence truncations; 500 is enough to
+ * carry the State and Renewal Risk paragraph that CSEs typically
+ * structure their commentary around.
  *
  * If none of the above are present, returns `''` so the caller renders
  * `name ($amount)` with no apology copy.
  */
 function whatIsNeeded(view: AccountView, opp: CanonicalOpportunity): string {
-  const next = firstNonEmptyLine(opp.scNextSteps);
-  if (next) return next.slice(0, 160);
+  const next = cleanRichText(opp.scNextSteps);
+  if (next) return truncateNarrative(next);
 
-  const churn = view.account.churnReasonSummary?.trim();
-  if (view.bucket === 'Confirmed Churn' && churn) return churn.slice(0, 160);
+  const churn = cleanRichText(view.account.churnReasonSummary);
+  if (view.bucket === 'Confirmed Churn' && churn) return truncateNarrative(churn);
 
-  const flm = firstNonEmptyLine(opp.flmNotes);
-  if (flm) return flm.slice(0, 160);
-  const slm = firstNonEmptyLine(opp.slmNotes);
-  if (slm) return slm.slice(0, 160);
+  const flm = cleanRichText(opp.flmNotes);
+  if (flm) return truncateNarrative(flm);
+  const slm = cleanRichText(opp.slmNotes);
+  if (slm) return truncateNarrative(slm);
 
-  const sentimentCommentary = firstNonEmptyLine(
-    view.account.cseSentimentCommentary,
-  );
-  if (sentimentCommentary) return sentimentCommentary.slice(0, 160);
+  const sentimentCommentary = cleanRichText(view.account.cseSentimentCommentary);
+  if (sentimentCommentary) return truncateNarrative(sentimentCommentary);
 
-  const cerebroAnalysis = firstNonEmptyLine(view.account.cerebroRiskAnalysis);
+  const cerebroAnalysis = cleanRichText(view.account.cerebroRiskAnalysis);
   if (cerebroAnalysis && isPasteableNarrative(cerebroAnalysis)) {
-    return cerebroAnalysis.slice(0, 160);
+    return truncateNarrative(cerebroAnalysis);
   }
 
   const rationale = view.risk.rationale?.trim();
-  if (isPasteableNarrative(rationale)) return rationale!.slice(0, 160);
+  if (isPasteableNarrative(rationale)) return truncateNarrative(rationale!);
 
   return '';
 }
@@ -820,6 +874,23 @@ function renderQuarterSection(
   }
   lines.push('');
 
+  // Week-over-week — placed above Key Saves so leadership sees what
+  // moved this week before drilling into per-account narrative.
+  // (Moved from below Key Saves on 2026-05-20.)
+  const wow = wowChanges(bucket.rows, events);
+  lines.push(`Week-over-week Changes - Improvements and increased risk:`);
+  if (wow.length === 0) {
+    lines.push(`  - No movement this week`);
+  } else {
+    for (const w of wow) {
+      const detail = w.details
+        .map((d) => `${d.sign === '-' ? '↓' : '↑'} ${d.text}`)
+        .join('; ');
+      lines.push(`  ${w.sign} ${w.accountName} - ${detail}`);
+    }
+  }
+  lines.push('');
+
   lines.push(
     `Key Saves/Improvements to close the gap from Total Churn/Downsell risk to Flash:`,
   );
@@ -864,21 +935,6 @@ function renderQuarterSection(
         whatIsNeeded(r.view, r.opp),
       ),
     );
-  }
-  lines.push('');
-
-  // Week-over-week
-  const wow = wowChanges(bucket.rows, events);
-  lines.push(`Week-over-week Changes - Improvements and increased risk:`);
-  if (wow.length === 0) {
-    lines.push(`  - No movement this week`);
-  } else {
-    for (const w of wow) {
-      const detail = w.details
-        .map((d) => `${d.sign === '-' ? '↓' : '↑'} ${d.text}`)
-        .join('; ');
-      lines.push(`  ${w.sign} ${w.accountName} - ${detail}`);
-    }
   }
   lines.push('');
 
