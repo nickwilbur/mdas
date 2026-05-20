@@ -568,12 +568,45 @@ function wowChanges(
   // an account that also has a down-forecast renewal).
   const renewalOppIds = new Set<string>();
   const nameById = new Map<string, string>();
+  // All renewal opp IDs in the quarter (across every account), used
+  // for the "recently closed-won" exception below. We need this so we
+  // can promote an account into the WoW list when its renewal just
+  // booked (i.e., transitioned to a Closed/Won stage during the
+  // window), even though the current snapshot now categorizes the
+  // renewal as Closed and isChurnSaveTarget would otherwise exclude
+  // it. Leadership wants to hear about wins that just closed.
+  const renewalOppToAccount = new Map<string, { accountId: string; name: string }>();
 
   for (const r of rows) {
+    if (isRenewalLike(r.opp)) {
+      renewalOppToAccount.set(r.opp.opportunityId, {
+        accountId: r.view.account.accountId,
+        name: r.view.account.accountName,
+      });
+    }
     if (!isChurnSaveTarget(r.view, r.opp)) continue;
     eligibleAccountIds.add(r.view.account.accountId);
     nameById.set(r.view.account.accountId, r.view.account.accountName);
   }
+
+  // "Recently closed-won" exception: scan stageName events for renewal
+  // opps in the quarter whose new value indicates a Closed/Won stage,
+  // and promote their accounts into the eligible set. We deliberately
+  // do not extend this to Closed/Lost — those rep concessions are
+  // already captured by the underlying churn-save filter on prior
+  // weeks (the ATR exposure was visible before it was conceded).
+  for (const e of events) {
+    if (e.field !== 'stageName') continue;
+    if (e.opportunityId == null) continue;
+    const meta = renewalOppToAccount.get(e.opportunityId);
+    if (!meta) continue;
+    const newStage = String(e.newValue ?? '').toLowerCase();
+    if (!(newStage.includes('closed') && newStage.includes('won'))) continue;
+    eligibleAccountIds.add(meta.accountId);
+    nameById.set(meta.accountId, meta.name);
+    renewalOppIds.add(e.opportunityId);
+  }
+
   // Second pass: for every opportunity (in the quarter) on an
   // eligible account, mark the renewal opps so we can scope opp-level
   // diffs. We can't rely on isChurnSaveTarget here because a renewal

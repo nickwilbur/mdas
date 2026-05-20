@@ -568,6 +568,77 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).toMatch(/- Turf Tank Aggregate - ↓ Forecast ML -\$43,000 → -\$82,327 \(-\$39,327\); ↑ Sentiment Yellow → Green/);
   });
 
+  // 2026-05-20 sixth-pass: even after the churn-save scoping, a
+  // renewal that *just transitioned to Closed/Won* during the window
+  // belongs in WoW as good news for leadership — even though it has
+  // dropped out of the churn-save universe in the current snapshot
+  // (forecastCategory now reads "Closed"). DataStax is the verified
+  // example. Without this exception the manager loses visibility of
+  // booked renewals the week they close.
+  it('includes recently closed-won renewals even when isChurnSaveTarget would now exclude them', () => {
+    const acc = mkAccount({ accountId: 'CW', accountName: 'Just Booked Co' });
+    const bookedRenewal = mkOpportunity({
+      opportunityId: 'O-CW',
+      accountId: 'CW',
+      closeDate: '2026-04-15',
+      // Current snapshot now shows the renewal as Closed — it's
+      // booked, so the standard churn-save filter excludes it. The
+      // closed-won-exception path must still surface the stage move.
+      forecastCategory: 'Closed',
+      forecastMostLikely: 0,
+      acvDelta: 0,
+    });
+    const view = mkView(acc, [bookedRenewal], { bucket: 'Healthy' });
+    const stageMove: ChangeEvent = {
+      accountId: 'CW',
+      opportunityId: 'O-CW',
+      field: 'stageName',
+      oldValue: '5.0 Propose',
+      newValue: '8.0 - Closed/Won (Finance)',
+      occurredBetween: ['p', 'c'],
+      category: 'forecast',
+      label: 'Stage moved',
+    };
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [stageMove],
+      asOfDate: AS_OF,
+    });
+    expect(md).toMatch(
+      /\+ Just Booked Co - ↑ Stage 5\.0 Propose → 8\.0 - Closed\/Won \(Finance\)/,
+    );
+  });
+
+  it('does NOT promote Closed/Lost-only accounts via the exception (no exception for losses)', () => {
+    const acc = mkAccount({ accountId: 'LO', accountName: 'Conceded Co' });
+    const lostRenewal = mkOpportunity({
+      opportunityId: 'O-LO',
+      accountId: 'LO',
+      closeDate: '2026-04-15',
+      forecastCategory: 'Closed Lost',
+      forecastMostLikely: 0,
+      acvDelta: 0,
+    });
+    const view = mkView(acc, [lostRenewal], { bucket: 'Confirmed Churn' });
+    const stageMove: ChangeEvent = {
+      accountId: 'LO',
+      opportunityId: 'O-LO',
+      field: 'stageName',
+      oldValue: '5.0 Propose',
+      newValue: '9.0 - Closed/Lost',
+      occurredBetween: ['p', 'c'],
+      category: 'forecast',
+      label: 'Stage moved',
+    };
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [stageMove],
+      asOfDate: AS_OF,
+    });
+    const wow = md.slice(md.indexOf('Week-over-week'));
+    expect(wow).toMatch(/No movement this week/);
+  });
+
   // 2026-05-20 fifth-pass: WoW scope = same churn-save lens as the
   // Hedge / Close-Gap sections. Accounts whose only opps are
   // expansions / new business / healthy renewals must not appear
