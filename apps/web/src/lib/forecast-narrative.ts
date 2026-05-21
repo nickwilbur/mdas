@@ -146,16 +146,16 @@ function buildPrompt(
     `  3. One subjective callout that is NOT obvious from the dollar figures.`,
     ``,
     `TONE CALIBRATION — read this carefully:`,
-    `  Churn/Downsell Plan and Flash are NEGATIVE numbers (they are losses we plan to absorb). %ToPlan is Flash / Plan as a percentage. Higher % = closer to budget, which is GOOD. Calibrate language to the bucket:`,
-    `    >= 100%  beating plan — confident, "ahead of plan", "tracking favorably"`,
-    `    95-100%  on track — "in line with plan", "tracking close to plan", "manageable variance"`,
-    `    85-95%   manageable variance — "modestly behind plan", "small gap to close"; do NOT call this "unhealthy"`,
-    `    70-85%   needs attention — "behind plan", "real gap to close", "need to compress risk"`,
-    `    < 70%    at risk — "materially behind plan", "significant gap"`,
-    `  Default to neutral-to-confident framing. Lead with what's working before calling out risk. Never use catastrophic words ("unhealthy", "thinner margin for error", "worsened materially", "in trouble") unless the bucket is "needs attention" or worse. A small WoW improvement on an 85-95% quarter is GOOD news, not faint praise.`,
+    `  Churn/Downsell Plan and Flash are NEGATIVE numbers (they are losses we plan to absorb). %ToPlan is |Flash| / |Plan| × 100. 100% means Flash exactly equals Plan. Higher % = losing MORE than budgeted (worse); lower % = losing LESS than budgeted (better). Calibrate language to the bucket:`,
+    `    <= 100%  beating plan — confident, "ahead of plan", "tracking favorably", "under the loss budget"`,
+    `    100-105% on track — "in line with plan", "tracking close to plan", "manageable variance"`,
+    `    105-115% manageable variance — "modestly over plan", "small gap to close"; do NOT call this "unhealthy"`,
+    `    115-130% needs attention — "over plan", "real gap to close", "need to compress risk"`,
+    `    > 130%   at risk — "materially over plan", "significant gap"`,
+    `  Default to neutral-to-confident framing. Lead with what's working before calling out risk. Never use catastrophic words ("unhealthy", "thinner margin for error", "worsened materially", "in trouble") unless the bucket is "needs attention" or worse. A small WoW improvement on a 105-115% quarter is GOOD news, not faint praise.`,
     ``,
     `STYLE:`,
-    `  - Leadership vocabulary: "Gap to Plan", "flashing N% to Plan" (use the %ToPlan column from the latest snapshot), "Status quo from last week" for no movement, "Path to Improve" for hedge capture.`,
+    `  - Leadership vocabulary: "Gap to Plan", "flashing N% to Plan" (use the %ToPlan column from the latest snapshot; e.g. "flashing 113% to plan" = 13% over the loss budget = behind, "flashing 87% to plan" = beating), "Status quo from last week" for no movement, "Path to Improve" for hedge capture.`,
     `  - Do NOT restate the raw dollar figures verbatim. They appear above and below this paragraph already. Reference direction and magnitude qualitatively, scaled to the bucket above.`,
     `  - Honest. If the trajectory is flat, say so. If we have only one snapshot, say so explicitly (do not fabricate a trend).`,
     `  - First person plural ("we", "the team"). Past tense for what changed; present tense for the current read.`,
@@ -169,11 +169,18 @@ function buildPrompt(
 }
 
 /**
- * Flash / Plan as a percentage. Both inputs are negative (loss
- * dollars) so the ratio is positive and naturally ordered:
+ * `% to Plan` per the leadership churn-call vocabulary:
+ *
+ *   pct = |Flash| / |Plan| × 100
+ *
  *   - 100% means Flash exactly equals Plan.
- *   - >100% means Flash is closer to zero than Plan (better than plan).
- *   - <100% means Flash is further from zero than Plan (worse than plan).
+ *   - >100% means we're forecasting to lose MORE than Plan ("over
+ *     the loss budget" → bad).
+ *   - <100% means we're forecasting to lose LESS than Plan ("under
+ *     the loss budget" → beating plan → good).
+ *
+ * This matches `formatGapToPlan` in the renderer and Sam Lawley's
+ * "Flashing 137% to plan" prior art (verified 2026-05-20).
  *
  * Returns null when Plan is unknown or zero (zero-Plan would divide
  * by zero; null lets the prompt render "n/a" and the model treats
@@ -181,8 +188,7 @@ function buildPrompt(
  */
 function flashToPlanPct(flash: number, plan: number | null): number | null {
   if (plan == null || plan === 0) return null;
-  // Both negative → ratio of magnitudes is the right anchor for tone.
-  return (Math.abs(plan) / Math.abs(flash)) * 100;
+  return (Math.abs(flash) / Math.abs(plan)) * 100;
 }
 
 function usd(n: number): string {

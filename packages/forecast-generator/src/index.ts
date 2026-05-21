@@ -92,25 +92,29 @@ const fmtSignedUSD = (n: number) => {
 
 /**
  * Render the Gap-to-Plan line value, including a parenthetical
- * percentage variance against Plan when both Flash and Plan are
+ * `% to Plan` reading against Plan when both Flash and Plan are
  * known.
  *
- * Conventions match the leadership churn-call vocabulary (verified
- * 2026-05-20 via prior-art search across the NoAM FY27 Renewal
- * Script and Sam Lawley's Expand 1 sections):
+ * Conventions match the leadership churn-call vocabulary (Sam
+ * Lawley's Expand 1 sections: "Flashing 137% to plan"). Plan and
+ * Flash are NEGATIVE loss dollars; we normalize to magnitudes for
+ * the percentage so the reading is monotonic in "how much we're
+ * losing vs. how much we planned to lose":
  *
- *   - Plan and Flash are negative loss dollars (e.g., Plan
- *     -$2,164,000 = "we plan to lose $2.16M this quarter").
- *   - "Under plan" = Flash is further from zero than Plan = we're
- *     losing MORE than planned = bad. The variance % is the share
- *     of Plan we're missing by.
- *   - "Over plan" = Flash is closer to zero than Plan = losing less
- *     than planned = good ("beating plan").
- *   - "At plan" when Flash exactly equals Plan.
+ *   pct = |Flash| / |Plan| × 100
+ *
+ *   - 100% exactly  → "at plan" (Flash equals Plan)
+ *   - > 100%        → "N% over plan"  (losing more than budgeted, BAD)
+ *   - < 100%        → "N% under plan" (losing less than budgeted, GOOD)
+ *
+ * (Yes, "over plan" reads positive in casual English but reads as
+ * "over the loss budget" in finance vocabulary — leadership uses
+ * this framing in the NoAM FY27 Renewal Script. We follow the
+ * house convention rather than re-invent.)
  *
  * Examples:
- *   Plan -$2,164,000, Flash -$2,473,435  → "-$309,435 (14.3% under plan)"
- *   Plan -$2,164,000, Flash -$1,800,000  → "+$364,000 (16.8% over plan)"
+ *   Plan -$2,164,000, Flash -$2,435,022  → "-$271,022 (113% over plan)"
+ *   Plan -$2,164,000, Flash -$1,800,000  → "+$364,000 (83% under plan)"
  *   Plan -$2,164,000, Flash -$2,164,000  → "$0 (at plan)"
  *   Plan undefined                        → "[fill in once Plan is set]"
  *   Plan = 0 (degenerate)                 → just the dollar value; no %.
@@ -119,15 +123,17 @@ function formatGapToPlan(flashUSD: number, planUSD: number | undefined): string 
   if (planUSD == null) return '[fill in once Plan is set]';
   const gap = flashUSD - planUSD;
   const dollar = fmtSignedUSD(gap);
-  // Avoid divide-by-zero on a degenerate Plan input.
   if (planUSD === 0) return dollar;
   if (gap === 0) return `${dollar} (at plan)`;
-  // Percentage is the share of Plan magnitude we missed by. Direction
-  // is decided by sign of gap: negative gap = under plan (worse),
-  // positive gap = over plan (better).
-  const pct = (Math.abs(gap) / Math.abs(planUSD)) * 100;
-  const pctStr = pct >= 10 ? pct.toFixed(0) : pct.toFixed(1);
-  const direction = gap < 0 ? 'under plan' : 'over plan';
+  const pct = (Math.abs(flashUSD) / Math.abs(planUSD)) * 100;
+  // Round-number leadership shorthand. We're already past the 100%
+  // threshold-of-meaning, so 1-decimal precision adds clutter
+  // without changing how the line is read.
+  const pctStr = pct.toFixed(0);
+  // gap > 0 means Flash is closer to zero than Plan = beating plan
+  // = under the loss budget. gap < 0 means Flash is further from
+  // zero than Plan = losing more than budgeted = over the budget.
+  const direction = gap > 0 ? 'under plan' : 'over plan';
   return `${dollar} (${pctStr}% ${direction})`;
 }
 
@@ -337,9 +343,28 @@ function totalRisk(rows: QuarterBucket['rows']): number {
     .reduce((s, r) => s + (r.opp.availableToRenewUSD ?? 0), 0);
 }
 
-/** "Hedge" = sum of forecastHedgeUSD (upside / cushion). */
+/**
+ * "Hedge" = sum of forecastHedgeUSD across renewal opps the manager
+ * is carrying on the Clari hedge line.
+ *
+ * Per 2026-05-20 manager feedback the prior implementation summed
+ * forecastHedgeUSD across ALL opps in the quarter, which double-
+ * counted expansion hedge (Amendment / New Business / Contracted
+ * Ramp opps with non-zero forecastHedgeUSD) into the "Hedge" KPI
+ * leadership reads as renewal-save dollars. Gate to the same
+ * renewal + carried-forecast-category lens the `Accounts with
+ * Hedge` and Key Saves sections already use. We deliberately do
+ * NOT additionally gate on a down-forecast signal — healthy
+ * renewals can carry hedge dollars too, and leadership wants the
+ * total churn-save hedge in the line, not just dollars on at-risk
+ * accounts.
+ */
 function hedge(rows: QuarterBucket['rows']): number {
-  return rows.reduce((s, r) => s + (r.opp.forecastHedgeUSD ?? 0), 0);
+  return rows.reduce((s, r) => {
+    if (!isRenewalLike(r.opp)) return s;
+    if (!isCarriedForecastCategory(r.opp)) return s;
+    return s + (r.opp.forecastHedgeUSD ?? 0);
+  }, 0);
 }
 
 /**

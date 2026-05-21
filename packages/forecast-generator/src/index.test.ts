@@ -1727,19 +1727,20 @@ describe('generateWeeklyForecast (churn-call script)', () => {
 // reusable struct so the web-app trajectory loader can build a
 // per-day series for the Glean Adaptive narrative call without
 // re-implementing the bucket / churn-component logic.
-// 2026-05-20 manager feedback: the Gap to Plan line was showing just
-// the dollar variance. Leadership wants to read "we're 14% under
-// plan" / "16% over plan" at a glance without doing the division in
-// their head. Percentage uses |gap| / |Plan| × 100 with directional
-// "under plan" (we're losing more than planned, bad) vs "over plan"
-// (losing less than planned, good).
-describe('Gap to Plan percentage variance', () => {
-  it('renders "% under plan" when Flash is worse (further from zero) than Plan', () => {
+// 2026-05-20 manager feedback (second pass): the Gap to Plan line
+// should read as `% to Plan` per Sam Lawley's prior-art vocabulary
+// ("Flashing 137% to plan") — 100% means Flash exactly equals Plan,
+// >100% means losing more than budgeted ("over plan", bad), <100%
+// means losing less than budgeted ("under plan", beating). This is
+// inverted from intuitive English ("over plan" sounds positive) but
+// matches the house convention.
+describe('Gap to Plan percentage to plan', () => {
+  it('renders ">100% over plan" when Flash is worse (further from zero) than Plan', () => {
     const acc = mkAccount({ accountId: 'A1' });
     const opp = mkOpportunity({
       accountId: 'A1',
       type: 'Renewal',
-      knownChurnUSD: 2_473_435,
+      knownChurnUSD: 2_435_022,
       forecastMostLikely: 0,
       acvDelta: 0,
     });
@@ -1749,12 +1750,13 @@ describe('Gap to Plan percentage variance', () => {
       asOfDate: AS_OF,
       plan: { currentQuarterUSD: -2_164_000 },
     });
-    // Flash = -$2,473,435, Plan = -$2,164,000.
-    // Gap = -$309,435 (under plan by $309,435 → 14.3% of |plan|).
-    expect(md).toMatch(/Gap to Plan: -\$309,435 \(14% under plan\)/);
+    // Flash = -$2,435,022, Plan = -$2,164,000.
+    // |Flash| / |Plan| = 2435022 / 2164000 = 112.5% → "113% over plan".
+    // Gap = -$271,022 (Flash worse than Plan, so dollar gap is negative).
+    expect(md).toMatch(/Gap to Plan: -\$271,022 \(113% over plan\)/);
   });
 
-  it('renders "% over plan" when Flash is better (closer to zero) than Plan', () => {
+  it('renders "<100% under plan" when Flash is better (closer to zero) than Plan', () => {
     const acc = mkAccount({ accountId: 'A1' });
     const opp = mkOpportunity({
       accountId: 'A1',
@@ -1770,8 +1772,9 @@ describe('Gap to Plan percentage variance', () => {
       plan: { currentQuarterUSD: -2_164_000 },
     });
     // Flash = -$1,800,000, Plan = -$2,164,000.
-    // Gap = +$364,000 (over plan by $364,000 → 16.8% of |plan|).
-    expect(md).toMatch(/Gap to Plan: \+\$364,000 \(17% over plan\)/);
+    // |Flash| / |Plan| = 1800 / 2164 = 83.2% → "83% under plan" (beating).
+    // Gap = +$364,000 (Flash closer to zero than Plan).
+    expect(md).toMatch(/Gap to Plan: \+\$364,000 \(83% under plan\)/);
   });
 
   it('renders "(at plan)" when Flash exactly matches Plan', () => {
@@ -1792,7 +1795,7 @@ describe('Gap to Plan percentage variance', () => {
     expect(md).toContain('Gap to Plan: $0 (at plan)');
   });
 
-  it('uses 1 decimal place when variance is small (< 10%)', () => {
+  it('rounds to whole percent (small variance still emits an integer)', () => {
     const acc = mkAccount({ accountId: 'A1' });
     const opp = mkOpportunity({
       accountId: 'A1',
@@ -1807,8 +1810,8 @@ describe('Gap to Plan percentage variance', () => {
       asOfDate: AS_OF,
       plan: { currentQuarterUSD: -2_000_000 },
     });
-    // Flash = -$2.1M, Plan = -$2.0M → 5.0% under plan.
-    expect(md).toMatch(/Gap to Plan: -\$100,000 \(5\.0% under plan\)/);
+    // Flash = -$2.1M, Plan = -$2.0M → 105% over plan.
+    expect(md).toMatch(/Gap to Plan: -\$100,000 \(105% over plan\)/);
   });
 
   it('omits the percentage when Plan is undefined (preserves the existing fill-in placeholder)', () => {
@@ -1841,6 +1844,64 @@ describe('Gap to Plan percentage variance', () => {
     // Plan = $0 → Gap = Flash = -$50,000, but no percentage rendered.
     expect(md).toContain('Gap to Plan: -$50,000');
     expect(md).not.toMatch(/Gap to Plan:.*%/);
+  });
+});
+
+// 2026-05-20 manager feedback: the top-line `Hedge:` KPI was double-
+// counting expansion hedge from Amendment / New Business / Upsell
+// opps, inflating the renewal-save Hedge figure leadership reads.
+// Gate to the same renewal + carried-forecast-category lens used by
+// the `Accounts with Hedge` section below.
+describe('Hedge KPI gating', () => {
+  it('excludes expansion-hedge dollars from non-renewal opps', () => {
+    const acc1 = mkAccount({ accountId: 'A1', accountName: 'Renewal Co' });
+    const renewalOpp = mkOpportunity({
+      accountId: 'A1',
+      opportunityId: 'O1',
+      type: 'Renewal',
+      forecastHedgeUSD: 100_000,
+      forecastCategory: 'Best Case',
+    });
+    const acc2 = mkAccount({ accountId: 'A2', accountName: 'Upsell Co' });
+    const upsellOpp = mkOpportunity({
+      accountId: 'A2',
+      opportunityId: 'O2',
+      type: 'New Business',
+      forecastHedgeUSD: 250_000,
+      forecastCategory: 'Best Case',
+    });
+    const md = generateWeeklyForecast({
+      views: [mkView(acc1, [renewalOpp]), mkView(acc2, [upsellOpp])],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    // Top-line Hedge should be $100K (renewal only), not $350K.
+    expect(md).toMatch(/Hedge: \$100,000/);
+    expect(md).not.toMatch(/Hedge: \$350,000/);
+  });
+
+  it('excludes hedge on renewal opps in dropped forecast categories (e.g., Omitted, Closed)', () => {
+    const acc = mkAccount({ accountId: 'A1' });
+    const carriedOpp = mkOpportunity({
+      accountId: 'A1',
+      opportunityId: 'O1',
+      type: 'Renewal',
+      forecastHedgeUSD: 75_000,
+      forecastCategory: 'Best Case',
+    });
+    const omittedOpp = mkOpportunity({
+      accountId: 'A1',
+      opportunityId: 'O2',
+      type: 'Renewal',
+      forecastHedgeUSD: 500_000,
+      forecastCategory: 'Omitted',
+    });
+    const md = generateWeeklyForecast({
+      views: [mkView(acc, [carriedOpp, omittedOpp])],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).toMatch(/Hedge: \$75,000/);
   });
 });
 
