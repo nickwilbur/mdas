@@ -46,6 +46,7 @@ export interface SfdcAccountRow extends SalesforceQueryRecord {
   Churn_Date__c: string | null;
   CS_Coverage__c: string | null;
   Customer_Status__c: string | null;
+  Internal_Customer_Slack_Channel__c: string | null;
   engagio__EngagementMinutesLast7Days__c: number | null;
   engagio__EngagementMinutesLast30Days__c: number | null;
   engagio__EngagementMinutesLast3Months__c: number | null;
@@ -175,6 +176,10 @@ export function mapAccount(
     // churnReasonSummary is sourced from Opportunity.Churn_Destription__c —
     // populated in the opportunity merge step, not here.
     churnDate: dateOnly(row.Churn_Date__c),
+
+    // Verbatim — URL parsing is the consumer's job (@mdas/slack-send/parse).
+    // Trim only; never normalize or rewrite. Empty string treated as null.
+    salesforceSlackChannelUrl: (row.Internal_Customer_Slack_Channel__c ?? '').trim() || null,
 
     sourceLinks: [instanceLink(ctx.instanceUrl, 'Account', row.Id, 'SFDC Account')],
     lastUpdated: ctx.refreshAt.toISOString(),

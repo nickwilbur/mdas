@@ -47,6 +47,7 @@ const SAMPLE_ACCOUNT_ROW: SfdcAccountRow = {
   Churn_Reason__c: null,
   Churn_Date__c: null,
   CS_Coverage__c: 'CSE',
+  Internal_Customer_Slack_Channel__c: null,
   engagio__EngagementMinutesLast7Days__c: 12,
   engagio__EngagementMinutesLast30Days__c: 60,
   engagio__EngagementMinutesLast3Months__c: 180,

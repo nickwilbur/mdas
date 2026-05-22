@@ -19,6 +19,7 @@ const NAV = [
   { href: '/glean', label: 'Glean' },
   { href: '/admin/data-quality', label: 'Data Quality' },
   { href: '/admin/refresh', label: 'Refresh' },
+  { href: '/admin/slack', label: 'Slack' },
 ];
 
 export default function RootLayout({ children }: { children: ReactNode }) {

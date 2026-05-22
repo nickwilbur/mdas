@@ -221,9 +221,86 @@ renewal is on the manager's Clari hedge line):
    delta are both $0, i.e., pure upside hedge, not a save.
 
 A nested call-out under `Accounts with Hedge` — *Churn-save targets
-not yet hedged in Clari* — lists renewals that pass the three checks
-above but currently carry $0 forecast hedge, so leadership can decide
-whether to pull them onto the hedge line.
+not yet hedged in Clari (ATR exposed)* — lists renewals that pass the
+three checks above but currently carry $0 forecast hedge, so
+leadership can decide whether to pull them onto the hedge line.
+
+**What these two sections mean to leadership.** The script is built
+from the recurring NoAM FY27 Renewal Script churn-call template
+(Sam Lawley's weekly leadership read-out). The KPI block at the top
+of each quarter shows two negative-dollar lines:
+
+- **Total Churn/Downsell Risk / Baseline** — the worst case, i.e.
+  full ATR exposed across every Confirmed Churn + Saveable Risk
+  renewal in the quarter.
+- **Churn/Downsell Flash / Most Likely** — what the rep is actually
+  calling, after saves the team believes they'll land.
+
+The delta between Total Risk and Flash is the *implicit save plan*:
+dollars at risk we think we can hold. Everything below the KPI block
+exists to name the accounts that have to convert for that delta to
+be real. Two sections do this from different angles:
+
+- **`Key Saves/Improvements to close the gap from Total Churn/Downsell
+  risk to Flash:`** — the per-account drill-in, split into red /
+  yellow / green sub-lists. This answers "which named renewals have
+  to land for Flash to hold, and what's the next step on each?"
+  Red = risk trending and needs intervention; yellow = path to add
+  hedge to the line; green = healthy renewals already counted on
+  that we still need to capture. In Sam's live entries these read
+  like `New Relic ($1,069,740) - Flagging almost full churn, save
+  $100k; proposed early renewal pricing for full renewal + upsell`
+  — one named account, dollars at stake, single-sentence ask.
+- **`Churn-save targets not yet hedged in Clari (ATR exposed):`** —
+  the inverse lens. `Accounts with Hedge` above it lists saves the
+  CSE has *already* pulled onto the Clari hedge line. This section
+  flips it and surfaces renewals that look like saves to MDAS
+  (renewal + carried forecast category + a down-forecast signal) but
+  carry $0 hedge today. It's the explicit "you should add these to
+  the line" ask — dollars MDAS believes are achievable but that the
+  rep hasn't claimed yet. Sized by **ATR** (what hedging the account
+  would contribute), not ACV, so leadership reads the header total
+  as "dollars on the table you haven't claimed."
+
+The "Key Saves" section runs one filter looser than the "not yet
+hedged" section: it skips the down-forecast requirement so healthy
+renewals (green band) still show up as capture targets. The "not yet
+hedged" section is stricter and also excludes anything already in
+the hedge list above it, so the two never double-count.
+
+**Per-account Glean context on Key Saves (2026-05-21):** The
+structured chip line on each Key Saves bullet doesn't carry the
+qualitative "why is this on the list?" context the manager actually
+reads off Slack / Gmail / account plans / CSE notes / meeting
+transcripts. The web route now layers that on with a per-account
+Glean Adaptive chat call (`apps/web/src/lib/forecast-account-context.ts`).
+The deterministic renderer stays LLM-free: it accepts an opaque
+`accountContext: Record<accountId, string>` map on `ForecastInput`
+and appends each blurb to the matching bullet as `|| Context: <1-2
+sentences>` (label is `Context:` not `Glean:` so the leadership read
+isn't anchored to the tool that produced it). Calls are bounded to the ≤15 accounts that actually
+appear in the red / yellow / green Key Saves lists, run with a
+concurrency cap of 4, and the prompt grounds the model in the
+structured chip-line facts plus an explicit `NONE` sentinel for
+"no soft signal beyond what's already structured" (those bullets
+render with no Glean tail rather than filler). Failures become a
+stale-marker `[Glean context unavailable — <reason>]` per-account,
+which the manager sees in the pasted script so they know to write
+the why themselves before the leadership call.
+
+**Glean-flagged emerging risks (2026-05-21):** Sibling sub-section
+under `Churn-save targets not yet hedged in Clari` that surfaces
+accounts the deterministic structured filter missed but Glean
+flagged from soft signals (Slack escalations, exec-level Gmail,
+account-plan notes, meeting transcripts). The identify call lives in
+`apps/web/src/lib/forecast-glean-risks.ts`. It's bounded to the
+in-quarter Expand 3 account universe and asks Glean for a strict
+JSON envelope; the parser drops any accountId not in the bounded
+input set (hallucination guard — a missed account is recoverable,
+an invented one on a leadership churn-call is not). The renderer
+dedupes against accounts already on the structured `Accounts with
+Hedge` / `not yet hedged` lists so the two never overlap. Block
+omitted entirely when no entries survive deduping.
 
 **Health Snapshot section (2026-05-20):** Each quarter section now
 renders a qualitative `Health Snapshot:` paragraph between the
@@ -387,6 +464,133 @@ npm run lint           # tsc -b
 
 CI: see `.github/workflows/ci.yml`. Includes a smoke check that boots the web app against mock data and fetches all seven views.
 
+## Customer Slack channel workflow (`/admin/slack`)
+
+Internal tool to map Expand 3 customers to their internal Zuora Slack
+channels and — gated behind a hard env toggle and per-message
+confirmation — send a single message to one mapped channel at a time.
+This is the **only** write path in the codebase. It lives outside
+`packages/adapters/` (which is read-only-enforced by `ci-guard.mjs`); the
+send code is in `packages/slack-send/`.
+
+### Source of truth for channel mapping
+
+1. Manual override (admin-maintained row in `customer_slack_mapping`
+   with `source='override'`)
+2. Salesforce Account field `Internal_Customer_Slack_Channel__c` (read
+   by the Salesforce adapter into `CanonicalAccount.salesforceSlackChannelUrl`)
+3. Cache (last good URL persisted by a previous refresh, when SFDC went
+   empty)
+4. Otherwise `missing_salesforce_channel`/`unresolved`
+
+The flow **never invents or auto-creates** a Slack channel and never
+silently falls back from the customer channel to anything except the
+explicit "test-to-self" mode the user picks.
+
+Mapping statuses surfaced in the UI (per the spec): `mapped`,
+`manually_overridden`, `missing_salesforce_channel`, `invalid_slack_url`,
+`inaccessible_channel`, `unresolved`. The dashboard shows counts; gaps
+are visible, not hidden.
+
+### How refresh works
+
+- `POST /api/slack/mappings/refresh` — full refresh of all Expand-3
+  accounts in the latest snapshot.
+- `POST /api/slack/mappings/refresh/:accountId` — single-account refresh.
+- Refresh reads the latest `snapshot_account` payloads (already populated
+  by the normal adapter pipeline), runs each account through
+  `computeMappingStatus()`, and UPSERTs into the `customer_slack_mapping`
+  table. **Idempotent** — re-running with unchanged upstream state
+  produces the same status/URL on every row; only `last_refreshed_at` /
+  `updated_at` move. Manual overrides are preserved across refreshes.
+- Every refresh emits `slack.mapping.refresh.start` and
+  `slack.mapping.refresh.complete` rows into `audit_log` with the full
+  summary counts.
+
+Refresh does **not** call the Slack API. The optional `inaccessible_channel`
+status is reserved for a future explicit "validate now" pass — refresh
+preserves the flag if previously set so a known-bad channel can't
+silently flip back to `mapped`.
+
+### How the hard send toggle works
+
+Implemented in `packages/slack-send/src/gate.ts`:
+
+```
+ENABLE_SLACK_SEND  must be the literal string "true" (case-insensitive)
+SLACK_BOT_TOKEN    xoxb-… bot token; required for any send
+```
+
+Both must be set or `assertSendEnabled()` throws `SendDisabledError`
+("fails closed"). The check is re-run at confirm time (no caching of
+the preview-time decision) so flipping the env to `false` mid-session
+immediately blocks the next confirm with an audited `blocked` row.
+
+Preview is **never** gated: previews are pure rendering, do not call
+Slack, and are explicitly allowed when sending is off so the user can
+see what *would* be sent.
+
+There is no bulk-send path. `postMessage()` accepts one channel and one
+text body; the API routes accept exactly one `accountId` per preview
+and one `previewId` per confirm. The type signature does not admit a
+list.
+
+### How test-to-self works
+
+Set `SLACK_TEST_USER_ID` to a Slack user id (Uxxx) or a pre-opened DM
+channel id (Dxxx). The "Preview → test-to-self" button in `/admin/slack`
+routes the message to that id instead of the customer channel, prefixed
+with `[TEST MODE — redirected from customer channel] ` so it's
+unmistakable in the recipient's DM. Test-to-self:
+
+- still requires `ENABLE_SLACK_SEND=true` and a bot token,
+- still requires explicit per-message confirmation,
+- works even when a customer mapping is missing or invalid,
+- writes audit rows with `mode='test_to_self'` so the redirect is
+  permanently visible in `slack_message_audit`.
+
+### How to enable real sending safely
+
+1. Create a Slack bot user in the Zuora workspace, install it, copy the
+   `xoxb-…` token.
+2. Invite the bot to the customer channel(s) you intend to send to.
+3. In `.env`:
+   ```
+   ENABLE_SLACK_SEND=true
+   SLACK_BOT_TOKEN=xoxb-...
+   SLACK_TEST_USER_ID=U01234567   # your own user id; used for test-to-self
+   ```
+4. Restart the web app.
+5. Use `/admin/slack`: refresh mappings → select one account →
+   compose → **Preview → test-to-self** first (delivers to your DM) →
+   confirm once you're happy → then repeat with **Preview → customer
+   channel** for the real send.
+
+### Audit trail
+
+- High-level events in the existing `audit_log` table (visible on the
+  `/admin/refresh` page): `slack.mapping.refresh.{start,complete}`,
+  `slack.send.{preview,sent,blocked,cancelled,failed}`.
+- Per-message detail in the new `slack_message_audit` table: every
+  preview, confirm, send, cancel, block, failure. Confirm rows carry
+  `preview_of` pointing at the preview row (enforces no-reuse-of-
+  confirmation across messages).
+
+### What is intentionally NOT built
+
+- No bulk / batch send. Single-target only.
+- No background or scheduled auto-send.
+- No automatic Slack channel creation.
+- No automatic Slack API validation of every mapping on refresh (would
+  be rate-limit heavy; reserved for a manual "validate now" action).
+- No silent fallback from customer channel to anywhere except the
+  explicitly user-selected test-to-self destination.
+
 ## Out of scope for v0
 
-Multi-user auth, FLM Notes writeback, real-time push, Slack/email notifications, mobile views, direct Cerebro API (does not exist), direct Staircase API (no connector), local Zuora MCP (Remote only), and any tool that writes to any system.
+Multi-user auth, FLM Notes writeback, real-time push, broader
+Slack/email notification fan-out, mobile views, direct Cerebro API
+(does not exist), direct Staircase API (no connector), local Zuora MCP
+(Remote only), and any tool that writes to any system other than the
+single-target Slack send path above (which is gated by
+`ENABLE_SLACK_SEND` and audited end-to-end).

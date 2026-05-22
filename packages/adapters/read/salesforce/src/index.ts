@@ -44,6 +44,7 @@ SELECT
   Churn_Reason__c, Churn_Date__c,
   CS_Coverage__c,
   Customer_Status__c,
+  Internal_Customer_Slack_Channel__c,
   engagio__EngagementMinutesLast7Days__c,
   engagio__EngagementMinutesLast30Days__c,
   engagio__EngagementMinutesLast3Months__c

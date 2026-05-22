@@ -3,7 +3,8 @@ node_modules
 dist
 .DS_Store
 .env
-.env.local
+.env.*
+!.env.example
 # Glean OAuth state: cached DCR client_id, refresh_token, endpoint
 # metadata. Written by scripts/glean-login.mjs, read by
 # scripts/glean-refresh.mjs. Contains refresh_token — treat as a

@@ -11,6 +11,7 @@ export default defineConfig({
       '@mdas/canonical': resolve(__dirname, 'packages/canonical/src/index.ts'),
       '@mdas/scoring': resolve(__dirname, 'packages/scoring/src/index.ts'),
       '@mdas/forecast-generator': resolve(__dirname, 'packages/forecast-generator/src/index.ts'),
+      '@mdas/slack-send': resolve(__dirname, 'packages/slack-send/src/index.ts'),
       '@/': resolve(__dirname, 'apps/web/src') + '/',
     },
   },

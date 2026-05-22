@@ -142,6 +142,16 @@ export interface CanonicalAccount {
   recentMeetings: MeetingSummary[];
   accountPlanLinks: { title: string; url: string; lastModified: string }[];
 
+  /**
+   * Salesforce Internal_Customer_Slack_Channel__c URL, verbatim. This is
+   * the source of truth for the internal Slack-channel mapping surfaced
+   * by the /admin/slack workflow. Many accounts have this empty today —
+   * the mapping layer treats absence as `missing_salesforce_channel` and
+   * surfaces the gap rather than silently substituting another channel.
+   * URL parsing happens in @mdas/slack-send/parse, never in adapters.
+   */
+  salesforceSlackChannelUrl?: string | null;
+
   sourceLinks: SourceLink[];
   lastUpdated: string;
 
