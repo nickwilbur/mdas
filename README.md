@@ -475,60 +475,91 @@ send code is in `packages/slack-send/`.
 
 ### Source of truth for channel mapping
 
-1. Manual override (admin-maintained row in `customer_slack_mapping`
-   with `source='override'`)
-2. Salesforce Account field `Internal_Customer_Slack_Channel__c` (read
-   by the Salesforce adapter into `CanonicalAccount.salesforceSlackChannelUrl`)
-3. Cache (last good URL persisted by a previous refresh, when SFDC went
-   empty)
-4. Otherwise `missing_salesforce_channel`/`unresolved`
+Resolved in this precedence order (first match wins):
 
-The flow **never invents or auto-creates** a Slack channel and never
-silently falls back from the customer channel to anything except the
-explicit "test-to-self" mode the user picks.
+1. **Manual override** — admin row in `customer_slack_mapping` with
+   `source='override'`. Sticky across refreshes.
+2. **Salesforce** — `Account.Internal_Customer_Slack_Channel__c`, read by
+   the Salesforce adapter into `CanonicalAccount.salesforceSlackChannelUrl`.
+3. **Sheet** — rows imported via `POST /api/slack/mappings/import-sheet`
+   (CSV paste, no live Drive scraping). Source-of-record for accounts
+   where SFDC is blank but the operational tracker has them.
+4. **Heuristic** — `cust-{slugifyAccountName(name)}` candidate name only.
+   Promoted to `mapped` (source=`heuristic`) if the candidate resolves
+   to a public channel via Slack's `conversations.list`; otherwise stays
+   `heuristic_candidate` and is NOT linked in the UI.
+5. **Cache** — last good URL persisted by a previous refresh, used when
+   the higher-precedence source goes empty.
+6. Otherwise `missing_salesforce_channel` / `unresolved`.
 
-Mapping statuses surfaced in the UI (per the spec): `mapped`,
-`manually_overridden`, `missing_salesforce_channel`, `invalid_slack_url`,
-`inaccessible_channel`, `unresolved`. The dashboard shows counts; gaps
-are visible, not hidden.
+Slack channels are never invented or auto-created. There is no silent
+fallback from the customer channel to anywhere except the explicit
+"test-to-self" mode the operator selects.
+
+**Statuses** surfaced in the UI: `mapped`, `manually_overridden`,
+`heuristic_candidate`, `missing_salesforce_channel`, `invalid_slack_url`,
+`inaccessible_channel`, `unresolved`. The dashboard shows counts as
+clickable tiles for filtering; gaps are visible, not hidden.
 
 ### How refresh works
 
 - `POST /api/slack/mappings/refresh` — full refresh of all Expand-3
-  accounts in the latest snapshot.
+  accounts.
 - `POST /api/slack/mappings/refresh/:accountId` — single-account refresh.
-- Refresh reads the latest `snapshot_account` payloads (already populated
-  by the normal adapter pipeline), runs each account through
-  `computeMappingStatus()`, and UPSERTs into the `customer_slack_mapping`
-  table. **Idempotent** — re-running with unchanged upstream state
-  produces the same status/URL on every row; only `last_refreshed_at` /
-  `updated_at` move. Manual overrides are preserved across refreshes.
+- Refresh reads the latest `snapshot_account` payloads, applies the
+  precedence rules above, calls Slack's read-only API where useful
+  (see next paragraph), and UPSERTs into `customer_slack_mapping`.
+  **Idempotent** with respect to source data — re-running with unchanged
+  upstream produces the same status/URL on every row.
 - Every refresh emits `slack.mapping.refresh.start` and
-  `slack.mapping.refresh.complete` rows into `audit_log` with the full
-  summary counts.
+  `slack.mapping.refresh.complete` rows into `audit_log` with summary
+  counts (mapped / inaccessible / heuristic / validated / changed).
 
-Refresh does **not** call the Slack API. The optional `inaccessible_channel`
-status is reserved for a future explicit "validate now" pass — refresh
-preserves the flag if previously set so a known-bad channel can't
-silently flip back to `mapped`.
+**Slack API use during refresh** (when a read-only token is configured,
+see auth section below):
+
+- **`conversations.list?types=public_channel`** — one pass per refresh.
+  Builds an index of public channels so we can resolve channel ids to
+  real names and promote heuristic candidates whose `cust-{slug}` name
+  appears in the index.
+- **`conversations.info`** — bounded to 40 calls per refresh; used only
+  for channel ids that the public-channel index didn't resolve. Returns
+  `channel_not_found` → row flips to `inaccessible_channel`; returns
+  `is_archived: true` → row gets the archived flag. Both states are
+  sticky across refreshes (once dead, always dead until a human
+  un-sticks via override).
+- A "recently validated live" guard skips re-validating channels that
+  were validated within the last 24h, so the bounded budget rotates
+  through pending rows instead of revalidating the same set every run.
+
+Without a configured token, refresh still runs — it just can't validate
+inaccessible channels or promote heuristic candidates.
 
 ### How the hard send toggle works
 
-Implemented in `packages/slack-send/src/gate.ts`:
+Implemented in `packages/slack-send/src/gate.ts`. Three independent
+guards. ALL must pass for a real send; ANY failing one blocks:
 
 ```
-ENABLE_SLACK_SEND  must be the literal string "true" (case-insensitive)
-SLACK_BOT_TOKEN    xoxb-… bot token; required for any send
+SLACK_READ_ONLY_MODE  Phase-1a kill switch. When "true", ALL sends are
+                      blocked regardless of any other config. Default off
+                      in code; ON in .env.example for new clones.
+ENABLE_SLACK_SEND     Master send toggle. Must be the literal "true".
+SLACK_BOT_TOKEN       xoxb-… bot token. User tokens (xoxp-) and browser-
+                      session tokens (xoxc-) are HARD-REJECTED for sends —
+                      they would post as the human personally. Both can
+                      still be used for read-only API calls (see below).
 ```
 
-Both must be set or `assertSendEnabled()` throws `SendDisabledError`
-("fails closed"). The check is re-run at confirm time (no caching of
-the preview-time decision) so flipping the env to `false` mid-session
-immediately blocks the next confirm with an audited `blocked` row.
+`assertSendEnabled()` throws `SendDisabledError` ("fails closed") on
+any guard failure, with a distinct error code per guard for unambiguous
+audit logs (`read-only-mode`, `send-disabled`, `no-bot-token`,
+`no-test-recipient`). The check is re-run at confirm time so flipping
+the env mid-session immediately blocks the next confirm.
 
 Preview is **never** gated: previews are pure rendering, do not call
-Slack, and are explicitly allowed when sending is off so the user can
-see what *would* be sent.
+Slack, and are explicitly allowed when sending is off so the operator
+can see what *would* be sent.
 
 There is no bulk-send path. `postMessage()` accepts one channel and one
 text body; the API routes accept exactly one `accountId` per preview
@@ -549,13 +580,117 @@ unmistakable in the recipient's DM. Test-to-self:
 - writes audit rows with `mode='test_to_self'` so the redirect is
   permanently visible in `slack_message_audit`.
 
-### How to enable real sending safely
+### Read-only auth for mapping (`auth.test`, `conversations.list`, `conversations.info`)
 
-1. Create a Slack bot user in the Zuora workspace, install it, copy the
-   `xoxb-…` token.
+Three options, in precedence order. The gate resolves to the first
+configured option:
+
+#### 1. Bot token (`SLACK_BOT_TOKEN`, xoxb-) — best, requires admin
+
+Create a Slack app in the Zuora workspace with bot scope `channels:read`
+(plus `chat:write`, `users:read` for phase 1b sends), install to the
+workspace. Zuora's enterprise policy requires admin approval for app
+installs. This is the only option that survives operator turnover and
+runs in CI/shared deployments.
+
+#### 2. User token (`SLACK_USER_TOKEN`, xoxp-) — middle ground
+
+Same Slack app, but `channels:read` added under **User Token Scopes**
+instead of Bot Token Scopes. Sometimes self-installs without admin
+approval; in Zuora's workspace currently does NOT (admin approval
+required for all OAuth scopes). Read-only — `chat.postMessage` is
+hard-rejected by the gate.
+
+#### 3. Browser-session token (`SLACK_XOXC_TOKEN` + `SLACK_XOXD_COOKIE`) — last resort
+
+Scraped from your own logged-in Slack web client. Use ONLY when admin
+approval blocks the other two paths and you need read-only mapping for
+an MVP demo. **Read all caveats in `.env.example` before enabling.**
+Hard-rejected by the gate for `chat.postMessage`. Cookie rotates on
+session refresh (every few hours on SSO) — see "Refreshing the xoxc
+cookie" below.
+
+The web app refuses to boot under `SLACK_XOXC_TOKEN` if `.env` is
+git-tracked or `.gitignore` is missing entries for `.env.*` (see
+`apps/web/src/lib/xoxc-safety.ts`). xoxc API calls are rate-limited
+to ~250ms cadence so the traffic pattern looks closer to a web client
+than to a scraper.
+
+### Refreshing the xoxc cookie (when using option 3)
+
+The `d` cookie that Slack pairs with the xoxc token expires on session
+refresh — typically every few hours on SSO setups. You'll know it
+expired when:
+
+- `/admin/slack` → **Verify Slack token** returns `invalid_auth`, OR
+- A mapping refresh's response contains `validationErrors > 0`, OR
+- Server logs show `401` from `slack.com/api/*`.
+
+To rotate (≈60 seconds end-to-end):
+
+1. **Sign back into Slack web** at https://zuora.enterprise.slack.com.
+   If you're already in, no action needed — the cookie is automatically
+   fresh in the browser; we just need to re-copy it.
+2. **DevTools → Network**. Clear (🚫 icon). Filter box: `slack.com/api/`.
+   In the request-type row click **Fetch/XHR**.
+3. **Click around in Slack** (switch a channel, scroll history) to
+   generate a `/api/` request. Right-click any POST row → **Copy** →
+   **Copy as cURL**.
+4. **In a terminal at the repo root:**
+   ```bash
+   mkdir -p ~/tmp && pbpaste > ~/tmp/slack_curl.txt && python3 - <<'PYEOF'
+   import re, pathlib
+   src = pathlib.Path.home().joinpath('tmp/slack_curl.txt')
+   env = pathlib.Path('.env')
+   s = src.read_text()
+   tok = re.search(r'xoxc-[A-Za-z0-9-]+', s)
+   ck = re.search(r"d=xoxd-[^;\s'\"]+", s)
+   if not tok or not ck:
+       raise SystemExit('Could not find xoxc-token or d= cookie in clipboard. Re-copy a POST request as cURL.')
+   tok, ck = tok.group(0), ck.group(0)[2:]  # strip 'd='
+   cur = env.read_text()
+   lines = [l for l in cur.splitlines() if not l.startswith(('SLACK_XOXC_TOKEN=', 'SLACK_XOXD_COOKIE='))]
+   lines += [f'SLACK_XOXC_TOKEN={tok}', f'SLACK_XOXD_COOKIE={ck}']
+   env.write_text('\n'.join(lines) + '\n')
+   src.unlink()
+   print(f'OK — .env updated. token_len={len(tok)} cookie_len={len(ck)}')
+   PYEOF
+   ```
+5. **Restart `next dev`** so the new env is picked up. Next 14 only
+   auto-loads `apps/web/.env*`, not the monorepo root, so the
+   restart command must export `.env` explicitly:
+   ```bash
+   pkill -f 'next dev'
+   set -a && source .env && set +a && npm run dev --workspace apps/web
+   ```
+6. **Verify**: `curl -sS http://localhost:3000/api/slack/auth-test` →
+   should return `"ok": true`, `"tokenKind": "xoxc"`.
+
+If `auth-test` returns `invalid_auth` immediately after rotation, the
+most common cause is that the cookie copy included a leading `d=` or
+trailing `;` — re-check the value in `.env` starts cleanly with
+`xoxd-` and has no surrounding whitespace.
+
+A future hardening (deliberately not built — see "intentionally NOT
+built" below) is a Playwright-driven `slack:refresh` script that does
+this dance headlessly on a cron. Skipped for now because (a) it
+escalates the TOS posture from "manually using your browser session"
+to "automating your browser session" and (b) it doesn't help once you
+have a real bot token, which is the actual fix.
+
+### How to enable real sending safely (phase 1b)
+
+Phase 1a (read-only mapping) is what's currently shipped. To advance to
+phase 1b (sending):
+
+1. Create a Slack bot user in the Zuora workspace, install it (admin
+   approval required), copy the `xoxb-…` token.
 2. Invite the bot to the customer channel(s) you intend to send to.
+   (We deliberately do NOT request `chat:write.public`, which would let
+   the bot post in any public channel without being invited.)
 3. In `.env`:
    ```
+   SLACK_READ_ONLY_MODE=false   # or remove the line entirely
    ENABLE_SLACK_SEND=true
    SLACK_BOT_TOKEN=xoxb-...
    SLACK_TEST_USER_ID=U01234567   # your own user id; used for test-to-self
@@ -581,10 +716,18 @@ unmistakable in the recipient's DM. Test-to-self:
 - No bulk / batch send. Single-target only.
 - No background or scheduled auto-send.
 - No automatic Slack channel creation.
-- No automatic Slack API validation of every mapping on refresh (would
-  be rate-limit heavy; reserved for a manual "validate now" action).
+- No automatic Slack API validation of *every* mapping on every refresh
+  (would be rate-limit heavy and unnecessary). Refresh validates the
+  unvalidated tail at 40 channels/run, sticky on terminal states, with
+  a 24h "recently validated live" skip so the budget rotates.
 - No silent fallback from customer channel to anywhere except the
   explicitly user-selected test-to-self destination.
+- No `chat:write.public` scope (would let the bot post in any public
+  channel without being invited — too wide).
+- No headless Playwright cookie refresher for xoxc. Manual rotation
+  procedure above is intentional: automating the browser-session scrape
+  escalates the TOS posture, and the right answer is to get a real bot
+  token, not to make the workaround more permanent.
 
 ## Out of scope for v0
 
