@@ -20,6 +20,8 @@ import {
   fiscalQuarterFromDate,
   fiscalQuarterStart,
   generateWeeklyForecast,
+  keySavesAccountContexts,
+  keySavesAccountIds,
 } from './index';
 
 const REFRESH_AT = '2026-04-28T18:00:00.000Z';
@@ -2032,5 +2034,347 @@ describe('computeQuarterKpis', () => {
     expect(next.hedgeUSD).toBe(50_000);
     expect(current.fiscalQuarterLabel).toBe('FY27 Q1');
     expect(next.fiscalQuarterLabel).toBe('FY27 Q2');
+  });
+});
+
+// Per 2026-05-21 user feedback: every Key Saves bullet should carry a
+// 1-2 sentence Glean blurb describing "why is this on the list?" The
+// pure renderer splices an upstream-provided map (accountId → blurb)
+// onto bullets via a `|| Context: ...` tail; the actual Glean call lives
+// in apps/web/src/lib/forecast-account-context.ts.
+//
+// We also surface a sibling "Glean-flagged emerging risks" sub-section
+// under the structured "not yet hedged" block when Glean flags
+// accounts that the deterministic pipeline missed. Both are optional:
+// undefined / empty inputs render the script exactly as before so
+// existing tests stay stable.
+describe('accountContext (Glean per-account blurb)', () => {
+  it('splices the Glean blurb onto a Key Saves bullet for the matching accountId', () => {
+    const acc = mkAccount({
+      accountId: 'YL',
+      accountName: 'Yellow Account',
+      cseSentiment: 'Yellow',
+      cerebroRiskCategory: 'Medium',
+    });
+    const opp = mkOpportunity({
+      opportunityId: 'O-YL',
+      accountId: 'YL',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      acv: 250_000,
+      forecastMostLikely: -50_000,
+      forecastCategory: 'Best Case',
+      scNextSteps: 'Reach out to procurement.',
+    });
+    const view = mkView(acc, [opp], { bucket: 'Saveable Risk' });
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: AS_OF,
+      accountContext: {
+        YL: 'Slack thread #cs-yellow this week: CFO requesting 20% discount as renewal condition.',
+      },
+    });
+    const yellowSection = md.slice(md.indexOf('Accounts in yellow'));
+    expect(yellowSection).toContain('Yellow Account');
+    expect(yellowSection).toContain(
+      '|| Context: Slack thread #cs-yellow this week: CFO requesting 20% discount as renewal condition.',
+    );
+  });
+
+  it('renders bullets without a Glean tail when no blurb is supplied for the account', () => {
+    const acc = mkAccount({ accountId: 'YL', accountName: 'Yellow Account' });
+    const opp = mkOpportunity({
+      accountId: 'YL',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      acv: 200_000,
+      forecastMostLikely: -25_000,
+      forecastCategory: 'Best Case',
+    });
+    const view = mkView(acc, [opp]);
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: AS_OF,
+      accountContext: { 'SOME-OTHER-ID': 'unrelated blurb' },
+    });
+    expect(md).not.toContain('|| Context:');
+    expect(md).not.toContain('unrelated blurb');
+  });
+
+  it('only attaches the Glean tail to Key Saves bullets, not to Accounts with Hedge / not-yet-hedged / Close-Gap bullets', () => {
+    const acc = mkAccount({
+      accountId: 'TH',
+      accountName: 'Target Hedged Co',
+      cseSentiment: 'Red',
+      cerebroRiskCategory: 'High',
+    });
+    const opp = mkOpportunity({
+      opportunityId: 'O-TH',
+      accountId: 'TH',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      acv: 300_000,
+      availableToRenewUSD: 300_000,
+      forecastMostLikely: -200_000,
+      forecastHedgeUSD: 50_000,
+      forecastCategory: 'Commit',
+    });
+    const view = mkView(acc, [opp], { bucket: 'Saveable Risk' });
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: AS_OF,
+      accountContext: {
+        TH: 'Exec sponsor call scheduled Thursday per Gmail thread.',
+      },
+    });
+    // The structured "Accounts with Hedge" block must NOT carry the
+    // Glean tail. Slice it cleanly and assert.
+    const hedgeBlock = md.slice(
+      md.indexOf('Accounts with Hedge'),
+      md.indexOf('Churn-save targets not yet hedged'),
+    );
+    expect(hedgeBlock).toContain('Target Hedged Co');
+    expect(hedgeBlock).not.toContain('|| Context:');
+
+    // But the Key Saves red sub-list MUST carry it (the account is
+    // red-band by Cerebro + sentiment, so it lands in the red list).
+    const redBlock = md.slice(md.indexOf('Accounts in red'));
+    expect(redBlock).toContain(
+      '|| Context: Exec sponsor call scheduled Thursday per Gmail thread.',
+    );
+  });
+
+  it('renders the stale-marker verbatim so the manager sees they need to write the why themselves', () => {
+    const acc = mkAccount({ accountId: 'YL', accountName: 'Yellow Account' });
+    const opp = mkOpportunity({
+      accountId: 'YL',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      acv: 150_000,
+      forecastMostLikely: -10_000,
+      forecastCategory: 'Best Case',
+    });
+    const view = mkView(acc, [opp]);
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: AS_OF,
+      accountContext: {
+        YL: '[Glean context unavailable — Glean upstream 503]',
+      },
+    });
+    expect(md).toContain(
+      '|| Context: [Glean context unavailable — Glean upstream 503]',
+    );
+  });
+});
+
+describe('gleanFlaggedRisks (emerging-risk sibling block)', () => {
+  it('renders a "Glean-flagged emerging risks" block under the not-yet-hedged section when entries match the quarter', () => {
+    const acc = mkAccount({ accountId: 'YL', accountName: 'Yellow Account' });
+    const opp = mkOpportunity({
+      accountId: 'YL',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      acv: 100_000,
+      forecastMostLikely: 100_000,
+      forecastCategory: 'Best Case',
+    });
+    const view = mkView(acc, [opp]);
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: AS_OF,
+      gleanFlaggedRisks: [
+        {
+          accountId: 'OTHER',
+          accountName: 'Other Co',
+          quarter: 'current',
+          rationale: 'Procurement email this week flagging vendor review.',
+        },
+      ],
+    });
+    const block = md.match(
+      /Glean-flagged emerging risks[\s\S]*?(?=\nAccounts to Close Gap)/,
+    );
+    expect(block, 'expected Glean-flagged block to appear').toBeTruthy();
+    expect(block![0]).toContain(
+      '  - Other Co - Procurement email this week flagging vendor review.',
+    );
+  });
+
+  it('dedupes a Glean-flagged entry against an account already on the not-yet-hedged structured list', () => {
+    const acc = mkAccount({
+      accountId: 'TG',
+      accountName: 'Target Without Hedge',
+      cseSentiment: 'Red',
+      cerebroRiskCategory: 'Critical',
+    });
+    const opp = mkOpportunity({
+      accountId: 'TG',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      acv: 400_000,
+      availableToRenewUSD: 400_000,
+      forecastMostLikely: -100_000,
+      forecastHedgeUSD: 0,
+      forecastCategory: 'Best Case',
+    });
+    const view = mkView(acc, [opp], { bucket: 'Saveable Risk' });
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: AS_OF,
+      gleanFlaggedRisks: [
+        {
+          accountId: 'TG',
+          accountName: 'Target Without Hedge',
+          quarter: 'current',
+          rationale: 'Slack escalation thread — duplicate of structured signal.',
+        },
+      ],
+    });
+    // TG is already on the deterministic not-yet-hedged list, so the
+    // Glean-flagged sub-section must not re-list it. The block as a
+    // whole should be omitted entirely (it was the only entry).
+    expect(md).not.toContain('Glean-flagged emerging risks');
+  });
+
+  it('omits the block entirely when no entries match either quarter', () => {
+    const acc = mkAccount({ accountId: 'YL', accountName: 'Yellow Account' });
+    const opp = mkOpportunity({
+      accountId: 'YL',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      acv: 100_000,
+      forecastMostLikely: 100_000,
+      forecastCategory: 'Best Case',
+    });
+    const view = mkView(acc, [opp]);
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: AS_OF,
+      gleanFlaggedRisks: [],
+    });
+    expect(md).not.toContain('Glean-flagged emerging risks');
+  });
+
+  it('separates current-quarter and next-quarter entries into their own blocks', () => {
+    const acc = mkAccount({ accountId: 'CA', accountName: 'Current Anchor' });
+    const oppCurr = mkOpportunity({
+      opportunityId: 'O-CURR',
+      accountId: 'CA',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      acv: 100_000,
+      forecastMostLikely: 100_000,
+      forecastCategory: 'Best Case',
+    });
+    const oppNext = mkOpportunity({
+      opportunityId: 'O-NEXT',
+      accountId: 'CA',
+      type: 'Renewal',
+      closeDate: '2026-06-15',
+      acv: 100_000,
+      forecastMostLikely: 100_000,
+      forecastCategory: 'Best Case',
+    });
+    const view = mkView(acc, [oppCurr, oppNext]);
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: AS_OF,
+      gleanFlaggedRisks: [
+        {
+          accountId: 'CURR-ONLY',
+          accountName: 'Current Only Co',
+          quarter: 'current',
+          rationale: 'Live escalation in Slack #cs-current.',
+        },
+        {
+          accountId: 'NEXT-ONLY',
+          accountName: 'Next Only Co',
+          quarter: 'next',
+          rationale: 'Account-plan note flagging at-risk renewal.',
+        },
+      ],
+    });
+    const currentSection = md.slice(0, md.indexOf('Next Quarter'));
+    const nextSection = md.slice(md.indexOf('Next Quarter'));
+    expect(currentSection).toContain('Current Only Co');
+    expect(currentSection).not.toContain('Next Only Co');
+    expect(nextSection).toContain('Next Only Co');
+    expect(nextSection).not.toContain('Current Only Co');
+  });
+});
+
+describe('keySavesAccountContexts / keySavesAccountIds (helpers for the web-side Glean call)', () => {
+  it('returns the deduped accountIds that would appear in the Key Saves bullets, in render order (red → yellow → green)', () => {
+    const red = mkView(
+      mkAccount({ accountId: 'RED', accountName: 'Red Co', cseSentiment: 'Red' }),
+      [
+        mkOpportunity({
+          accountId: 'RED',
+          type: 'Renewal',
+          closeDate: '2026-04-15',
+          acv: 500_000,
+          forecastCategory: 'Commit',
+        }),
+      ],
+    );
+    const yellow = mkView(
+      mkAccount({
+        accountId: 'YEL',
+        accountName: 'Yellow Co',
+        cseSentiment: 'Yellow',
+      }),
+      [
+        mkOpportunity({
+          accountId: 'YEL',
+          type: 'Renewal',
+          closeDate: '2026-04-15',
+          acv: 200_000,
+          forecastCategory: 'Commit',
+        }),
+      ],
+    );
+    const green = mkView(mkAccount({ accountId: 'GRN', accountName: 'Green Co' }), [
+      mkOpportunity({
+        accountId: 'GRN',
+        type: 'Renewal',
+        closeDate: '2026-04-15',
+        acv: 100_000,
+        forecastCategory: 'Commit',
+      }),
+    ]);
+    const ids = keySavesAccountIds([red, yellow, green], AS_OF, 'current');
+    expect(ids).toEqual(['RED', 'YEL', 'GRN']);
+    const ctxs = keySavesAccountContexts([red, yellow, green], AS_OF, 'current');
+    expect(ctxs.map((c) => c.accountId)).toEqual(['RED', 'YEL', 'GRN']);
+    expect(ctxs.map((c) => c.band)).toEqual(['red', 'yellow', 'green']);
+  });
+
+  it('skips the red band for next-quarter (matches renderer current-only red rule)', () => {
+    const red = mkView(
+      mkAccount({ accountId: 'RED', accountName: 'Red Co', cseSentiment: 'Red' }),
+      [
+        mkOpportunity({
+          accountId: 'RED',
+          type: 'Renewal',
+          closeDate: '2026-06-15',
+          acv: 500_000,
+          forecastCategory: 'Commit',
+        }),
+      ],
+    );
+    const ctxs = keySavesAccountContexts([red], AS_OF, 'next');
+    // Red account is on a next-quarter renewal; the renderer skips
+    // the red sub-list in the next-quarter section so the helper
+    // must skip it too.
+    expect(ctxs.map((c) => c.accountId)).toEqual([]);
   });
 });

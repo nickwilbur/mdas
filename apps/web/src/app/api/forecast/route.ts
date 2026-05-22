@@ -1,11 +1,21 @@
 import { NextResponse } from 'next/server';
 import {
   generateWeeklyForecast,
+  keySavesAccountContexts,
+  fiscalQuarterFromDate,
+  fiscalQuarterLabel,
   type ForecastInput,
+  type GleanFlaggedRisk,
 } from '@mdas/forecast-generator';
+import type { AccountView } from '@mdas/canonical';
 import { getDashboardData, getWoWChangeEvents } from '@/lib/read-model';
 import { loadForecastTrajectory } from '@/lib/forecast-trajectory';
 import { generateHealthSnapshots } from '@/lib/forecast-narrative';
+import { generateAccountContext } from '@/lib/forecast-account-context';
+import {
+  generateGleanFlaggedRisks,
+  type QuarterAccountUniverse,
+} from '@/lib/forecast-glean-risks';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,6 +25,103 @@ function narrativeFailureMarker(reason: string | undefined): string {
   return cleaned
     ? `[Narrative unavailable — Glean call failed: ${cleaned}]`
     : `[Narrative unavailable — Glean call failed]`;
+}
+
+/**
+ * Display label for the quarter containing (or following) `asOfDate`.
+ * Used to ground the per-account Glean prompt in the same vocabulary
+ * the rendered script uses ("FY27 Q2" not "2026-08").
+ */
+function quarterLabel(asOfDate: string, which: 'current' | 'next'): string {
+  if (which === 'current') {
+    const fq = fiscalQuarterFromDate(asOfDate);
+    return fq ? fiscalQuarterLabel(fq.key) : 'Current Quarter';
+  }
+  const d = new Date(`${asOfDate}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + 3);
+  const fq = fiscalQuarterFromDate(d.toISOString());
+  return fq ? fiscalQuarterLabel(fq.key) : 'Next Quarter';
+}
+
+/**
+ * Build the bounded universes for the Glean-flagged-emerging-risks
+ * identify call. One universe per quarter, each enumerating the
+ * accounts whose opportunities fall in that quarter. The
+ * `alreadyStructurallyFlagged` flag tells Glean which accounts to
+ * IGNORE — anything already on the deterministic Confirmed Churn /
+ * Saveable Risk path is by definition on the manager's read; we want
+ * Glean to surface accounts that the structured filter missed.
+ *
+ * The structural-flag check mirrors the renderer's
+ * `isChurnSaveTarget` lens (renewal + carried + down-forecast
+ * signal) so the universe matches what the manager will read on the
+ * pasted script. We also mark Confirmed Churn / Saveable Risk
+ * bucket accounts as structurally flagged because those already
+ * show up in the deterministic structured sections.
+ */
+function buildQuarterUniverses(
+  views: AccountView[],
+  asOfDate: string,
+): QuarterAccountUniverse[] {
+  const todayFq = fiscalQuarterFromDate(asOfDate);
+  if (!todayFq) return [];
+  const d = new Date(`${asOfDate}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + 3);
+  const nextFq = fiscalQuarterFromDate(d.toISOString());
+
+  const buckets: Record<'current' | 'next', QuarterAccountUniverse> = {
+    current: {
+      quarter: 'current',
+      fiscalQuarterLabel: fiscalQuarterLabel(todayFq.key),
+      accounts: [],
+    },
+    next: {
+      quarter: 'next',
+      fiscalQuarterLabel: nextFq ? fiscalQuarterLabel(nextFq.key) : 'Next Quarter',
+      accounts: [],
+    },
+  };
+  const seen: Record<'current' | 'next', Set<string>> = {
+    current: new Set(),
+    next: new Set(),
+  };
+
+  for (const v of views) {
+    for (const o of v.opportunities) {
+      const oppFq = fiscalQuarterFromDate(o.closeDate);
+      if (!oppFq) continue;
+      let target: 'current' | 'next' | null = null;
+      if (oppFq.key === todayFq.key) target = 'current';
+      else if (nextFq && oppFq.key === nextFq.key) target = 'next';
+      if (!target) continue;
+      const id = v.account.accountId;
+      if (seen[target].has(id)) continue;
+      seen[target].add(id);
+      const isRenewal = String(o.type ?? '').toLowerCase().includes('renewal');
+      const cat = String(o.forecastCategory ?? '').trim().toLowerCase();
+      const droppedCat =
+        cat === '' ||
+        cat === 'omit' ||
+        cat === 'omitted' ||
+        cat === 'closed' ||
+        cat === 'closed lost' ||
+        cat === 'closed won';
+      const ml = o.forecastMostLikelyOverride ?? o.forecastMostLikely;
+      const downForecast =
+        (o.knownChurnUSD ?? 0) > 0 ||
+        (ml != null && ml < 0) ||
+        (o.acvDelta != null && o.acvDelta < 0);
+      const churnSaveTarget = isRenewal && !droppedCat && downForecast;
+      const inDeterministicBucket =
+        v.bucket === 'Confirmed Churn' || v.bucket === 'Saveable Risk';
+      buckets[target].accounts.push({
+        accountId: id,
+        accountName: v.account.accountName,
+        alreadyStructurallyFlagged: churnSaveTarget || inDeterministicBucket,
+      });
+    }
+  }
+  return [buckets.current, buckets.next].filter((u) => u.accounts.length > 0);
 }
 
 /**
@@ -82,6 +189,58 @@ export async function POST(req: Request): Promise<Response> {
       };
     }
 
+    // Per 2026-05-21 user feedback: each Key Saves bullet should
+    // carry a 1-2 sentence qualitative "why this is on the list"
+    // blurb from Glean (Slack / Gmail / account plans / CSE notes /
+    // meeting transcripts), and the "not yet hedged" block should
+    // get a sibling "Glean-flagged emerging risks" sub-section. Both
+    // are bounded to the accounts the deterministic pipeline already
+    // sees, so the leadership read stays grounded.
+    //
+    // These calls are independent of Health Snapshot — kept in their
+    // own try blocks so one Glean outage doesn't blank everything,
+    // and a missing structured field on a single account doesn't
+    // poison the whole batch. Concurrency is capped inside
+    // `generateAccountContext` so Glean never gets a thundering herd.
+    let accountContext: Record<string, string> | undefined;
+    try {
+      const currentCtxs = keySavesAccountContexts(views, asOfDate, 'current');
+      const nextCtxs = keySavesAccountContexts(views, asOfDate, 'next');
+      const currentLabel = quarterLabel(asOfDate, 'current');
+      const nextLabel = quarterLabel(asOfDate, 'next');
+      const [currMap, nextMap] = await Promise.all([
+        generateAccountContext(req, currentCtxs, asOfDate, currentLabel),
+        generateAccountContext(req, nextCtxs, asOfDate, nextLabel),
+      ]);
+      // The two maps key on accountId; merging is safe because an
+      // account that appears in both quarters legitimately gets the
+      // same blurb (Glean has no way to know which quarter we asked
+      // about beyond the prompt header, and the bullet is the same).
+      accountContext = { ...nextMap, ...currMap };
+      if (Object.keys(accountContext).length === 0) accountContext = undefined;
+    } catch (err) {
+      const message = (err as Error)?.message ?? String(err);
+      // eslint-disable-next-line no-console
+      console.warn('forecast.accountContext.failed', { asOfDate, message });
+      accountContext = undefined;
+    }
+
+    let gleanFlaggedRisks: GleanFlaggedRisk[] | undefined;
+    try {
+      const universes = buildQuarterUniverses(views, asOfDate);
+      gleanFlaggedRisks = await generateGleanFlaggedRisks(
+        req,
+        universes,
+        asOfDate,
+      );
+      if (gleanFlaggedRisks.length === 0) gleanFlaggedRisks = undefined;
+    } catch (err) {
+      const message = (err as Error)?.message ?? String(err);
+      // eslint-disable-next-line no-console
+      console.warn('forecast.gleanFlaggedRisks.failed', { asOfDate, message });
+      gleanFlaggedRisks = undefined;
+    }
+
     const text = generateWeeklyForecast({
       views,
       changeEvents: events,
@@ -89,6 +248,8 @@ export async function POST(req: Request): Promise<Response> {
       plan: body.plan,
       clariManagerForecastCsv: body.clariManagerForecastCsv,
       healthSnapshot,
+      accountContext,
+      gleanFlaggedRisks,
     });
     return NextResponse.json({ text, asOfDate });
   } catch (err) {
