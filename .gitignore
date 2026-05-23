@@ -27,6 +27,15 @@ test-results
 # / sentiment commentary pulled from Glean salescloud. Never commit.
 # See scripts/import-cascade-bridge.ts.
 seed/cascade-bridge.json
+# Slack channel sweep: persistent Playwright profile (your Slack session
+# cookies live here after first SSO login). Treat as a credential —
+# never commit. See scripts/sweep-slack-channels.mts.
+.playwright-profile-slack/
+# Output of the Slack channel sweep. Contains every cust-* channel
+# name and id the operator's Slack session can see. Not secret per se,
+# but operator-scoped, so don't commit.
+data/slack-channels.json
+
 # tsc --incremental build cache — per-developer, never commit
 **/*.tsbuildinfo
 **/*.d.ts

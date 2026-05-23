@@ -16,8 +16,11 @@ import 'server-only';
 import { query, audit, latestSuccessfulRun } from '@mdas/db';
 import {
   computeMappingStatus,
+  extractChannelsFromHar,
   fetchPublicChannelIndex,
+  parseChannelPaste,
   parseSlackUrl,
+  nameMatchScore,
   readSendGateConfigFromEnv,
   slugifyAccountName,
   validateChannelId,
@@ -26,6 +29,7 @@ import {
   type ChannelValidation,
   type MappingStatus,
   type MappingSource,
+  type PastedChannel,
 } from '@mdas/slack-send';
 
 const sleep = (ms: number): Promise<void> =>
@@ -829,6 +833,323 @@ export async function clearManualOverride(args: {
     accountId: args.accountId,
   });
   return { ok: true, refreshed };
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Bulk promote-from-paste
+//
+// Reads a snapshot of Slack channels the operator can see (pasted from
+// DevTools of their Slack web client) and promotes every
+// heuristic_candidate row whose cust-{slug} exactly matches a pasted
+// channel. Returns separately a list of "near match" suggestions for
+// rows that didn't exact-match — operator can review those and accept
+// individual ones, which becomes a setManualOverride() call per pick.
+//
+// Why this exists: Zuora's org admin has disabled conversations.list
+// for non-admin tokens (`enterprise_is_restricted`), so the in-server
+// refresh can't auto-resolve heuristic candidates. The operator's
+// browser, however, CAN reach the channel data because it's running
+// inside Slack's own web client context. This module is the bridge.
+// ───────────────────────────────────────────────────────────────────
+
+export interface PromoteFromPasteResult {
+  /** Total channels parsed from the paste. */
+  channelsInPaste: number;
+  /** Heuristic candidates considered. */
+  candidatesConsidered: number;
+  /** Rows promoted via exact name match. */
+  promoted: number;
+  /** Promoted rows skipped because matched channel was archived. */
+  archivedSkipped: number;
+  /** Near-match suggestions: candidates whose derived name had a fuzzy
+   * match (≥0.65 score) but not exact. Operator reviews these. */
+  suggestions: Array<{
+    accountId: string;
+    accountName: string;
+    candidateName: string; // derived channel name we tried
+    suggestion: PastedChannel;
+    score: number;
+  }>;
+  /** Diagnostic samples for when promoted=0: a small slice of what the
+   * HAR/paste contained vs. what we tried to match against. Helps the
+   * operator see whether the issue is (a) wrong slugifier output,
+   * (b) wrong prefix convention, or (c) HAR captured channels you
+   * don't actually care about. */
+  diagnostic: {
+    /** First 50 channel names from the source, sorted alpha, that
+     * START with 'cust' (most likely customer channels). Empty list
+     * here means the HAR/paste contains no cust-prefixed channels at
+     * all — convention may be different than assumed. */
+    sampleCustChannels: string[];
+    /** Count of source channels whose name starts with 'cust'. */
+    custChannelCount: number;
+    /** First 20 of our derived cust-{slug} candidate names. Lets the
+     * operator eyeball-compare against sampleCustChannels above. */
+    sampleCandidatesWeTried: string[];
+  };
+  /** When parseChannelPaste fails — null on success. */
+  parseError: string | null;
+  /** Audit timestamp. */
+  ranAt: string;
+}
+
+const EMPTY_DIAGNOSTIC: PromoteFromPasteResult['diagnostic'] = {
+  sampleCustChannels: [],
+  custChannelCount: 0,
+  sampleCandidatesWeTried: [],
+};
+
+export async function promoteFromPaste(args: {
+  paste: string;
+  actor: string;
+}): Promise<PromoteFromPasteResult> {
+  const parsed = parseChannelPaste(args.paste);
+  if (parsed.error) {
+    return {
+      channelsInPaste: 0,
+      candidatesConsidered: 0,
+      promoted: 0,
+      archivedSkipped: 0,
+      suggestions: [],
+      diagnostic: EMPTY_DIAGNOSTIC,
+      parseError: parsed.error,
+      ranAt: new Date().toISOString(),
+    };
+  }
+  return promoteFromChannelList({
+    channels: parsed.channels,
+    actor: args.actor,
+    auditEventTag: 'slack.mapping.promote.paste',
+    auditExtra: { sourcePath: parsed.sourcePath },
+  });
+}
+
+/**
+ * Same flow as promoteFromPaste, but the input is a HAR (HTTP Archive)
+ * file the operator exported from DevTools. The HAR's response bodies
+ * are walked for anything that looks like a Slack channel record across
+ * all the response shapes Slack uses (client.boot, client.userBoot,
+ * edge API, search modules, conversations.info, etc.). This is the
+ * recommended path on Enterprise Grid where conversations.list is
+ * blocked by `enterprise_is_restricted`.
+ */
+export async function promoteFromHar(args: {
+  harText: string;
+  actor: string;
+}): Promise<PromoteFromPasteResult & { harSources: Array<{ url: string; status: number; count: number }> }> {
+  const extract = extractChannelsFromHar(args.harText);
+  if (extract.error) {
+    return {
+      channelsInPaste: 0,
+      candidatesConsidered: 0,
+      promoted: 0,
+      archivedSkipped: 0,
+      suggestions: [],
+      diagnostic: EMPTY_DIAGNOSTIC,
+      parseError: extract.error,
+      ranAt: new Date().toISOString(),
+      harSources: [],
+    };
+  }
+  const result = await promoteFromChannelList({
+    channels: extract.channels,
+    actor: args.actor,
+    auditEventTag: 'slack.mapping.promote.har',
+    auditExtra: {
+      harEntriesInspected: extract.entriesInspected,
+      sources: extract.sources,
+    },
+  });
+  return { ...result, harSources: extract.sources };
+}
+
+// Shared core: takes an already-extracted channel list (from paste or
+// HAR) and runs the exact-match → promote / fuzzy → suggest pipeline.
+async function promoteFromChannelList(args: {
+  channels: PastedChannel[];
+  actor: string;
+  auditEventTag: string;
+  auditExtra: Record<string, unknown>;
+}): Promise<PromoteFromPasteResult> {
+  const ranAt = new Date().toISOString();
+  // Index by lowercased name for O(1) exact lookup.
+  const byName = new Map<string, PastedChannel>();
+  for (const c of args.channels) {
+    const existing = byName.get(c.name);
+    // Prefer live over archived on name collision (rare).
+    if (!existing || (existing.isArchived && !c.isArchived)) {
+      byName.set(c.name, c);
+    }
+  }
+
+  // Pull every row that could benefit from a sweep:
+  //   - heuristic_candidate: status that explicitly wants resolving.
+  //   - inaccessible_channel: SF gave us a dead channel ID; if the
+  //     cust-{slug} convention now resolves to a LIVE channel with a
+  //     DIFFERENT id, prefer the live one. This is how 66degrees moves
+  //     from C07FR09GJUE (dead, in SF) to C08GSDHMELB (live, in Slack).
+  // We also need account_name for inaccessible rows because their
+  // derived_channel_name may be null (only heuristic_candidate rows
+  // populate it). We slugify on the fly when needed.
+  const candidatesRes = await query<{
+    account_id: string;
+    account_name: string | null;
+    derived_channel_name: string | null;
+    status: string;
+    slack_channel_id: string | null;
+  }>(
+    `SELECT account_id, account_name, derived_channel_name, status, slack_channel_id
+       FROM customer_slack_mapping
+       WHERE status IN ('heuristic_candidate', 'inaccessible_channel')`,
+  );
+
+  let promoted = 0;
+  let archivedSkipped = 0;
+  const suggestions: PromoteFromPasteResult['suggestions'] = [];
+
+  for (const row of candidatesRes.rows) {
+    // Prefer the precomputed derived name; fall back to slugifying the
+    // account name so inaccessible rows (whose derived_channel_name is
+    // typically null) are still considered.
+    const candidateName = (
+      row.derived_channel_name ?? slugifyAccountName(row.account_name) ?? ''
+    ).toLowerCase();
+    if (!candidateName) continue;
+
+    const exact = byName.get(candidateName);
+    if (exact) {
+      // If we're rescuing an inaccessible row, the new channel must
+      // actually be different from the dead one we already have on file
+      // — otherwise we'd just re-flag the same broken ID as live and
+      // bounce back to inaccessible on the next refresh.
+      if (row.status === 'inaccessible_channel' && exact.id === row.slack_channel_id) {
+        continue;
+      }
+      if (exact.isArchived) {
+        // Surface the find but don't promote — archived channels can't
+        // receive messages and shouldn't be linked.
+        archivedSkipped++;
+        await query(
+          `UPDATE customer_slack_mapping
+              SET channel_name = $2,
+                  channel_name_source = 'slack-api',
+                  is_archived = TRUE,
+                  status_reason = $3,
+                  last_validated_at = NOW(),
+                  updated_by = $4,
+                  updated_at = NOW()
+            WHERE account_id = $1 AND status = $5`,
+          [
+            row.account_id,
+            exact.name,
+            `Matched cust-{slug} channel "${exact.name}" via operator sweep, but channel is archived; not promoted.`,
+            args.actor,
+            row.status,
+          ],
+        );
+        continue;
+      }
+      if (row.status === 'inaccessible_channel') {
+        // Rescue path: the Salesforce-supplied channel is dead but the
+        // cust-{slug} convention resolves to a different LIVE channel.
+        // Record it as a manual override so source='override' takes
+        // precedence over the dead SF value on subsequent refreshes
+        // (otherwise the resolver would re-overwrite us next refresh).
+        // setManualOverride also re-validates against Slack, which
+        // updates last_validated_at and flips the status to mapped.
+        const override = await setManualOverride({
+          accountId: row.account_id,
+          slackUrl: buildChannelUrl(exact.id),
+          actor: args.actor,
+          note: `Auto-rescued by operator sweep: original Salesforce channel ${row.slack_channel_id} reported inaccessible, but the cust-{slug} convention resolved "${candidateName}" → live channel ${exact.id}. Update the Salesforce Internal_Customer_Slack_Channel__c to drop this override.`,
+        });
+        if (override.ok) promoted++;
+        continue;
+      }
+      // Standard heuristic_candidate promotion path.
+      await query(
+        `UPDATE customer_slack_mapping
+            SET slack_channel_id = $2,
+                slack_url = $3,
+                channel_name = $4,
+                channel_name_source = 'slack-api',
+                is_archived = FALSE,
+                source = 'heuristic',
+                status = 'mapped',
+                status_reason = $5,
+                last_validated_at = NOW(),
+                updated_by = $6,
+                updated_at = NOW()
+          WHERE account_id = $1 AND status = 'heuristic_candidate'`,
+        [
+          row.account_id,
+          exact.id,
+          buildChannelUrl(exact.id),
+          exact.name,
+          `Resolved via operator sweep (cust-{slug} convention matched "${exact.name}"${exact.isPrivate ? '; channel is private — visible only to operators who are members' : ''}).`,
+          args.actor,
+        ],
+      );
+      promoted++;
+      continue;
+    }
+
+    // No exact match — look for fuzzy near-matches in the paste. Cheap
+    // because we only iterate when no exact match exists.
+    let best: { ch: PastedChannel; score: number } | null = null;
+    for (const c of args.channels) {
+      const s = nameMatchScore(candidateName, c.name);
+      if (s >= 0.65 && (!best || s > best.score)) {
+        best = { ch: c, score: s };
+      }
+    }
+    if (best) {
+      suggestions.push({
+        accountId: row.account_id,
+        accountName: row.account_name ?? row.account_id,
+        candidateName,
+        suggestion: best.ch,
+        score: best.score,
+      });
+    }
+  }
+
+  await audit(args.actor, args.auditEventTag, {
+    channelsInPaste: args.channels.length,
+    candidatesConsidered: candidatesRes.rows.length,
+    promoted,
+    archivedSkipped,
+    suggestionsCount: suggestions.length,
+    ...args.auditExtra,
+  });
+
+  // Sort suggestions: highest score first; within score, alpha by account.
+  suggestions.sort((a, b) => b.score - a.score || a.accountName.localeCompare(b.accountName));
+
+  // Build the diagnostic. Cheap (one filter + two slices).
+  const custChannels = args.channels
+    .filter((c) => c.name.startsWith('cust'))
+    .map((c) => c.name)
+    .sort();
+  const sampleCandidatesWeTried = candidatesRes.rows
+    .map((r) => (r.derived_channel_name ?? '').toLowerCase())
+    .filter((n) => n.length > 0)
+    .slice(0, 20);
+
+  return {
+    channelsInPaste: args.channels.length,
+    candidatesConsidered: candidatesRes.rows.length,
+    promoted,
+    archivedSkipped,
+    suggestions,
+    diagnostic: {
+      sampleCustChannels: custChannels.slice(0, 50),
+      custChannelCount: custChannels.length,
+      sampleCandidatesWeTried,
+    },
+    parseError: null,
+    ranAt,
+  };
 }
 
 export async function importSheetCsv(args: {

@@ -2,7 +2,14 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
 
 export default defineConfig({
-  test: { include: ['packages/**/*.test.ts', 'apps/**/*.test.ts', 'scripts/**/*.test.ts'] },
+  test: {
+    include: [
+      'packages/**/*.test.ts',
+      'apps/**/*.test.ts',
+      'scripts/**/*.test.ts',
+      'scripts/**/*.test.mts',
+    ],
+  },
   resolve: {
     // Prefer TypeScript over emitted `.js` in `packages/*/src/` so stale
     // `tsc` artifacts (same basename as `.ts`) never shadow source during tests.

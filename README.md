@@ -572,6 +572,213 @@ All set/clear actions write `slack.mapping.override.set` /
 `slack.mapping.override.clear` rows to `audit_log` with actor and
 validation outcome.
 
+### Bulk promote: Playwright sweep (recommended)
+
+For workspaces where `conversations.list` is blocked
+(`enterprise_is_restricted`), the most reliable way to harvest the
+cust-* channel directory is to drive the actual Slack web client via
+Playwright. We tried calling the Flannel edge API directly with the
+session cookie — Slack rejected those requests (its real client sends
+correlation fields we couldn't reproduce). Driving the UI sidesteps
+that entirely.
+
+Usage:
+
+```bash
+npm run sweep:slack             # reuses saved session, runs headed
+npm run sweep:slack -- --login  # force interactive re-login first
+```
+
+How it works:
+
+1. **First run** requires interactive SSO. Playwright launches
+   Chromium with a persistent user-data-dir at
+   `.playwright-profile-slack/` (gitignored). You SSO into Slack
+   in the visible window. When the workspace sidebar is visible,
+   press Enter in the terminal — the script verifies the login and
+   the session cookies are saved to the profile.
+2. **Subsequent runs** reuse the saved profile and skip straight to
+   the workspace. The browser window still appears (see "always
+   headed" note below) but no interaction is required.
+3. The script navigates straight to
+   `https://app.slack.com/client/<TEAM_ID>` (not the org workspace
+   picker — that page doesn't have the channel sidebar), waits up
+   to 90s for the SPA to fully hydrate (Slack's web app boot is
+   heavy and the keyboard shortcut handlers only wire up at the
+   end), then opens the channel switcher (⌘K), types `cust-a`,
+   `cust-b`, … `cust-z`, `cust-0`…`cust-9`, and finally bare
+   `cust-`, scraping the rendered result list each time. Bounded
+   to ~90 seconds total. Dedupes by channel id (prefers live over
+   archived).
+4. Writes `data/slack-channels.json` (gitignored) with the same
+   shape `parseChannelPaste` accepts:
+   `{ ok: true, ranAt, channels: [{ id, name, is_archived, is_private }, ...] }`.
+5. From `/admin/slack/import-channels`, click **Promote from sweep
+   file**. The endpoint at `POST /api/slack/mappings/promote-from-sweep`
+   reads the file and pipes it through the same
+   `promoteFromChannelList` pipeline as the HAR upload and the
+   paste flow. See "Promote-from-sweep behavior" below for the
+   exact-match / fuzzy / rescue-from-inaccessible logic.
+
+**Why always headed**: we tried defaulting to headless once-logged-in
+and Slack's SPA refuses to fully render — it detects headless
+Chromium via `navigator.webdriver` and missing browser features and
+never hydrates the client. Headed is the only mode that works. The
+window stays open for ~90s while the sweep runs; you don't need to
+interact with it.
+
+**Switcher input is a Quill contenteditable**: as of late 2025
+Slack's ⌘K input is a `div.ql-editor` with `role="combobox"` and
+`aria-label="Query"`, not an `<input>`. The script detects this and
+uses `keyboard.type()` instead of `.fill()`. The selector list at
+the top of `scripts/sweep-slack-channels.mts` includes the older
+`<input>` selectors too as fallbacks.
+
+**Badge stripping (the 66degrees fix)**: Slack renders each switcher
+row with a right-aligned workspace badge (`Enterprise`, `External`,
+`Archived`, `Private`, etc.) that has no whitespace separator from
+the channel name in the DOM. The narrow badge column is also
+CSS-ellipsified, so what we actually see is e.g. `cust-66degreesEnter`
+(from "Enterprise" truncated to "Enter…"). The scraper strips a
+trailing badge label only when it directly follows `[a-z0-9]` —
+real channel-name segments are joined by `-`, so the lookbehind
+discriminates a glued-on badge from a legitimate suffix. The
+TRAILING_BADGES list and regex live in
+`scripts/lib/clean-channel-name.mts` and are unit-tested in
+`scripts/lib/clean-channel-name.test.mts`. To add a newly-observed
+badge truncation, add it to that constant; the test asserts the
+inlined regex source stays in lock-step.
+
+Brittleness notes:
+
+- The DOM selectors at the top of `scripts/sweep-slack-channels.mts`
+  (in the `SELECTORS` constant) are internal Slack `data-qa`
+  attributes that change occasionally. The script tries multiple
+  selectors per concern and aborts loudly with a clear "DOM
+  selectors likely changed" message if the first three queries
+  return zero — run and watch the browser window to see what's
+  happening, then update the constant.
+- Sleep timing: 900ms after typing per prefix, plus a 5s buffer
+  after SPA hydration before the first ⌘K. Faster risks racing
+  Slack's debounce window.
+- Sweep is READ-ONLY: we never invoke join/create/post affordances.
+  Just open switcher, type, read results, close switcher, loop.
+
+### Promote-from-sweep behavior
+
+`POST /api/slack/mappings/promote-from-sweep` (and the equivalent
+HAR / paste endpoints) walks every row currently in
+`heuristic_candidate` OR `inaccessible_channel` status and tries to
+match it against the sweep output:
+
+1. **`heuristic_candidate` exact match** → row promoted to
+   `status='mapped'`, `source='heuristic'` (source stays heuristic
+   because that's how we derived the name; the sweep only
+   *confirmed* it).
+2. **`inaccessible_channel` rescue** → if Salesforce's dead channel
+   ID can be replaced by a LIVE channel resolved from the
+   `cust-{slug}` convention, the rescue is recorded via
+   `setManualOverride` so `source='override'` takes precedence over
+   the dead SF value on subsequent refreshes. (If we just flipped
+   the row to `mapped`/`source=heuristic`, the next refresh would
+   re-read the dead SF URL and overwrite us.) The override carries
+   a `notes` field explaining the rescue and asking the operator
+   to update the Salesforce field so the override can be dropped.
+   The 66degrees account (SF link points to dead `C07FR09GJUE`,
+   real channel is `cust-66degrees` → `C08GSDHMELB`) is the
+   motivating case for this path.
+3. **Archived exact match** → row left as candidate / inaccessible
+   (whichever it was); only `is_archived`, `channel_name`, and
+   `status_reason` updated. Archived channels can't receive
+   messages and shouldn't be linked.
+4. **Fuzzy near-match** (Levenshtein ≤ 2 or one is a prefix of the
+   other; threshold score ≥ 0.65) → not promoted, but surfaced in
+   a review table. Operator clicks **Accept** to write a manual
+   override pointing at the suggested channel.
+
+### Bulk promote: HAR upload (fallback)
+
+For workspaces where `conversations.list` is blocked
+(`enterprise_is_restricted`, Zuora's situation), the per-row Map URL
+workflow above gets tedious when dozens of `heuristic_candidate` rows
+need resolving. The **Import channels from HAR** page
+(`/admin/slack/import-channels`, linked from the top-right of the
+mappings page) is the bulk alternative.
+
+**Why HAR upload and not API/paste**:
+
+Modern Slack on Enterprise Grid does not expose channel `{id, name}`
+data via any endpoint that's reachable from outside the browser:
+
+- `conversations.list`, `users.conversations`, and
+  `admin.conversations.search` all return `enterprise_is_restricted`
+  for ordinary (non-OAuth, non-admin) tokens on Enterprise Grid.
+  Documented limitation, not a bug.
+- The channel directory the Slack web UI shows you is fetched from a
+  separate, internal API: **Flannel/Loom edge endpoints** at
+  `edgeapi.slack.com/cache/<enterprise_id>/channels/{info,search}`
+  and the boot endpoint at `x.slack.com/api/client.userBoot`. These
+  are not part of the documented Web API and the conventional
+  console-snippet token-hunting approach doesn't reach them reliably
+  because Slack rotated where the session token is stored.
+- The browser, however, can see all this data as it flows past
+  during normal use. The HAR (HTTP Archive) export of a Slack tab
+  contains every API response body, including all the above
+  endpoints' payloads. That's the integration point we use.
+
+For background, see the
+[reverse-engineered system design of Slack's web app](https://gist.github.com/sshh12/4cca8d6698be3c80e9232b68586b7924)
+which documents the Flannel/Loom architecture in detail.
+
+**How it works**:
+
+1. Operator opens Slack web in Chrome with DevTools' Network panel
+   recording. Hard-reloads. Optionally uses ⌘K + types a few `cust-`
+   prefixes to coax the edge API to return more channels. Then
+   right-clicks → "Save all as HAR with content" and drops the .har
+   file into the admin page.
+2. `POST /api/slack/mappings/import-har` accepts a multipart form
+   upload (or JSON `{harText}` for curl testing). The handler
+   delegates to `extractChannelsFromHar` in `@mdas/slack-send`, which
+   walks every entry's response body and collects anything that looks
+   like a channel record. It's intentionally permissive about source
+   shape — any object with a `Cxxx`/`Gxxx`-shaped `id` and a non-empty
+   `name` qualifies — so it handles every endpoint shape Slack
+   currently uses (`client.userBoot.channels[]`,
+   `edgeapi.../channels/info.results[]`, `conversations.info.channel`,
+   `search.modules.channels.items[]`, etc.) and won't break when
+   Slack adds new ones.
+3. The extracted channel list is then run through the same
+   exact-match / fuzzy-near-match pipeline as the older paste flow:
+   - **Exact name match** (`cust-{slug}` equals a name in the HAR) →
+     row promoted to `status='mapped'`, `source='heuristic'` (source
+     stays heuristic because that's how we derived the name; the HAR
+     only *confirmed* it).
+   - **Archived exact match** → row left as candidate; only the
+     `is_archived` flag, `channel_name`, and `status_reason` updated,
+     because we shouldn't link to a channel nobody can use.
+   - **Fuzzy near-match** (Levenshtein ≤ 2 or one is a prefix of the
+     other; threshold score ≥ 0.65) → not promoted, but surfaced in
+     a review table. Operator clicks **Accept** to write a manual
+     override pointing at the suggested channel.
+4. The HAR is processed entirely in-memory and discarded. The audit
+   row records only counts (`channelsInPaste`, `candidatesConsidered`,
+   `promoted`, `archivedSkipped`, `suggestionsCount`, per-endpoint
+   `sources`) — never the channel names from the HAR itself.
+
+**Security**: HAR files contain message bodies, user profiles, and
+every other API response Slack sent during the recording. The admin
+page's UI explicitly warns the operator and recommends deleting the
+.har file after upload. Server-side: max 100MB, no disk write, no
+persistence beyond the matched mapping rows.
+
+**Auth note**: this endpoint makes **zero** outbound Slack API calls.
+It only reads already-on-disk candidate rows and writes back the
+matched ones. The operator's browser session is the privileged context
+that bridges the `enterprise_is_restricted` policy gap; the server is
+just a parser and a bulk UPDATE. No `SLACK_BOT_TOKEN` / `SLACK_XOXC_TOKEN`
+required for this flow.
+
 ### How the hard send toggle works
 
 Implemented in `packages/slack-send/src/gate.ts`. Three independent

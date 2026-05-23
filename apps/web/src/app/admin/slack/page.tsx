@@ -58,6 +58,13 @@ export default async function AdminSlackPage(): Promise<JSX.Element> {
             env toggle and per-message confirmation.
           </p>
         </div>
+        <a
+          href="/admin/slack/import-channels"
+          className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 shadow-sm hover:bg-gray-50"
+          title="Bulk-promote heuristic_candidate rows by uploading a HAR file from your Slack browser tab."
+        >
+          Import channels from HAR →
+        </a>
       </div>
 
       <Card title="Send gate (three independent guards — ALL must pass for a real send)">

@@ -26,7 +26,8 @@
     "cta:generate": "tsx scripts/generate-ctas.ts",
     "cta:dry-run": "tsx scripts/generate-ctas.ts --dry-run",
     "e2e": "playwright test",
-    "e2e:install": "playwright install --with-deps chromium"
+    "e2e:install": "playwright install --with-deps chromium",
+    "sweep:slack": "tsx scripts/sweep-slack-channels.mts"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.2",

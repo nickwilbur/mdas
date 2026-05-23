@@ -43,3 +43,16 @@ export {
 } from './list-channels.js';
 
 export { validateChannelId, type ChannelValidation } from './validate-channel.js';
+
+export {
+  parseChannelPaste,
+  nameMatchScore,
+  type PastedChannel,
+  type PasteParseResult,
+} from './paste.js';
+
+export {
+  extractChannelsFromHar,
+  type HarChannel,
+  type HarExtractResult,
+} from './har.js';
