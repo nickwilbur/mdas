@@ -56,3 +56,17 @@ export {
   type HarChannel,
   type HarExtractResult,
 } from './har.js';
+
+export {
+  buildMappingQuery,
+  DEFAULT_SORT,
+  DEFAULT_DIR,
+  SORTABLE_COLUMNS,
+  VALID_MAPPING_STATUSES,
+  VALID_MAPPING_SOURCES,
+  type SortColumn,
+  type SortDir,
+  type MappingFilters,
+  type MappingSort,
+  type BuiltQuery,
+} from './mapping-query.js';

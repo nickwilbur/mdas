@@ -15,6 +15,7 @@
 import 'server-only';
 import { query, audit, latestSuccessfulRun } from '@mdas/db';
 import {
+  buildMappingQuery,
   computeMappingStatus,
   extractChannelsFromHar,
   fetchPublicChannelIndex,
@@ -27,6 +28,8 @@ import {
   EMPTY_INDEX,
   type ChannelIndex,
   type ChannelValidation,
+  type MappingFilters,
+  type MappingSort,
   type MappingStatus,
   type MappingSource,
   type PastedChannel,
@@ -116,15 +119,11 @@ function rowToMapping(r: MappingDbRow): SlackMappingRow {
   };
 }
 
-export interface ListMappingsOptions {
+export interface ListMappingsOptions extends MappingFilters, MappingSort {
   /** 1-indexed page number. Default 1. */
   page?: number;
   /** Rows per page. Default 50, capped at 200. */
   pageSize?: number;
-  /** Restrict to a single status. */
-  status?: string;
-  /** Case-insensitive substring match on account_name OR account_id. */
-  q?: string;
 }
 
 export interface ListMappingsResult {
@@ -134,18 +133,12 @@ export interface ListMappingsResult {
   counts: Record<string, number>;
   page: number;
   pageSize: number;
+  /** The sort column/direction actually used (after whitelist fallback). */
+  sort: string;
+  dir: 'asc' | 'desc';
 }
 
 const MAX_PAGE_SIZE = 200;
-const VALID_STATUSES = new Set([
-  'mapped',
-  'manually_overridden',
-  'missing_salesforce_channel',
-  'invalid_slack_url',
-  'inaccessible_channel',
-  'unresolved',
-  'heuristic_candidate',
-]);
 
 export async function listMappings(
   opts: ListMappingsOptions = {},
@@ -154,19 +147,23 @@ export async function listMappings(
   const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Math.floor(opts.pageSize ?? 50)));
   const offset = (page - 1) * pageSize;
 
-  // Build WHERE clause with parameterized values. Status is whitelisted
-  // (not concatenated raw) and `q` is bound via ILIKE — never interpolated.
-  const where: string[] = [];
-  const params: unknown[] = [];
-  if (opts.status && VALID_STATUSES.has(opts.status)) {
-    params.push(opts.status);
-    where.push(`status = $${params.length}`);
-  }
-  if (opts.q && opts.q.trim()) {
-    params.push(`%${opts.q.trim()}%`);
-    where.push(`(account_name ILIKE $${params.length} OR account_id ILIKE $${params.length})`);
-  }
-  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  // Delegated to a pure SQL builder in @mdas/slack-send. It enforces
+  // the sort-column / sort-direction whitelist (the SQL-injection
+  // critical path because ORDER BY doesn't accept bind parameters) and
+  // binds every filter VALUE as a $N parameter. See its module docstring
+  // and tests for the full safety contract.
+  const { whereSql, orderBySql, params, sortColumn, sortDir } = buildMappingQuery(
+    {
+      status: opts.status,
+      source: opts.source,
+      q: opts.q,
+      channelIdQ: opts.channelIdQ,
+      channelNameQ: opts.channelNameQ,
+      refreshedAfter: opts.refreshedAfter,
+      refreshedBefore: opts.refreshedBefore,
+    },
+    { sort: opts.sort, dir: opts.dir },
+  );
 
   // Three queries in parallel:
   //   1. The page slice
@@ -175,7 +172,7 @@ export async function listMappings(
   //      the user's status filter so they always see the population shape)
   const pageSliceQuery = query<MappingDbRow>(
     `SELECT * FROM customer_slack_mapping ${whereSql}
-       ORDER BY account_name NULLS LAST, account_id
+       ${orderBySql}
        LIMIT ${pageSize} OFFSET ${offset}`,
     params,
   );
@@ -230,6 +227,8 @@ export async function listMappings(
     counts,
     page,
     pageSize,
+    sort: sortColumn,
+    dir: sortDir,
   };
 }
 

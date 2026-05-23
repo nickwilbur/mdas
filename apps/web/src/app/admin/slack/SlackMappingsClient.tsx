@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { SlackMappingRow } from '@/lib/slack-mapping';
 
 interface PreviewResult {
@@ -28,7 +28,115 @@ interface MappingsApiResponse {
   counts: Record<string, number>;
   page: number;
   pageSize: number;
+  sort: string;
+  dir: 'asc' | 'desc';
 }
+
+// ───────────────────────────────────────────────────────────────────
+// Sort + filter state shape
+//
+// Single source of truth for what the user has asked for. Mirrored into
+// the URL so filters survive reload / can be shared. Mirrored to the
+// API request as `?sort=&dir=&...` query string.
+//
+// `sort` must be one of SORTABLE_COLUMNS (validated server-side in
+// buildMappingQuery via the same whitelist). `dir` is 'asc' | 'desc'.
+// Filters are all plain strings — empty string means "no filter".
+// ───────────────────────────────────────────────────────────────────
+
+type SortColumnId =
+  | 'account_name'
+  | 'status'
+  | 'source'
+  | 'channel_name'
+  | 'last_refreshed_at';
+
+interface MappingFiltersState {
+  status: string;
+  source: string;
+  q: string;
+  channelNameQ: string;
+  refreshedAfter: string;
+  refreshedBefore: string;
+}
+
+const EMPTY_FILTERS: MappingFiltersState = {
+  status: '',
+  source: '',
+  q: '',
+  channelNameQ: '',
+  refreshedAfter: '',
+  refreshedBefore: '',
+};
+
+// Column metadata. Drives both the sortable header buttons and the
+// filter row underneath. Each entry maps a column id to:
+//   - label:    what the user sees in the header
+//   - sortable: whether the column header doubles as a sort button
+//   - filter:   the kind of input rendered in the filter row
+const COLUMNS: ReadonlyArray<{
+  id: SortColumnId | 'actions';
+  label: string;
+  sortable: boolean;
+  filter:
+    | { kind: 'text'; field: keyof MappingFiltersState; placeholder: string }
+    | { kind: 'select'; field: keyof MappingFiltersState; options: ReadonlyArray<string> }
+    | { kind: 'daterange'; afterField: keyof MappingFiltersState; beforeField: keyof MappingFiltersState }
+    | { kind: 'none' };
+}> = [
+  {
+    id: 'account_name',
+    label: 'Account',
+    sortable: true,
+    filter: { kind: 'text', field: 'q', placeholder: 'name or id…' },
+  },
+  {
+    id: 'status',
+    label: 'Status',
+    sortable: true,
+    filter: {
+      kind: 'select',
+      field: 'status',
+      options: [
+        '',
+        'mapped',
+        'manually_overridden',
+        'heuristic_candidate',
+        'inaccessible_channel',
+        'invalid_slack_url',
+        'missing_salesforce_channel',
+        'unresolved',
+      ],
+    },
+  },
+  {
+    id: 'source',
+    label: 'Source',
+    sortable: true,
+    filter: {
+      kind: 'select',
+      field: 'source',
+      options: ['', 'salesforce', 'override', 'sheet', 'heuristic', 'cache'],
+    },
+  },
+  {
+    id: 'channel_name',
+    label: 'Channel',
+    sortable: true,
+    filter: { kind: 'text', field: 'channelNameQ', placeholder: 'channel name…' },
+  },
+  {
+    id: 'last_refreshed_at',
+    label: 'Last refreshed',
+    sortable: true,
+    filter: {
+      kind: 'daterange',
+      afterField: 'refreshedAfter',
+      beforeField: 'refreshedBefore',
+    },
+  },
+  { id: 'actions', label: '', sortable: false, filter: { kind: 'none' } },
+];
 
 interface Props {
   initialRows: SlackMappingRow[];
@@ -101,6 +209,7 @@ const SOURCE_BADGE: Record<string, { label: string; cls: string; title: string }
 
 export function SlackMappingsClient(props: Props): JSX.Element {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   // The browser holds AT MOST one page (default 50) of mapping rows at any
   // time, plus the lightweight counts histogram. We never accumulate or
@@ -109,35 +218,77 @@ export function SlackMappingsClient(props: Props): JSX.Element {
   const [total, setTotal] = useState(props.initialTotal);
   const [counts, setCounts] = useState<Record<string, number>>(props.initialCounts);
   const [page, setPage] = useState(props.initialPage);
-  const [statusFilter, setStatusFilter] = useState<string>('');
-  const [searchInput, setSearchInput] = useState('');
-  const [debouncedQ, setDebouncedQ] = useState('');
+
+  // Filters and sort: initialised from URL query params so a shared link
+  // (e.g. /admin/slack?status=inaccessible_channel&sort=last_refreshed_at&dir=desc)
+  // restores the same view. Empty defaults mirror the server's defaults.
+  const [filters, setFilters] = useState<MappingFiltersState>(() => ({
+    status: searchParams.get('status') ?? '',
+    source: searchParams.get('source') ?? '',
+    q: searchParams.get('q') ?? '',
+    channelNameQ: searchParams.get('channelNameQ') ?? '',
+    refreshedAfter: searchParams.get('refreshedAfter') ?? '',
+    refreshedBefore: searchParams.get('refreshedBefore') ?? '',
+  }));
+  const [sort, setSort] = useState<SortColumnId>(
+    (searchParams.get('sort') as SortColumnId | null) ?? 'account_name',
+  );
+  const [dir, setDir] = useState<'asc' | 'desc'>(
+    searchParams.get('dir') === 'desc' ? 'desc' : 'asc',
+  );
+
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState<string | 'all' | null>(null);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [selected, setSelected] = useState<SlackMappingRow | null>(null);
   const [, startTransition] = useTransition();
 
-  // Debounce the search box (250ms) so a 10-char query doesn't trigger
-  // 10 fetches. Keeps server load + browser GC pressure low.
+  // Debounce text-filter inputs (250ms) so a 10-char query doesn't trigger
+  // 10 fetches. We debounce the WHOLE filters object — select changes
+  // (status/source) settle through the same path so the wait is uniform.
+  const [debouncedFilters, setDebouncedFilters] = useState(filters);
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedQ(searchInput.trim()), 250);
+    const t = setTimeout(() => setDebouncedFilters(filters), 250);
     return () => clearTimeout(t);
-  }, [searchInput]);
+  }, [filters]);
 
-  // Reset to page 1 whenever filters change (a page-3 view of the old
-  // filter set is meaningless after the filter shrinks the result set).
+  // Reset to page 1 whenever filters or sort change. A page-3 view of
+  // the old filter set is meaningless after the filter shrinks results,
+  // and re-sorting puts a different population at the top of the list.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     setPage(1);
-  }, [statusFilter, debouncedQ]);
+  }, [debouncedFilters, sort, dir]);
+
+  // Sync to URL so deep links / reloads preserve the view. replace()
+  // not push() so the browser back button doesn't have to step through
+  // every keystroke.
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (debouncedFilters.status) next.set('status', debouncedFilters.status);
+    if (debouncedFilters.source) next.set('source', debouncedFilters.source);
+    if (debouncedFilters.q) next.set('q', debouncedFilters.q);
+    if (debouncedFilters.channelNameQ) next.set('channelNameQ', debouncedFilters.channelNameQ);
+    if (debouncedFilters.refreshedAfter) next.set('refreshedAfter', debouncedFilters.refreshedAfter);
+    if (debouncedFilters.refreshedBefore) next.set('refreshedBefore', debouncedFilters.refreshedBefore);
+    if (sort !== 'account_name') next.set('sort', sort);
+    if (dir !== 'asc') next.set('dir', dir);
+    const qs = next.toString();
+    router.replace(qs ? `?${qs}` : '?', { scroll: false });
+  }, [debouncedFilters, sort, dir, router]);
 
   // Aborts the prior fetch when filters change rapidly. Without this a
   // slow first request can land AFTER a fast second one and clobber the
   // visible state with stale rows.
   const abortRef = useRef<AbortController | null>(null);
   const fetchPage = useCallback(
-    async (opts: { page: number; status: string; q: string; silent?: boolean }) => {
+    async (opts: {
+      page: number;
+      filters: MappingFiltersState;
+      sort: SortColumnId;
+      dir: 'asc' | 'desc';
+      silent?: boolean;
+    }) => {
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
@@ -146,9 +297,15 @@ export function SlackMappingsClient(props: Props): JSX.Element {
         const params = new URLSearchParams({
           page: String(opts.page),
           pageSize: String(props.pageSize),
+          sort: opts.sort,
+          dir: opts.dir,
         });
-        if (opts.status) params.set('status', opts.status);
-        if (opts.q) params.set('q', opts.q);
+        if (opts.filters.status) params.set('status', opts.filters.status);
+        if (opts.filters.source) params.set('source', opts.filters.source);
+        if (opts.filters.q) params.set('q', opts.filters.q);
+        if (opts.filters.channelNameQ) params.set('channelNameQ', opts.filters.channelNameQ);
+        if (opts.filters.refreshedAfter) params.set('refreshedAfter', opts.filters.refreshedAfter);
+        if (opts.filters.refreshedBefore) params.set('refreshedBefore', opts.filters.refreshedBefore);
         const r = await fetch(`/api/slack/mappings?${params.toString()}`, {
           signal: ac.signal,
         });
@@ -169,12 +326,44 @@ export function SlackMappingsClient(props: Props): JSX.Element {
     [props.pageSize],
   );
 
-  // Re-fetch on page / filter / debouncedQ changes. We intentionally do
-  // NOT depend on `fetchPage` itself; it's stable per pageSize.
+  // Re-fetch on page / filters / sort changes. We intentionally don't
+  // depend on `fetchPage` itself; it's stable per pageSize.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    fetchPage({ page, status: statusFilter, q: debouncedQ });
-  }, [page, statusFilter, debouncedQ]);
+    fetchPage({ page, filters: debouncedFilters, sort, dir });
+  }, [page, debouncedFilters, sort, dir]);
+
+  // Toggle sort column / direction. Click on the current sort column
+  // flips asc ↔ desc; click on a different column sets that column to
+  // its natural direction (timestamps default to descending so the
+  // newest rows surface first; everything else defaults to ascending).
+  const toggleSort = useCallback(
+    (col: SortColumnId) => {
+      if (col === sort) {
+        setDir(dir === 'asc' ? 'desc' : 'asc');
+      } else {
+        setSort(col);
+        setDir(col === 'last_refreshed_at' ? 'desc' : 'asc');
+      }
+    },
+    [sort, dir],
+  );
+
+  const updateFilter = useCallback(
+    (field: keyof MappingFiltersState, value: string) => {
+      setFilters((prev) => ({ ...prev, [field]: value }));
+    },
+    [],
+  );
+
+  const clearAllFilters = useCallback(() => {
+    setFilters(EMPTY_FILTERS);
+  }, []);
+
+  const activeFilterCount = useMemo(
+    () => Object.values(filters).filter((v) => v.trim().length > 0).length,
+    [filters],
+  );
 
   const refreshAll = useCallback(async () => {
     setRefreshing('all');
@@ -190,14 +379,14 @@ export function SlackMappingsClient(props: Props): JSX.Element {
           (j.validationErrors ? `, ${j.validationErrors} validation errors` : '') +
           '.',
       );
-      await fetchPage({ page: 1, status: statusFilter, q: debouncedQ });
+      await fetchPage({ page: 1, filters: debouncedFilters, sort, dir });
       startTransition(() => router.refresh());
     } catch (e) {
       setRefreshMsg(`Error: ${(e as Error).message}`);
     } finally {
       setRefreshing(null);
     }
-  }, [fetchPage, router, statusFilter, debouncedQ]);
+  }, [fetchPage, router, debouncedFilters, sort, dir]);
 
   const refreshOne = useCallback(
     async (accountId: string) => {
@@ -206,12 +395,12 @@ export function SlackMappingsClient(props: Props): JSX.Element {
         await fetch(`/api/slack/mappings/refresh/${encodeURIComponent(accountId)}`, {
           method: 'POST',
         });
-        await fetchPage({ page, status: statusFilter, q: debouncedQ, silent: true });
+        await fetchPage({ page, filters: debouncedFilters, sort, dir, silent: true });
       } finally {
         setRefreshing(null);
       }
     },
-    [fetchPage, page, statusFilter, debouncedQ],
+    [fetchPage, page, debouncedFilters, sort, dir],
   );
 
   const setOverride = useCallback(
@@ -240,12 +429,12 @@ export function SlackMappingsClient(props: Props): JSX.Element {
               `The row is flagged inaccessible_channel — refresh won't undo it. Use Clear to revert.`,
           );
         }
-        await fetchPage({ page, status: statusFilter, q: debouncedQ, silent: true });
+        await fetchPage({ page, filters: debouncedFilters, sort, dir, silent: true });
       } finally {
         setRefreshing(null);
       }
     },
-    [fetchPage, page, statusFilter, debouncedQ],
+    [fetchPage, page, debouncedFilters, sort, dir],
   );
 
   const clearOverride = useCallback(
@@ -259,12 +448,12 @@ export function SlackMappingsClient(props: Props): JSX.Element {
           `/api/slack/mappings/override/${encodeURIComponent(accountId)}`,
           { method: 'DELETE' },
         );
-        await fetchPage({ page, status: statusFilter, q: debouncedQ, silent: true });
+        await fetchPage({ page, filters: debouncedFilters, sort, dir, silent: true });
       } finally {
         setRefreshing(null);
       }
     },
-    [fetchPage, page, statusFilter, debouncedQ],
+    [fetchPage, page, debouncedFilters, sort, dir],
   );
 
   const totalPages = Math.max(1, Math.ceil(total / props.pageSize));
@@ -311,7 +500,7 @@ export function SlackMappingsClient(props: Props): JSX.Element {
 
       <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3 lg:grid-cols-6">
         {STATUS_TILES.map((s) => {
-          const active = statusFilter === s;
+          const active = filters.status === s;
           const n = counts[s] ?? 0;
           const isHeuristic = s === 'heuristic_candidate';
           const personalScope =
@@ -319,7 +508,7 @@ export function SlackMappingsClient(props: Props): JSX.Element {
           return (
             <button
               key={s}
-              onClick={() => setStatusFilter(active ? '' : s)}
+              onClick={() => updateFilter('status', active ? '' : s)}
               className={`rounded border px-3 py-2 text-left transition ${
                 active
                   ? 'border-blue-600 bg-blue-50 ring-1 ring-blue-300'
@@ -355,19 +544,13 @@ export function SlackMappingsClient(props: Props): JSX.Element {
       ) : null}
 
       <div className="flex flex-wrap items-center gap-3">
-        <input
-          type="search"
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          placeholder="Search account name or id…"
-          className="w-64 rounded border border-gray-300 px-2 py-1 text-sm"
-        />
-        {statusFilter ? (
+        {activeFilterCount > 0 ? (
           <button
-            onClick={() => setStatusFilter('')}
+            onClick={clearAllFilters}
             className="rounded border border-gray-300 bg-white px-2 py-1 text-xs hover:bg-gray-50"
+            title="Clear every column filter"
           >
-            Clear status filter ({statusFilter})
+            Clear filters ({activeFilterCount})
           </button>
         ) : null}
         <div className="ml-auto flex items-center gap-2 text-xs text-gray-600">
@@ -398,27 +581,78 @@ export function SlackMappingsClient(props: Props): JSX.Element {
         <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2 text-sm font-semibold">
           <span>
             Mappings — showing {rows.length} of {total}
-            {statusFilter || debouncedQ ? ' (filtered)' : ''}
+            {activeFilterCount > 0 ? ' (filtered)' : ''}
+            {' · sorted by '}
+            <code className="text-xs font-normal text-gray-600">
+              {sort} {dir}
+            </code>
           </span>
           {loading ? <span className="text-xs font-normal text-gray-500">loading…</span> : null}
         </div>
         <div className="max-h-[60vh] overflow-auto">
           <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-gray-50 text-left text-xs uppercase text-gray-600">
+            <thead className="sticky top-0 z-10 bg-gray-50 text-left text-xs uppercase text-gray-600 shadow-sm">
               <tr>
-                <th className="px-3 py-2">Account</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Source</th>
-                <th className="px-3 py-2">Channel</th>
-                <th className="px-3 py-2">Last refreshed</th>
-                <th className="px-3 py-2"></th>
+                {COLUMNS.map((col) => (
+                  <th
+                    key={col.id}
+                    className="px-3 py-2 align-bottom"
+                    aria-sort={
+                      col.sortable && col.id === sort
+                        ? dir === 'asc'
+                          ? 'ascending'
+                          : 'descending'
+                        : col.sortable
+                          ? 'none'
+                          : undefined
+                    }
+                    scope="col"
+                  >
+                    {col.sortable ? (
+                      <button
+                        type="button"
+                        onClick={() => toggleSort(col.id as SortColumnId)}
+                        className={`flex items-center gap-1 text-left uppercase hover:text-gray-900 ${
+                          col.id === sort ? 'font-semibold text-gray-900' : 'text-gray-600'
+                        }`}
+                        title={
+                          col.id === sort
+                            ? `Sorting by ${col.label}, ${dir}. Click to flip direction.`
+                            : `Sort by ${col.label}`
+                        }
+                      >
+                        {col.label}
+                        <SortIndicator
+                          active={col.id === sort}
+                          dir={col.id === sort ? dir : null}
+                        />
+                      </button>
+                    ) : (
+                      <span>{col.label}</span>
+                    )}
+                  </th>
+                ))}
+              </tr>
+              <tr className="bg-white">
+                {COLUMNS.map((col) => (
+                  <th
+                    key={`f-${col.id}`}
+                    className="border-y border-gray-200 px-3 py-1 font-normal"
+                  >
+                    <FilterCell
+                      column={col}
+                      filters={filters}
+                      onChange={updateFilter}
+                    />
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-3 py-6 text-center text-gray-500">
-                    {total === 0 && !statusFilter && !debouncedQ
+                  <td colSpan={COLUMNS.length} className="px-3 py-6 text-center text-gray-500">
+                    {total === 0 && activeFilterCount === 0
                       ? 'No mappings yet. Click "Refresh all mappings" to populate from the latest snapshot.'
                       : 'No mappings match the current filter.'}
                   </td>
@@ -739,6 +973,97 @@ function ComposePanel({
           <div className="mt-1 text-xs text-gray-700">Audit id: {confirmation.auditId}</div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// Column-header sort glyph. Three visible states:
+//   ⇅  inactive (column is sortable but not currently the sort key)
+//   ↑  active asc
+//   ↓  active desc
+// We use plain unicode glyphs rather than an icon library to stay
+// dependency-free. The aria-sort attribute on the <th> carries the
+// authoritative state for screen readers.
+function SortIndicator({
+  active,
+  dir,
+}: {
+  active: boolean;
+  dir: 'asc' | 'desc' | null;
+}): JSX.Element {
+  if (!active) {
+    return <span className="text-gray-400" aria-hidden="true">⇅</span>;
+  }
+  return (
+    <span className="text-blue-600" aria-hidden="true">
+      {dir === 'asc' ? '↑' : '↓'}
+    </span>
+  );
+}
+
+// Per-column filter input rendered in the secondary thead row. Picks
+// the right control based on the column's `filter` metadata. All
+// controls write back through the same `onChange(field, value)`
+// callback so the parent's filter state stays the single source of
+// truth.
+function FilterCell({
+  column,
+  filters,
+  onChange,
+}: {
+  column: (typeof COLUMNS)[number];
+  filters: MappingFiltersState;
+  onChange: (field: keyof MappingFiltersState, value: string) => void;
+}): JSX.Element | null {
+  const f = column.filter;
+  if (f.kind === 'none') return null;
+  if (f.kind === 'text') {
+    return (
+      <input
+        type="search"
+        value={filters[f.field]}
+        onChange={(e) => onChange(f.field, e.target.value)}
+        placeholder={f.placeholder}
+        aria-label={`Filter by ${column.label}`}
+        className="w-full rounded border border-gray-300 px-2 py-1 text-xs font-normal"
+      />
+    );
+  }
+  if (f.kind === 'select') {
+    return (
+      <select
+        value={filters[f.field]}
+        onChange={(e) => onChange(f.field, e.target.value)}
+        aria-label={`Filter by ${column.label}`}
+        className="w-full rounded border border-gray-300 bg-white px-2 py-1 text-xs font-normal"
+      >
+        {f.options.map((opt) => (
+          <option key={opt} value={opt}>
+            {opt === '' ? '(all)' : opt}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  // daterange
+  return (
+    <div className="flex flex-col gap-1">
+      <input
+        type="date"
+        value={filters[f.afterField]}
+        onChange={(e) => onChange(f.afterField, e.target.value)}
+        aria-label={`${column.label} from`}
+        title="Refreshed on or after"
+        className="w-full rounded border border-gray-300 px-1 py-0.5 text-xs font-normal"
+      />
+      <input
+        type="date"
+        value={filters[f.beforeField]}
+        onChange={(e) => onChange(f.beforeField, e.target.value)}
+        aria-label={`${column.label} to`}
+        title="Refreshed on or before"
+        className="w-full rounded border border-gray-300 px-1 py-0.5 text-xs font-normal"
+      />
     </div>
   );
 }
