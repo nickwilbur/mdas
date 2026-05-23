@@ -518,22 +518,59 @@ clickable tiles for filtering; gaps are visible, not hidden.
 **Slack API use during refresh** (when a read-only token is configured,
 see auth section below):
 
-- **`conversations.list?types=public_channel`** — one pass per refresh.
-  Builds an index of public channels so we can resolve channel ids to
-  real names and promote heuristic candidates whose `cust-{slug}` name
-  appears in the index.
-- **`conversations.info`** — bounded to 40 calls per refresh; used only
-  for channel ids that the public-channel index didn't resolve. Returns
-  `channel_not_found` → row flips to `inaccessible_channel`; returns
-  `is_archived: true` → row gets the archived flag. Both states are
-  sticky across refreshes (once dead, always dead until a human
-  un-sticks via override).
+- **`conversations.list`** — one pass per refresh. Builds an index of
+  channels so we can resolve channel ids to real names and promote
+  heuristic candidates whose `cust-{slug}` name appears in the index.
+  - Bot token → `types=public_channel` (bot doesn't elevate to private).
+  - User / xoxc token → `types=public_channel,private_channel` (Slack
+    returns only what the underlying human user sees; not an elevation).
+  - **Enterprise Grid caveat**: org admins can disable
+    `conversations.list` for non-admin tokens via
+    "Admin > Apps > Permissions for Apps > Restrict listing of channels".
+    When enforced, the call returns `enterprise_is_restricted` and
+    heuristic candidates cannot auto-resolve from a directory. Mapping
+    refresh still works for SFDC-known channel ids (via
+    `conversations.info`); use the per-row "Map URL" admin action
+    described below to resolve the rest.
+- **`conversations.info`** — bounded to 40 calls per refresh; used for
+  channel ids the directory didn't resolve. Returns `channel_not_found`
+  → row flips to `inaccessible_channel`; `is_archived: true` → archived
+  flag. Both sticky across refreshes (once dead, always dead until a
+  human un-sticks via override). NOT subject to the
+  `enterprise_is_restricted` policy.
 - A "recently validated live" guard skips re-validating channels that
   were validated within the last 24h, so the bounded budget rotates
   through pending rows instead of revalidating the same set every run.
 
 Without a configured token, refresh still runs — it just can't validate
 inaccessible channels or promote heuristic candidates.
+
+### Per-row manual overrides
+
+When `conversations.list` is blocked (Enterprise Grid, see above) or
+when no token is configured, heuristic candidates can be resolved one
+at a time via the per-row **Map URL** button on `/admin/slack` (shown
+on rows whose status is `heuristic_candidate`, `unresolved`,
+`missing_salesforce_channel`, `invalid_slack_url`, or
+`inaccessible_channel`).
+
+API: `POST /api/slack/mappings/override/:accountId` with body
+`{ slackUrl, note? }`. The URL is parsed strictly (only canonical
+`/archives/Cxxx...` shapes accepted), validated via
+`conversations.info` when a read token is present (validation outcome
+recorded but does NOT block the write — operator's word beats an
+unreachable API), and written with `source='override'`. Override rows
+are sticky across refreshes per the precedence in "Source of truth"
+above.
+
+`DELETE /api/slack/mappings/override/:accountId` clears the override
+entirely (URL + channel id nulled out) and re-runs single-account
+precedence resolution. Use the **Clear override** button on rows whose
+`source` is `override`.
+
+All set/clear actions write `slack.mapping.override.set` /
+`slack.mapping.override.clear` rows to `audit_log` with actor and
+validation outcome.
 
 ### How the hard send toggle works
 

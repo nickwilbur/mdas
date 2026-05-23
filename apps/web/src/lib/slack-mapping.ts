@@ -323,6 +323,11 @@ export async function refreshMappings(opts: {
       channelIndex = await fetchPublicChannelIndex({
         readToken: gate.readAuth.token,
         readCookie: gate.readAuth.cookie,
+        // user/xoxc tokens include the private channels the operator
+        // is already a member of, so cust-* heuristic candidates can
+        // promote even when the channel is private. Bot tokens stay
+        // public-only — see list-channels.ts top-of-file rationale.
+        tokenKind: gate.readAuth.kind === 'none' ? undefined : gate.readAuth.kind,
       });
     } catch (e) {
       channelIndexError = (e as Error).message;
@@ -628,6 +633,202 @@ export interface SheetImportResult {
   imported: number;
   skipped: number;
   errors: { row: number; reason: string }[];
+}
+
+export interface ManualOverrideResult {
+  ok: boolean;
+  accountId: string;
+  slackUrl?: string;
+  slackChannelId?: string;
+  channelName?: string;
+  validated?: 'live' | 'archived' | 'inaccessible' | 'unknown' | 'unchecked';
+  reason?: string;
+}
+
+/**
+ * Per-row manual override. Used to resolve `heuristic_candidate` /
+ * `unresolved` rows when the operator finds the channel URL by hand
+ * (Slack admin policy blocks `conversations.list` at the org level,
+ * so heuristic candidates can't auto-resolve from a directory).
+ *
+ * Source is set to 'override', which takes precedence over Salesforce
+ * and is preserved across full refreshes (see status.ts precedence).
+ *
+ * If a read token is available, the channel id is validated via
+ * `conversations.info`. Validation outcome is recorded but does NOT
+ * gate the write — operators should be able to flag a channel even
+ * when the API is uncooperative.
+ */
+export async function setManualOverride(args: {
+  accountId: string;
+  slackUrl: string;
+  actor: string;
+  note?: string | null;
+}): Promise<ManualOverrideResult> {
+  const parsed = parseSlackUrl(args.slackUrl);
+  if (!parsed) {
+    return {
+      ok: false,
+      accountId: args.accountId,
+      reason: 'Invalid Slack URL. Expected https://<workspace>.slack.com/archives/Cxxxx... or .enterprise.slack.com/...',
+    };
+  }
+
+  // Look up the account name from the existing mapping row first; fall
+  // back to the latest snapshot_account payload (account name lives in
+  // the JSONB `payload->>'accountName'` field, not a top-level column).
+  const acctRes = await query<{ account_name: string | null }>(
+    `WITH from_mapping AS (
+       SELECT account_name FROM customer_slack_mapping WHERE account_id = $1
+     ), from_snapshot AS (
+       SELECT payload->>'accountName' AS account_name
+         FROM snapshot_account
+         WHERE account_id = $1
+         ORDER BY captured_at DESC
+         LIMIT 1
+     )
+     SELECT account_name FROM from_mapping
+     UNION ALL
+     SELECT account_name FROM from_snapshot
+     LIMIT 1`,
+    [args.accountId],
+  );
+  const accountName = acctRes.rows[0]?.account_name ?? args.accountId;
+
+  // Validate against Slack if we have a read token. Override is
+  // recorded either way — operator's word beats unreachable API.
+  const gate = readSendGateConfigFromEnv();
+  let validated: ManualOverrideResult['validated'] = 'unchecked';
+  let channelName: string | null = null;
+  let isArchived = false;
+  let statusReason = `Manual override set by ${args.actor}.`;
+  let mappingStatus: MappingStatus = 'manually_overridden';
+  if (gate.readAuth) {
+    try {
+      const v = await validateChannelId({
+        readToken: gate.readAuth.token,
+        readCookie: gate.readAuth.cookie,
+        channelId: parsed.channelId,
+      });
+      if (v.state === 'live') {
+        validated = v.isArchived ? 'archived' : 'live';
+        isArchived = v.isArchived;
+        statusReason += v.isArchived
+          ? ' Slack confirms channel exists but is archived.'
+          : ' Slack confirms channel is live and accessible.';
+      } else if (v.state === 'inaccessible') {
+        validated = 'inaccessible';
+        // Don't block the override — operator may know something the
+        // API doesn't (e.g. token can't see a private channel they
+        // verified by hand). Flag the row as inaccessible_channel
+        // instead, with the override flag preserved in source/notes.
+        mappingStatus = 'inaccessible_channel';
+        statusReason += ` Slack API reports channel_not_found (${v.slackError}); recorded anyway as operator override but flagged inaccessible.`;
+      } else {
+        validated = 'unknown';
+        statusReason += ` Slack API returned ${v.slackError}; override accepted without validation.`;
+      }
+    } catch (e) {
+      validated = 'unknown';
+      statusReason += ` Validation failed: ${(e as Error).message}. Override accepted without validation.`;
+    }
+  }
+
+  await query(
+    `INSERT INTO customer_slack_mapping
+       (account_id, account_name, slack_url, slack_channel_id, source,
+        status, status_reason, derived_channel_name,
+        channel_name, channel_name_source, is_archived, notes,
+        last_refreshed_at, last_validated_at, updated_by, updated_at)
+     VALUES ($1, $2, $3, $4, 'override', $5, $6, NULL,
+             $7, $8, $9, $10,
+             NOW(), $11, $12, NOW())
+     ON CONFLICT (account_id) DO UPDATE SET
+       slack_url = EXCLUDED.slack_url,
+       slack_channel_id = EXCLUDED.slack_channel_id,
+       source = 'override',
+       status = EXCLUDED.status,
+       status_reason = EXCLUDED.status_reason,
+       channel_name = COALESCE(EXCLUDED.channel_name, customer_slack_mapping.channel_name),
+       channel_name_source = COALESCE(EXCLUDED.channel_name_source, customer_slack_mapping.channel_name_source),
+       is_archived = EXCLUDED.is_archived,
+       notes = EXCLUDED.notes,
+       last_refreshed_at = NOW(),
+       last_validated_at = COALESCE(EXCLUDED.last_validated_at, customer_slack_mapping.last_validated_at),
+       updated_by = EXCLUDED.updated_by,
+       updated_at = NOW()`,
+    [
+      args.accountId,
+      accountName,
+      args.slackUrl.trim(),
+      parsed.channelId,
+      mappingStatus,
+      statusReason,
+      channelName,
+      channelName ? 'slack-api' : null,
+      isArchived,
+      args.note ?? null,
+      validated === 'unchecked' ? null : new Date(),
+      args.actor,
+    ],
+  );
+
+  await audit(args.actor, 'slack.mapping.override.set', {
+    accountId: args.accountId,
+    channelId: parsed.channelId,
+    validated,
+    status: mappingStatus,
+  });
+
+  return {
+    ok: true,
+    accountId: args.accountId,
+    slackUrl: args.slackUrl.trim(),
+    slackChannelId: parsed.channelId,
+    validated,
+  };
+}
+
+/**
+ * Drop a manual override. Re-runs the precedence resolution for that
+ * one account so it falls back to whatever Salesforce/sheet/heuristic
+ * would say.
+ */
+export async function clearManualOverride(args: {
+  accountId: string;
+  actor: string;
+}): Promise<{ ok: boolean; refreshed?: RefreshSummary }> {
+  // We don't DELETE the row — that would break the audit trail. Instead
+  // we wipe the URL + channel id + cache so the next refresh genuinely
+  // re-derives from Salesforce/sheet/heuristic. If we only changed
+  // `source` from 'override' to 'cache', the operator-supplied URL
+  // would stick around as a cache value and the refresh's precedence
+  // (cache > heuristic) would re-promote it — which is the opposite
+  // of what "clear" means to an operator.
+  await query(
+    `UPDATE customer_slack_mapping
+        SET source = 'cache',
+            slack_url = NULL,
+            slack_channel_id = NULL,
+            channel_name = NULL,
+            channel_name_source = NULL,
+            is_archived = NULL,
+            status = 'unresolved',
+            status_reason = 'Manual override cleared by ' || $2 || '. Awaiting next refresh.',
+            last_validated_at = NULL,
+            updated_by = $2,
+            updated_at = NOW()
+      WHERE account_id = $1 AND source = 'override'`,
+    [args.accountId, args.actor],
+  );
+  await audit(args.actor, 'slack.mapping.override.clear', {
+    accountId: args.accountId,
+  });
+  const refreshed = await refreshMappings({
+    actor: args.actor,
+    accountId: args.accountId,
+  });
+  return { ok: true, refreshed };
 }
 
 export async function importSheetCsv(args: {

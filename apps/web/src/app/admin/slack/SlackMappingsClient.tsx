@@ -39,7 +39,27 @@ interface Props {
   statusColors: Record<string, string>;
   sendEnabled: boolean;
   testRecipientConfigured: boolean;
+  /**
+   * 'bot' | 'user' | 'xoxc' | 'none'. When 'user' or 'xoxc', the
+   * heuristic-candidate count reflects channels visible to the
+   * operator's personal Slack identity (their public + private
+   * membership) — a different operator running the same tool would
+   * see a different number. UI surfaces this caveat near the
+   * heuristic_candidate tile.
+   */
+  readTokenKind: 'bot' | 'user' | 'xoxc' | 'none';
 }
+
+// Statuses where the per-row "Map URL" button is meaningful. Anything
+// that's already `mapped` or `manually_overridden` doesn't need the
+// action (operator can still use Clear Override + Map URL to replace).
+const NEEDS_MANUAL_RESOLUTION = new Set([
+  'heuristic_candidate',
+  'unresolved',
+  'missing_salesforce_channel',
+  'invalid_slack_url',
+  'inaccessible_channel',
+]);
 
 const STATUS_TILES = [
   'mapped',
@@ -194,6 +214,59 @@ export function SlackMappingsClient(props: Props): JSX.Element {
     [fetchPage, page, statusFilter, debouncedQ],
   );
 
+  const setOverride = useCallback(
+    async (accountId: string, slackUrl: string) => {
+      setRefreshing(accountId);
+      try {
+        const res = await fetch(
+          `/api/slack/mappings/override/${encodeURIComponent(accountId)}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ slackUrl }),
+          },
+        );
+        const body = (await res.json()) as {
+          ok: boolean;
+          validated?: string;
+          slackChannelId?: string;
+          reason?: string;
+        };
+        if (!body.ok) {
+          alert(`Override failed: ${body.reason ?? 'unknown error'}`);
+        } else if (body.validated === 'inaccessible') {
+          alert(
+            `Override saved, but Slack reports channel ${body.slackChannelId} as inaccessible.\n` +
+              `The row is flagged inaccessible_channel — refresh won't undo it. Use Clear to revert.`,
+          );
+        }
+        await fetchPage({ page, status: statusFilter, q: debouncedQ, silent: true });
+      } finally {
+        setRefreshing(null);
+      }
+    },
+    [fetchPage, page, statusFilter, debouncedQ],
+  );
+
+  const clearOverride = useCallback(
+    async (accountId: string) => {
+      if (!confirm('Clear the manual override for this account? Refresh will re-derive the mapping from Salesforce/sheet/heuristic.')) {
+        return;
+      }
+      setRefreshing(accountId);
+      try {
+        await fetch(
+          `/api/slack/mappings/override/${encodeURIComponent(accountId)}`,
+          { method: 'DELETE' },
+        );
+        await fetchPage({ page, status: statusFilter, q: debouncedQ, silent: true });
+      } finally {
+        setRefreshing(null);
+      }
+    },
+    [fetchPage, page, statusFilter, debouncedQ],
+  );
+
   const totalPages = Math.max(1, Math.ceil(total / props.pageSize));
   const start = total === 0 ? 0 : (page - 1) * props.pageSize + 1;
   const end = Math.min(total, page * props.pageSize);
@@ -240,6 +313,9 @@ export function SlackMappingsClient(props: Props): JSX.Element {
         {STATUS_TILES.map((s) => {
           const active = statusFilter === s;
           const n = counts[s] ?? 0;
+          const isHeuristic = s === 'heuristic_candidate';
+          const personalScope =
+            isHeuristic && (props.readTokenKind === 'user' || props.readTokenKind === 'xoxc');
           return (
             <button
               key={s}
@@ -251,12 +327,32 @@ export function SlackMappingsClient(props: Props): JSX.Element {
               }`}
               title={active ? 'Click to clear filter' : `Filter to ${s}`}
             >
-              <div className="text-xs text-gray-500">{s}</div>
+              <div className="text-xs text-gray-500">
+                {s}
+                {personalScope ? (
+                  <span
+                    className="ml-1 text-[10px] font-medium text-amber-700"
+                    title={`Channel index is built from channels visible to your personal Slack identity (${props.readTokenKind === 'xoxc' ? 'xoxc browser session' : 'user token'}). A teammate would see a different count. Candidates here mean: cust-{slug} not found among your visible public + private channels.`}
+                  >
+                    (you-scoped)
+                  </span>
+                ) : null}
+              </div>
               <div className="text-lg font-semibold">{n}</div>
             </button>
           );
         })}
       </div>
+      {props.readTokenKind === 'user' || props.readTokenKind === 'xoxc' ? (
+        <p className="text-xs text-gray-500">
+          Heuristic resolution uses the public + private channels visible
+          to your personal Slack identity (
+          {props.readTokenKind === 'xoxc' ? 'xoxc browser session' : 'user token'}
+          ). Channels you're not in stay as <code>heuristic_candidate</code>.
+          A bot token (phase 1b) would resolve only public channels but
+          give every operator the same view.
+        </p>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-3">
         <input
@@ -364,7 +460,7 @@ export function SlackMappingsClient(props: Props): JSX.Element {
                     {new Date(m.lastRefreshedAt).toLocaleString()}
                   </td>
                   <td className="px-3 py-2 text-xs">
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <button
                         onClick={() => refreshOne(m.accountId)}
                         disabled={refreshing !== null}
@@ -372,6 +468,32 @@ export function SlackMappingsClient(props: Props): JSX.Element {
                       >
                         {refreshing === m.accountId ? '…' : 'Refresh'}
                       </button>
+                      {NEEDS_MANUAL_RESOLUTION.has(m.status) ? (
+                        <button
+                          onClick={() => {
+                            const url = prompt(
+                              `Paste the Slack channel URL for "${m.accountName ?? m.accountId}".\n\nExpected shape:\nhttps://zuora.enterprise.slack.com/archives/Cxxxxxxxx\n\n(Right-click the channel name in Slack → Copy link to channel.)`,
+                              '',
+                            );
+                            if (url && url.trim()) setOverride(m.accountId, url.trim());
+                          }}
+                          disabled={refreshing !== null}
+                          title="Manually set the Slack channel URL for this account. Takes precedence over Salesforce."
+                          className="rounded border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
+                        >
+                          Map URL
+                        </button>
+                      ) : null}
+                      {m.source === 'override' ? (
+                        <button
+                          onClick={() => clearOverride(m.accountId)}
+                          disabled={refreshing !== null}
+                          title="Remove the manual override. Refresh will re-derive from Salesforce/sheet/heuristic."
+                          className="rounded border border-gray-300 px-2 py-0.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          Clear override
+                        </button>
+                      ) : null}
                       <button
                         onClick={() => setSelected(m)}
                         className="rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-700"

@@ -155,6 +155,7 @@ export default async function AdminSlackPage(): Promise<JSX.Element> {
         statusColors={STATUS_COLORS}
         sendEnabled={gateInfo.sendEnabled}
         testRecipientConfigured={gateInfo.testRecipientPresent}
+        readTokenKind={gateInfo.readTokenKind}
       />
     </div>
   );

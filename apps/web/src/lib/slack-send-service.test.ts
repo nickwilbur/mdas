@@ -176,8 +176,17 @@ function resetState(): void {
 describe('slack-send-service', () => {
   beforeEach(() => {
     resetState();
+    // Wipe ALL gate-relevant env vars so tests run from a known-clean
+    // state regardless of what's set in the developer's local .env.
+    // SLACK_READ_ONLY_MODE was added later and must be cleared here
+    // too, otherwise a local .env with SLACK_READ_ONLY_MODE=true (the
+    // phase-1a default) would block every send-path test.
+    delete process.env.SLACK_READ_ONLY_MODE;
     delete process.env.ENABLE_SLACK_SEND;
     delete process.env.SLACK_BOT_TOKEN;
+    delete process.env.SLACK_USER_TOKEN;
+    delete process.env.SLACK_XOXC_TOKEN;
+    delete process.env.SLACK_XOXD_COOKIE;
     delete process.env.SLACK_TEST_USER_ID;
   });
 
