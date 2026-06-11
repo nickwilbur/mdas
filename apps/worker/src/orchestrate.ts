@@ -39,6 +39,9 @@ import { staircaseGmailAdapter } from '@mdas/adapter-staircase-gmail';
 import { zuoraMcpAdapter } from '@mdas/adapter-zuora-mcp';
 import { gleanMcpAdapter } from '@mdas/adapter-glean-mcp';
 import { localSnapshotsAdapter } from '@mdas/adapter-local-snapshots';
+import { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
+
+export { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
 
 // Adapter execution order matters: mergeAdapterResults() does a
 // last-write-wins spread on scalar fields (so adapters scheduled LATER
@@ -580,7 +583,24 @@ export async function runRefresh(
   await progress.flush();
 
   // Phase 2: Normalize / merge.
-  const merged: MergedData = options.injected ?? mergeAdapterResults(fetched);
+  let merged: MergedData = options.injected ?? mergeAdapterResults(fetched);
+  if (!options.injected) {
+    const sfResult = fetchResults.get('salesforce');
+    if (succeeded.includes('salesforce') && sfResult) {
+      const before = {
+        accounts: merged.accounts.length,
+        opportunities: merged.opportunities.length,
+      };
+      merged = applySalesforceAuthoritativeSnapshot(merged, sfResult);
+      ctx.logger.info('refresh.salesforce.authoritative', {
+        before,
+        after: {
+          accounts: merged.accounts.length,
+          opportunities: merged.opportunities.length,
+        },
+      });
+    }
+  }
   const sourceLinkStats = summarizeSourceLinkCounts(merged);
   ctx.logger.info('refresh.merge.sourceLinks', sourceLinkStats);
 

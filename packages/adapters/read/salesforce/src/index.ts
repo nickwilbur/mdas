@@ -75,8 +75,6 @@ SELECT
 FROM Opportunity
 WHERE FranchisePicklist__c = 'Expand 3'
   AND Main_Franchise__c = 'North America'
-  AND CloseDate >= THIS_FISCAL_QUARTER
-  AND CloseDate <= NEXT_N_FISCAL_QUARTERS:4
 `;
 
 export const SOQL_WORKSHOPS = `
@@ -117,9 +115,12 @@ export const salesforceAdapter: ReadAdapter = {
     const log = ctx?.logger;
     const client = new SalesforceClient(creds);
 
-    // 1) Pull the three structured object queries. Accounts and Opps go
-    //    through REST (small enough). Workshops use REST with auto-paging
-    //    unless the count exceeds BULK_THRESHOLD — escalate transparently.
+    // 1) Pull the three structured object queries — full Expand 3 scope
+    //    every refresh (no CloseDate window). SFDC is lightweight relative
+    //    to the Glean adapters; the orchestrator treats this adapter as
+    //    authoritative for the account/opp record set when it succeeds.
+    //    Accounts and Opps go through REST. Workshops use REST with
+    //    auto-paging unless the count exceeds BULK_THRESHOLD.
     const [accountRows, oppRows, workshopRowsInitial] = await Promise.all([
       client.query<SfdcAccountRow>(SOQL_ACCOUNTS),
       client.query<SfdcOpportunityRow>(SOQL_OPPS),

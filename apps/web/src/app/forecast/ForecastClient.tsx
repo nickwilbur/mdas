@@ -18,16 +18,11 @@ import {
   loadChurnPlansByQuarter,
   persistChurnPlanForQuarter,
 } from '@/lib/forecast-plan-storage';
-
-interface ForecastResponse {
-  text: string;
-  asOfDate: string;
-}
-
-interface ForecastErrorResponse {
-  error: string;
-  detail?: string;
-}
+import {
+  consumeForecastStream,
+  type ForecastProgress,
+  type ForecastResponse,
+} from './forecast-stream';
 
 // Anchor date for the selected quarter (start of quarter, used by the
 // API to bucket opps into Current vs Next). Q1 = Feb, Q2 = May, etc.
@@ -50,6 +45,7 @@ export function ForecastClient() {
   const [clariManagerForecastCsv, setClariManagerForecastCsv] = useState<string>('');
   const [response, setResponse] = useState<ForecastResponse | null>(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<ForecastProgress | null>(null);
   const [copied, setCopied] = useState(false);
 
   const selectedQuarter =
@@ -75,6 +71,7 @@ export function ForecastClient() {
 
   async function generate() {
     setBusy(true);
+    setProgress({ step: 'start', label: 'Starting…', pct: 0 });
     try {
       const asOfDate = quarterStartIso(selectedQuarter);
       const plan: { currentQuarterUSD?: number; nextQuarterUSD?: number } = {};
@@ -93,31 +90,27 @@ export function ForecastClient() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      // Defensive parse: an empty body (e.g., 500 with no JSON) used
-      // to surface to the user as "Unexpected end of JSON input"
-      // SyntaxError from inside this component. Read text first,
-      // then attempt to parse so we can render a useful error.
-      const raw = await r.text();
-      let parsed: ForecastResponse | ForecastErrorResponse | null = null;
-      if (raw) {
-        try {
-          parsed = JSON.parse(raw) as ForecastResponse | ForecastErrorResponse;
-        } catch {
-          parsed = null;
-        }
-      }
-      if (!r.ok || !parsed || 'error' in parsed) {
-        const errMsg =
-          parsed && 'error' in parsed
-            ? `${parsed.error}${parsed.detail ? `: ${parsed.detail}` : ''}`
-            : `Forecast generation failed (HTTP ${r.status})${raw ? `: ${raw.slice(0, 200)}` : ''}`;
-        setResponse({ text: errMsg, asOfDate });
+      if (!r.ok && !r.body) {
+        setResponse({
+          text: `Forecast generation failed (HTTP ${r.status})`,
+          asOfDate,
+        });
         return;
       }
-      setResponse(parsed);
+
+      const result = await consumeForecastStream(r, setProgress);
+      if ('error' in result) {
+        setResponse({
+          text: `${result.error}${result.detail ? `: ${result.detail}` : ''}`,
+          asOfDate,
+        });
+        return;
+      }
+      setResponse(result);
       persistPlansFromInputs();
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -234,8 +227,27 @@ export function ForecastClient() {
         </div>
       </div>
 
+      {busy && progress ? (
+        <div className="rounded-lg border border-gray-200 bg-white p-4">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <span className="text-sm font-medium text-gray-900">
+              {progress.label}
+            </span>
+            <span className="text-sm font-bold tabular-nums text-blue-600">
+              {progress.pct}%
+            </span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200">
+            <div
+              className="h-full rounded-full bg-blue-600 transition-all duration-500"
+              style={{ width: `${progress.pct}%` }}
+            />
+          </div>
+        </div>
+      ) : null}
+
       <pre className="min-h-[480px] whitespace-pre-wrap rounded-lg border border-gray-200 bg-white p-4 font-mono text-sm">
-        {text || '— click Generate Script to render —'}
+        {text}
       </pre>
     </div>
   );

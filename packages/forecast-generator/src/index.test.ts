@@ -149,7 +149,7 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       'Gap to Plan:',
       'Total Churn/Downsell Risk / Baseline:',
       'Hedge:',
-      'Opportunities Open / Closed:',
+      'Renewal Downsell / Churn Opps:',
       'Accounts with Hedge (churn-save renewals):',
       'Renewals where ML Override ≠ Best Case:',
       'Churn-save targets not yet hedged in Clari (ATR exposed):',
@@ -263,49 +263,134 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).toMatch(/Gap to Plan: \+\$150,000/);
   });
 
-  it('summarizes open and closed opportunities in the quarter KPI header', () => {
+  it('summarizes churn-save renewal opps with open/closed churn in the quarter KPI header', () => {
     const openOpp = mkOpportunity({
       opportunityId: 'O-OPEN',
       accountId: 'A1',
+      type: 'Renewal',
       closeDate: '2026-04-15',
       stageName: 'Negotiation',
       forecastCategory: 'Commit',
+      availableToRenewUSD: 100_000,
+      forecastMostLikely: -20_000,
     });
     const wonOpp = mkOpportunity({
       opportunityId: 'O-WON',
       accountId: 'A2',
+      type: 'Renewal',
       closeDate: '2026-04-20',
       stageName: 'Closed Won',
       forecastCategory: 'Closed Won',
+      availableToRenewUSD: 150_000,
+      forecastMostLikely: -30_000,
     });
     const lostOpp = mkOpportunity({
       opportunityId: 'O-LOST',
       accountId: 'A3',
+      type: 'Renewal',
       closeDate: '2026-04-25',
       stageName: 'Closed Lost',
       forecastCategory: 'Closed Lost',
+      availableToRenewUSD: 80_000,
+      knownChurnUSD: 80_000,
+    });
+    // Healthy renewal with no down-forecast — excluded from header count.
+    const healthyOpp = mkOpportunity({
+      opportunityId: 'O-OK',
+      accountId: 'A4',
+      type: 'Renewal',
+      closeDate: '2026-04-28',
+      forecastCategory: 'Commit',
+      availableToRenewUSD: 500_000,
+      forecastMostLikely: 500_000,
     });
     const md = generateWeeklyForecast({
       views: [
         mkView(mkAccount({ accountId: 'A1', accountName: 'Open Co' }), [openOpp]),
         mkView(mkAccount({ accountId: 'A2', accountName: 'Won Co' }), [wonOpp]),
         mkView(mkAccount({ accountId: 'A3', accountName: 'Lost Co' }), [lostOpp]),
+        mkView(mkAccount({ accountId: 'A4', accountName: 'Healthy Co' }), [healthyOpp]),
       ],
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    expect(md).toContain(
-      'Opportunities Open / Closed: 1 open, 2 closed (1 won, 1 lost)',
+    const currSection = md.slice(0, md.indexOf('Next Quarter'));
+    const headerLine = currSection
+      .split('\n')
+      .find((l) => l.startsWith('Renewal Downsell / Churn Opps:'));
+    expect(headerLine).toBe(
+      'Renewal Downsell / Churn Opps: 3 opps (1 open, 2 closed), -$20,000 open churn, -$110,000 closed churn (1 won, 1 lost)',
     );
   });
 
-  it('renders "none in quarter" when no opportunities land in the quarter', () => {
+  it('uses CSE override for open churn dollars when override is set', () => {
+    const acc = mkAccount({ accountId: 'A1', accountName: 'Finale, Inc.' });
+    const opp = mkOpportunity({
+      accountId: 'A1',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      forecastCategory: 'Committed Upside',
+      forecastMostLikely: -75_000,
+      forecastMostLikelyOverride: -75_000,
+      acvDelta: -38_900,
+    });
+    const md = generateWeeklyForecast({
+      views: [mkView(acc, [opp])],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).toContain(
+      'Renewal Downsell / Churn Opps: 1 opp (1 open, 0 closed), -$75,000 open churn, $0 closed churn',
+    );
+  });
+
+  it('does not count acvDelta-only downsell when CSE override is non-negative', () => {
+    const acc = mkAccount({ accountId: 'A1' });
+    const opp = mkOpportunity({
+      accountId: 'A1',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      forecastCategory: 'Commit',
+      forecastMostLikely: 350_000,
+      forecastMostLikelyOverride: 100_000,
+      acvDelta: -42_000,
+    });
+    const md = generateWeeklyForecast({
+      views: [mkView(acc, [opp])],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).toContain('Renewal Downsell / Churn Opps: 0 opps');
+  });
+
+  it('counts open renewal downsells in the header even when omitted from the manager line', () => {
+    const omittedOpen = mkOpportunity({
+      opportunityId: 'O-OMIT',
+      accountId: 'A1',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      stageName: 'Negotiation',
+      forecastCategory: 'Omitted',
+      availableToRenewUSD: 50_000,
+      forecastMostLikely: -10_000,
+    });
+    const md = generateWeeklyForecast({
+      views: [mkView(mkAccount({ accountId: 'A1' }), [omittedOpen])],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).toContain(
+      'Renewal Downsell / Churn Opps: 1 opp (1 open, 0 closed), -$10,000 open churn, $0 closed churn',
+    );
+  });
+
+  it('renders zero churn-save opps when none qualify in the quarter', () => {
     const md = generateWeeklyForecast({
       views: [],
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    expect(md).toContain('Opportunities Open / Closed: none in quarter');
+    expect(md).toContain('Renewal Downsell / Churn Opps: 0 opps');
   });
 
   it('emits [fill in] placeholders when Plan is not provided', () => {
@@ -1630,7 +1715,7 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       // KPI block flows Hedge → open/closed summary → account sections
       // with no Health Snapshot blank line in between.
       expect(md).toMatch(
-        /Hedge: \$\d.*\nOpportunities Open \/ Closed:.*\nAccounts with Hedge \(churn-save renewals\):/,
+        /Hedge: \$\d.*\nRenewal Downsell \/ Churn Opps:.*\nAccounts with Hedge \(churn-save renewals\):/,
       );
     });
 
@@ -2115,6 +2200,7 @@ describe('Hedge KPI gating', () => {
       type: 'Renewal',
       forecastHedgeUSD: 100_000,
       forecastCategory: 'Best Case',
+      forecastMostLikely: -50_000,
     });
     const acc2 = mkAccount({ accountId: 'A2', accountName: 'Upsell Co' });
     const upsellOpp = mkOpportunity({
@@ -2142,6 +2228,7 @@ describe('Hedge KPI gating', () => {
       type: 'Renewal',
       forecastHedgeUSD: 75_000,
       forecastCategory: 'Best Case',
+      forecastMostLikely: -30_000,
     });
     const omittedOpp = mkOpportunity({
       accountId: 'A1',
@@ -2149,6 +2236,7 @@ describe('Hedge KPI gating', () => {
       type: 'Renewal',
       forecastHedgeUSD: 500_000,
       forecastCategory: 'Omitted',
+      forecastMostLikely: -20_000,
     });
     const md = generateWeeklyForecast({
       views: [mkView(acc, [carriedOpp, omittedOpp])],
@@ -2156,6 +2244,37 @@ describe('Hedge KPI gating', () => {
       asOfDate: AS_OF,
     });
     expect(md).toMatch(/Hedge: \$75,000/);
+  });
+
+  it('excludes Upside renewal hedges with no down-forecast from the Hedge KPI (Pipedrive)', () => {
+    const acc = mkAccount({ accountId: 'A1', accountName: 'Pipedrive, Inc.' });
+    const upsideHedge = mkOpportunity({
+      accountId: 'A1',
+      opportunityId: 'O1',
+      type: 'Renewal',
+      forecastHedgeUSD: 25_000,
+      forecastCategory: 'Upside',
+      forecastMostLikely: 0,
+      acvDelta: 0,
+    });
+    const churnSaveHedge = mkOpportunity({
+      accountId: 'A2',
+      opportunityId: 'O2',
+      type: 'Renewal',
+      forecastHedgeUSD: 15_000,
+      forecastCategory: 'Commit',
+      forecastMostLikely: -15_000,
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(acc, [upsideHedge]),
+        mkView(mkAccount({ accountId: 'A2' }), [churnSaveHedge]),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).toMatch(/Hedge: \$15,000/);
+    expect(md).not.toMatch(/Hedge: \$40,000/);
   });
 });
 
@@ -2272,12 +2391,14 @@ describe('computeQuarterKpis', () => {
       accountId: 'A1',
       closeDate: '2026-04-15',
       forecastHedgeUSD: 10_000,
+      forecastMostLikely: -20_000,
     });
     const oppNext = mkOpportunity({
       opportunityId: 'O-N',
       accountId: 'A1',
       closeDate: '2026-06-15',
       forecastHedgeUSD: 50_000,
+      forecastMostLikely: -40_000,
     });
     const view = mkView(acc, [oppCurrent, oppNext]);
     const current = computeQuarterKpis([view], AS_OF, 'current', null);

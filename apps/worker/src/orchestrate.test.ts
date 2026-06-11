@@ -97,6 +97,7 @@ vi.mock('./logger.js', () => ({
 }));
 
 import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks } from './orchestrate.js';
+import { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
 
 // Helpers to keep tests focused. The fixture only carries the fields
 // the orchestrator itself reads; we cast through `unknown` because we

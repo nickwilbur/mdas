@@ -369,60 +369,114 @@ function closedOpportunityOutcome(
   return 'other';
 }
 
-interface OpportunityHeaderSummary {
-  open: number;
-  closed: number;
+/**
+ * Manager-effective Forecast Most Likely for churn/downsell math.
+ * When `Forecast_Most_Likely_Override__c` is set, the CSE manager's
+ * value is authoritative — we do not fall through to rep ML or ACV
+ * delta for dollars or down-forecast qualification.
+ */
+function managerForecastMostLikelyUSD(
+  opp: CanonicalOpportunity,
+): number | null {
+  if (opp.forecastMostLikelyOverride != null) {
+    return opp.forecastMostLikelyOverride;
+  }
+  return opp.forecastMostLikely;
+}
+
+/** Churn/downsell dollars for one renewal opp — same basis as Flash. */
+function renewalDownsellChurnUSD(opp: CanonicalOpportunity): number {
+  return opportunityChurnFlashUSD(opp);
+}
+
+/**
+ * Renewal downsell / churn opps in the quarter for the KPI header.
+ * Matches Clari Forecast → Churn & Downsell → Total tab: every
+ * renewal in the quarter with a down-forecast signal (known churn,
+ * negative ML, or negative ACV delta), whether open or closed.
+ *
+ * Hedge / Close Gap still use the narrower `isChurnSaveTarget` lens
+ * (carried manager category required on open pipeline).
+ */
+function isRenewalDownsellChurnOpp(
+  _view: AccountView,
+  opp: CanonicalOpportunity,
+): boolean {
+  return isRenewalLike(opp) && hasDownForecastSignal(opp);
+}
+
+interface ChurnSaveHeaderSummary {
+  total: number;
+  openCount: number;
+  closedCount: number;
   closedWon: number;
   closedLost: number;
   closedOther: number;
+  openChurnUSD: number;
+  closedChurnUSD: number;
 }
 
-function quarterOpportunityHeaderSummary(
+function quarterChurnSaveHeaderSummary(
   rows: QuarterBucket['rows'],
-): OpportunityHeaderSummary {
-  let open = 0;
+): ChurnSaveHeaderSummary {
+  let openCount = 0;
   let closedWon = 0;
   let closedLost = 0;
   let closedOther = 0;
-  for (const { opp } of rows) {
-    if (!isClosedOpportunity(opp)) {
-      open += 1;
+  let openChurnUSD = 0;
+  let closedChurnUSD = 0;
+  for (const r of rows) {
+    if (!isRenewalDownsellChurnOpp(r.view, r.opp)) continue;
+    const churnUSD = renewalDownsellChurnUSD(r.opp);
+    if (!isClosedOpportunity(r.opp)) {
+      openCount += 1;
+      openChurnUSD += churnUSD;
       continue;
     }
-    const outcome = closedOpportunityOutcome(opp);
+    closedChurnUSD += churnUSD;
+    const outcome = closedOpportunityOutcome(r.opp);
     if (outcome === 'won') closedWon += 1;
     else if (outcome === 'lost') closedLost += 1;
     else closedOther += 1;
   }
+  const closedCount = closedWon + closedLost + closedOther;
   return {
-    open,
-    closed: closedWon + closedLost + closedOther,
+    total: openCount + closedCount,
+    openCount,
+    closedCount,
     closedWon,
     closedLost,
     closedOther,
+    openChurnUSD,
+    closedChurnUSD,
   };
 }
 
 /**
- * One-line open / closed roll-up for the quarter KPI header.
- * Format mirrors the WoW header: primary counts with a parenthetical
- * breakdown when closed opps have a won/lost label.
+ * One-line renewal downsell / churn roll-up for the quarter KPI header.
+ * Count matches Clari Churn & Downsell Total; dollars use the same
+ * manager-override-first churn basis as Flash (override column wins
+ * when set; otherwise rep ML, then ACV delta).
  */
-function formatOpportunityHeaderSummary(s: OpportunityHeaderSummary): string {
-  if (s.open === 0 && s.closed === 0) return 'none in quarter';
-  const parts: string[] = [`${s.open} open`];
-  if (s.closed === 0) {
-    parts.push('0 closed');
-  } else {
+function formatChurnSaveHeaderSummary(s: ChurnSaveHeaderSummary): string {
+  if (s.total === 0) return '0 opps';
+  const oppLabel =
+    s.total === 1
+      ? `1 opp (${s.openCount} open, ${s.closedCount} closed)`
+      : `${s.total} opps (${s.openCount} open, ${s.closedCount} closed)`;
+  let closedPart = `${fmtSignedUSD(s.closedChurnUSD)} closed churn`;
+  if (s.closedCount > 0) {
     const breakdown: string[] = [];
     if (s.closedWon > 0) breakdown.push(`${s.closedWon} won`);
     if (s.closedLost > 0) breakdown.push(`${s.closedLost} lost`);
-    if (s.closedOther > 0) breakdown.push(`${s.closedOther} closed`);
-    const tail =
-      breakdown.length > 0 ? ` (${breakdown.join(', ')})` : '';
-    parts.push(`${s.closed} closed${tail}`);
+    if (s.closedOther > 0) breakdown.push(`${s.closedOther} other`);
+    if (breakdown.length > 0) closedPart += ` (${breakdown.join(', ')})`;
   }
-  return parts.join(', ');
+  return [
+    oppLabel,
+    `${fmtSignedUSD(s.openChurnUSD)} open churn`,
+    closedPart,
+  ].join(', ');
 }
 
 /**
@@ -437,7 +491,11 @@ function formatOpportunityHeaderSummary(s: OpportunityHeaderSummary): string {
  */
 function hasDownForecastSignal(opp: CanonicalOpportunity): boolean {
   if ((opp.knownChurnUSD ?? 0) > 0) return true;
-  const ml = opp.forecastMostLikelyOverride ?? opp.forecastMostLikely;
+  if (!isRenewalLike(opp)) return false;
+  if (opp.forecastMostLikelyOverride != null) {
+    return opp.forecastMostLikelyOverride < 0;
+  }
+  const ml = opp.forecastMostLikely;
   if (ml != null && ml < 0) return true;
   if (opp.acvDelta != null && opp.acvDelta < 0) return true;
   return false;
@@ -479,8 +537,10 @@ function isChurnSaveTarget(_view: AccountView, opp: CanonicalOpportunity): boole
  *
  * Inclusion matches the churn window definition:
  *   - Known churn USD (positive in SFDC) → negative of that amount (any type).
- *   - Else renewal only: forecast most likely (incl. override) negative → that value.
- *   - Else renewal only: canonical acvDelta (derived / Billing ACV delta in SFDC) negative → that value.
+ *   - Else renewal only: when the override column is set, that value alone
+ *     drives the dollar roll-up (manager-authoritative).
+ *   - Else renewal only: rep `forecastMostLikely` negative → that value.
+ *   - Else renewal only: canonical acvDelta negative → that value.
  *
  * We do **not** sum `ATR − positive ML` (“retention gap”) — that inflated Flash
  * vs manager / Clari roll-ups. When a Clari manager CSV is pasted, Flash still
@@ -492,7 +552,13 @@ function opportunityChurnFlashUSD(opp: CanonicalOpportunity): number {
 
   if (!isRenewalLike(opp)) return 0;
 
-  const ml = opp.forecastMostLikelyOverride ?? opp.forecastMostLikely;
+  if (opp.forecastMostLikelyOverride != null) {
+    return opp.forecastMostLikelyOverride < 0
+      ? opp.forecastMostLikelyOverride
+      : 0;
+  }
+
+  const ml = opp.forecastMostLikely;
   if (ml != null && ml < 0) return ml;
 
   const ad = opp.acvDelta;
@@ -537,25 +603,22 @@ function totalRisk(rows: QuarterBucket['rows']): number {
 }
 
 /**
- * "Hedge" = sum of forecastHedgeUSD across renewal opps the manager
- * is carrying on the Clari hedge line.
+ * "Hedge" = sum of forecastHedgeUSD on churn-save renewal opps the
+ * manager is carrying on the Clari hedge line.
  *
  * Per 2026-05-20 manager feedback the prior implementation summed
  * forecastHedgeUSD across ALL opps in the quarter, which double-
  * counted expansion hedge (Amendment / New Business / Contracted
  * Ramp opps with non-zero forecastHedgeUSD) into the "Hedge" KPI
  * leadership reads as renewal-save dollars. Gate to the same
- * renewal + carried-forecast-category lens the `Accounts with
- * Hedge` and Key Saves sections already use. We deliberately do
- * NOT additionally gate on a down-forecast signal — healthy
- * renewals can carry hedge dollars too, and leadership wants the
- * total churn-save hedge in the line, not just dollars on at-risk
- * accounts.
+ * `isChurnSaveTarget` lens as `Accounts with Hedge` — renewal +
+ * carried forecast category + down-forecast signal. Upside-only
+ * renewal hedges (e.g. Pipedrive at `Upside` with ML $0) are
+ * excluded so the header matches Clari Churn & Downsell hedge.
  */
 function hedge(rows: QuarterBucket['rows']): number {
   return rows.reduce((s, r) => {
-    if (!isRenewalLike(r.opp)) return s;
-    if (!isCarriedForecastCategory(r.opp)) return s;
+    if (!isChurnSaveTarget(r.view, r.opp)) return s;
     return s + (r.opp.forecastHedgeUSD ?? 0);
   }, 0);
 }
@@ -681,7 +744,7 @@ export function keySavesAccountContexts(
         cseSentiment: r.view.account.cseSentiment ?? null,
         closeDate: r.opp.closeDate,
         acvUSD: r.opp.acv ?? null,
-        forecastMostLikelyUSD: r.opp.forecastMostLikely ?? null,
+        forecastMostLikelyUSD: managerForecastMostLikelyUSD(r.opp),
         scNextSteps: r.opp.scNextSteps ?? null,
       });
     }
@@ -834,7 +897,7 @@ export function closeGapAccountContexts(
     band: r.band,
     atrUSD: r.usd,
     closeDate: r.opp.closeDate,
-    forecastMostLikelyUSD: r.opp.forecastMostLikely ?? null,
+    forecastMostLikelyUSD: managerForecastMostLikelyUSD(r.opp),
     cerebroRiskCategory: r.view.account.cerebroRiskCategory ?? null,
     cseSentiment: r.view.account.cseSentiment ?? null,
     scNextSteps: r.opp.scNextSteps ?? null,
@@ -1116,9 +1179,8 @@ function formatWowHeaderSummary(h: WowHeaderSummary): string {
  *   - Sentiment: CSE Sentiment (`Red`/`Yellow`/`Confirmed Churn`/…) —
  *     the CSE's own gut on the account.
  *   - Renewal: opportunity close date (ISO `YYYY-MM-DD`).
- *   - ML: forecastMostLikely as signed USD. Down-forecasts are the
- *     reason the bullet exists, so we show the number directly rather
- *     than burying it in prose.
+ *   - ML: manager-effective forecast (override when set, else rep ML)
+ *     as signed USD. Down-forecasts are the reason the bullet exists.
  *
  * Chips are joined with `; ` and omitted when the underlying field is
  * empty so the line stays compact for sparse accounts.
@@ -1130,7 +1192,7 @@ function keySaveChips(view: AccountView, opp: CanonicalOpportunity): string {
   const sent = view.account.cseSentiment;
   if (sent) chips.push(`Sentiment: ${sent}`);
   if (opp.closeDate) chips.push(`Renewal: ${opp.closeDate}`);
-  const ml = opp.forecastMostLikely;
+  const ml = managerForecastMostLikelyUSD(opp);
   if (typeof ml === 'number' && Number.isFinite(ml) && ml !== 0) {
     chips.push(`ML: ${fmtSignedUSD(ml)}`);
   }
@@ -1691,8 +1753,8 @@ function renderQuarterSection(
   lines.push(`Total Churn/Downsell Risk / Baseline: ${fmtSignedUSD(-total)}`);
   lines.push(`Hedge: ${fmtUSD(hedgeUSD)}`);
   lines.push(
-    `Opportunities Open / Closed: ${formatOpportunityHeaderSummary(
-      quarterOpportunityHeaderSummary(bucket.rows),
+    `Renewal Downsell / Churn Opps: ${formatChurnSaveHeaderSummary(
+      quarterChurnSaveHeaderSummary(bucket.rows),
     )}`,
   );
 
