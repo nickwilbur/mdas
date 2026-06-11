@@ -185,6 +185,11 @@ export interface CanonicalOpportunity {
   availableToRenewUSD: number | null;
   forecastMostLikely: number | null;
   forecastMostLikelyOverride: number | null;
+  /**
+   * Salesforce `Best_Case_USD__c` — manager/rep best-case forecast dollars.
+   * Optional for snapshots written before 2026-05-29.
+   */
+  bestCaseUSD?: number | null;
   mostLikelyConfidence: MostLikelyConfidence;
   forecastHedgeUSD: number | null;
   acvDelta: number | null;
@@ -280,6 +285,23 @@ export interface RefreshContext {
   /** Report per-account progress so the UI can show a live progress bar.
    *  Adapters call this periodically; the orchestrator debounces DB writes. */
   reportProgress?: (current: number, total: number, label?: string) => void;
+  /**
+   * Snapshot of the prior successful run, prefetched once by the
+   * orchestrator and shared across adapters. Avoids three Glean
+   * adapters (cerebro / gainsight / glean-mcp) each independently
+   * issuing the same `readSnapshotAccounts(prior.id)` query on every
+   * refresh. Adapters MUST treat this as read-only.
+   *
+   * When `priorRun` is absent (e.g. cold start, or an adapter invoked
+   * outside the orchestrator from a one-off script), adapters should
+   * fall back to their own `latestSuccessfulRun()` lookup so the
+   * contract remains optional.
+   */
+  priorRun?: {
+    id: string;
+    accounts: CanonicalAccount[];
+    opportunities: CanonicalOpportunity[];
+  };
 }
 
 /**

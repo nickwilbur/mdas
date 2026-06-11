@@ -2,10 +2,13 @@ import { NextResponse } from 'next/server';
 import {
   generateWeeklyForecast,
   keySavesAccountContexts,
+  closeGapAccountContexts,
+  mlOverrideMismatchContexts,
   fiscalQuarterFromDate,
   fiscalQuarterLabel,
   type ForecastInput,
   type GleanFlaggedRisk,
+  type CloseGapActionPlan,
 } from '@mdas/forecast-generator';
 import type { AccountView } from '@mdas/canonical';
 import { getDashboardData, getWoWChangeEvents } from '@/lib/read-model';
@@ -16,6 +19,8 @@ import {
   generateGleanFlaggedRisks,
   type QuarterAccountUniverse,
 } from '@/lib/forecast-glean-risks';
+import { generateCloseGapActionPlans } from '@/lib/forecast-close-gap-plan';
+import { generateMlOverrideMismatchContext } from '@/lib/forecast-ml-override-mismatch';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -241,6 +246,55 @@ export async function POST(req: Request): Promise<Response> {
       gleanFlaggedRisks = undefined;
     }
 
+    // Per 2026-05-29 user feedback: each account in the "Accounts to
+    // Close Gap" section gets a Glean-generated owner→action plan,
+    // regenerated every run. Same failure isolation as the other Glean
+    // calls — an outage leaves the structured bullets intact and the
+    // renderer emits a per-account stale-marker.
+    let closeGapActionPlans: Record<string, CloseGapActionPlan> | undefined;
+    try {
+      const currentCtxs = closeGapAccountContexts(views, asOfDate, 'current');
+      const nextCtxs = closeGapAccountContexts(views, asOfDate, 'next');
+      const currentLabel = quarterLabel(asOfDate, 'current');
+      const nextLabel = quarterLabel(asOfDate, 'next');
+      const [currMap, nextMap] = await Promise.all([
+        generateCloseGapActionPlans(req, currentCtxs, asOfDate, currentLabel),
+        generateCloseGapActionPlans(req, nextCtxs, asOfDate, nextLabel),
+      ]);
+      // Merge by accountId. An account appearing in both quarters gets
+      // the current-quarter plan (current is the manager's live focus).
+      closeGapActionPlans = { ...nextMap, ...currMap };
+      if (Object.keys(closeGapActionPlans).length === 0) {
+        closeGapActionPlans = undefined;
+      }
+    } catch (err) {
+      const message = (err as Error)?.message ?? String(err);
+      // eslint-disable-next-line no-console
+      console.warn('forecast.closeGapActionPlans.failed', { asOfDate, message });
+      closeGapActionPlans = undefined;
+    }
+
+    let mlOverrideMismatchContext: Record<string, string> | undefined;
+    try {
+      const currentMl = mlOverrideMismatchContexts(views, asOfDate, 'current');
+      const nextMl = mlOverrideMismatchContexts(views, asOfDate, 'next');
+      const currentLabel = quarterLabel(asOfDate, 'current');
+      const nextLabel = quarterLabel(asOfDate, 'next');
+      const [currMlMap, nextMlMap] = await Promise.all([
+        generateMlOverrideMismatchContext(req, currentMl, asOfDate, currentLabel),
+        generateMlOverrideMismatchContext(req, nextMl, asOfDate, nextLabel),
+      ]);
+      mlOverrideMismatchContext = { ...nextMlMap, ...currMlMap };
+      if (Object.keys(mlOverrideMismatchContext).length === 0) {
+        mlOverrideMismatchContext = undefined;
+      }
+    } catch (err) {
+      const message = (err as Error)?.message ?? String(err);
+      // eslint-disable-next-line no-console
+      console.warn('forecast.mlOverrideMismatch.failed', { asOfDate, message });
+      mlOverrideMismatchContext = undefined;
+    }
+
     const text = generateWeeklyForecast({
       views,
       changeEvents: events,
@@ -250,6 +304,8 @@ export async function POST(req: Request): Promise<Response> {
       healthSnapshot,
       accountContext,
       gleanFlaggedRisks,
+      closeGapActionPlans,
+      mlOverrideMismatchContext,
     });
     return NextResponse.json({ text, asOfDate });
   } catch (err) {

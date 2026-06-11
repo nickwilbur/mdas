@@ -19,6 +19,15 @@ import type { GleanClient, GleanDocument } from '../../_shared/src/glean.js';
 export interface AccountContextInput {
   accountId: string;
   accountName: string;
+  /**
+   * Number of plan links this account already has in the prior snapshot.
+   * Used to skip the secondary QBR/business-review query when the account
+   * already has well-populated plan coverage — the primary "<name> account
+   * plan" query is sufficient to refresh metadata on existing links and
+   * we save 1 Glean call per warm account (~20% of glean-mcp's work).
+   * Cold accounts (priorPlanLinks < 2) still get both queries.
+   */
+  priorPlanLinks?: number;
 }
 
 export interface AccountContextOutput {
@@ -93,9 +102,19 @@ export async function fetchAccountContext(
   // merge results. MCP search ignores datasource filters, so we get
   // cross-source results and rely on the title-keyword filter
   // downstream to scope to plan docs.
+  //
+  // Optimization: skip the secondary QBR/business-review query when the
+  // account already has ≥2 plan links in the prior snapshot. The primary
+  // query alone is enough to refresh metadata on existing links; the
+  // secondary is only needed to bootstrap coverage on cold accounts.
+  // Cuts glean-mcp's Glean-call count by ~20% on warm refreshes without
+  // losing coverage on accounts that lack data.
+  const SECONDARY_SKIP_THRESHOLD = 2;
+  const includeSecondary =
+    !opts.buildQuery && (input.priorPlanLinks ?? 0) < SECONDARY_SKIP_THRESHOLD;
   const queries = [
     buildQuery(input.accountName),
-    opts.buildQuery ? null : SECONDARY_QUERY(input.accountName),
+    includeSecondary ? SECONDARY_QUERY(input.accountName) : null,
   ].filter((q): q is string => !!q);
 
   const allDocs: GleanDocument[] = [];

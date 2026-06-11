@@ -30,6 +30,7 @@ export interface SfdcAccountRow extends SalesforceQueryRecord {
   X18_Digit_ID__c: string | null;
   Type: string | null;
   OwnerId: string | null;
+  Owner: { Name: string | null } | null;
   Assigned_CSE__c: string | null;
   Assigned_CSE__r: { Name: string | null } | null;
   Current_FY_Franchise__c: string | null;
@@ -71,6 +72,7 @@ export interface SfdcOpportunityRow extends SalesforceQueryRecord {
   fml_DerivedAvailableToRenew__c: number | null;
   Forecast_Most_Likely__c: number | null;
   Forecast_Most_Likely_Override__c: number | null;
+  Best_Case_USD__c: number | null;
   Most_Likely_Confidence__c: string | null;
   fml_Forecast_Hedge_USD__c: number | null;
   fml_DerivedACVDelta_USD__c: number | null;
@@ -153,7 +155,9 @@ export function mapAccount(
     accountName: row.Name ?? row.Id,
     zuoraTenantId: row.Tenant_ID__c ?? row.ZuoraTenant__c ?? null,
 
-    accountOwner: row.OwnerId ? { id: row.OwnerId, name: row.OwnerId } : null,
+    accountOwner: row.OwnerId
+      ? { id: row.OwnerId, name: row.Owner?.Name ?? row.OwnerId }
+      : null,
     assignedCSE: row.Assigned_CSE__c ? { id: row.Assigned_CSE__c, name: row.Assigned_CSE__r?.Name ?? row.Assigned_CSE__c } : null,
     csCoverage: mapCsCoverage(row.CS_Coverage__c),
 
@@ -234,6 +238,7 @@ export function mapOpportunity(
       row.Available_to_Renew_USD__c ?? row.fml_DerivedAvailableToRenew__c ?? row.Available_to_Renew_Local__c,
     forecastMostLikely: row.Forecast_Most_Likely__c,
     forecastMostLikelyOverride: row.Forecast_Most_Likely_Override__c,
+    bestCaseUSD: row.Best_Case_USD__c,
     mostLikelyConfidence: mapConfidence(row.Most_Likely_Confidence__c),
     forecastHedgeUSD: row.fml_Forecast_Hedge_USD__c,
     acvDelta: row.fml_DerivedACVDelta_USD__c ?? row.Billing_ACV_Delta_USD__c,

@@ -16,12 +16,18 @@ import type {
   ChangeEvent,
 } from '@mdas/canonical';
 import {
+  closeGapAccountContexts,
+  mlOverrideBestCaseGap,
+  mlOverrideMismatchContexts,
+  resolveCloseGapOwner,
+  isSalesforceUserId,
   computeQuarterKpis,
   fiscalQuarterFromDate,
   fiscalQuarterStart,
   generateWeeklyForecast,
   keySavesAccountContexts,
   keySavesAccountIds,
+  type CloseGapActionPlan,
 } from './index';
 
 const REFRESH_AT = '2026-04-28T18:00:00.000Z';
@@ -88,6 +94,7 @@ function mkOpportunity(
     availableToRenewUSD: 100_000,
     forecastMostLikely: 100_000,
     forecastMostLikelyOverride: null,
+    bestCaseUSD: null,
     mostLikelyConfidence: 'Medium',
     forecastHedgeUSD: 0,
     acvDelta: 0,
@@ -142,7 +149,9 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       'Gap to Plan:',
       'Total Churn/Downsell Risk / Baseline:',
       'Hedge:',
+      'Opportunities Open / Closed:',
       'Accounts with Hedge (churn-save renewals):',
+      'Renewals where ML Override ≠ Best Case:',
       'Churn-save targets not yet hedged in Clari (ATR exposed):',
       'Accounts to Close Gap (churn-save renewals):',
       'Week-over-week Changes - Improvements and increased risk:',
@@ -252,6 +261,51 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     });
     // Flash -$100k vs Plan -$250k → +$150k (less churn loss than plan)
     expect(md).toMatch(/Gap to Plan: \+\$150,000/);
+  });
+
+  it('summarizes open and closed opportunities in the quarter KPI header', () => {
+    const openOpp = mkOpportunity({
+      opportunityId: 'O-OPEN',
+      accountId: 'A1',
+      closeDate: '2026-04-15',
+      stageName: 'Negotiation',
+      forecastCategory: 'Commit',
+    });
+    const wonOpp = mkOpportunity({
+      opportunityId: 'O-WON',
+      accountId: 'A2',
+      closeDate: '2026-04-20',
+      stageName: 'Closed Won',
+      forecastCategory: 'Closed Won',
+    });
+    const lostOpp = mkOpportunity({
+      opportunityId: 'O-LOST',
+      accountId: 'A3',
+      closeDate: '2026-04-25',
+      stageName: 'Closed Lost',
+      forecastCategory: 'Closed Lost',
+    });
+    const md = generateWeeklyForecast({
+      views: [
+        mkView(mkAccount({ accountId: 'A1', accountName: 'Open Co' }), [openOpp]),
+        mkView(mkAccount({ accountId: 'A2', accountName: 'Won Co' }), [wonOpp]),
+        mkView(mkAccount({ accountId: 'A3', accountName: 'Lost Co' }), [lostOpp]),
+      ],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).toContain(
+      'Opportunities Open / Closed: 1 open, 2 closed (1 won, 1 lost)',
+    );
+  });
+
+  it('renders "none in quarter" when no opportunities land in the quarter', () => {
+    const md = generateWeeklyForecast({
+      views: [],
+      changeEvents: [],
+      asOfDate: AS_OF,
+    });
+    expect(md).toContain('Opportunities Open / Closed: none in quarter');
   });
 
   it('emits [fill in] placeholders when Plan is not provided', () => {
@@ -1322,6 +1376,205 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(callout![0]).toContain('$420,000 ATR');
   });
 
+  describe('ML Override ≠ Best Case section', () => {
+    function mkMismatchView() {
+      const acc = mkAccount({
+        accountId: 'ML1',
+        accountName: 'Mismatch Co',
+        cseSentiment: 'Yellow',
+        assignedCSE: { id: 'U-CSE', name: 'Pat CSE' },
+      });
+      const opp = mkOpportunity({
+        accountId: 'ML1',
+        opportunityId: 'O-ML1',
+        opportunityName: 'Mismatch Co Billing 04-26',
+        type: 'Renewal',
+        closeDate: '2026-04-15',
+        forecastCategory: 'Best Case',
+        forecastMostLikely: -20_000,
+        forecastMostLikelyOverride: -43_000,
+        bestCaseUSD: 28_000,
+      });
+      return mkView(acc, [opp]);
+    }
+
+    it('detects material override vs best-case gap on renewal opps', () => {
+      const view = mkMismatchView();
+      const opp = view.opportunities[0]!;
+      expect(mlOverrideBestCaseGap(opp)).toBe(-71_000);
+      expect(mlOverrideMismatchContexts([view], AS_OF, 'current')).toHaveLength(1);
+    });
+
+    it('renders the section directly under Accounts with Hedge with Glean context', () => {
+      const md = generateWeeklyForecast({
+        views: [mkMismatchView()],
+        changeEvents: [],
+        asOfDate: AS_OF,
+        mlOverrideMismatchContext: {
+          'O-ML1':
+            'CSE cut override after procurement flagged NetSuite pressure; Gainsight shows low engagement.',
+        },
+      });
+      const hedgeIdx = md.indexOf('Accounts with Hedge (churn-save renewals):');
+      const mismatchIdx = md.indexOf('Renewals where ML Override ≠ Best Case:');
+      const notHedgedIdx = md.indexOf(
+        'Churn-save targets not yet hedged in Clari (ATR exposed):',
+      );
+      expect(hedgeIdx).toBeGreaterThan(-1);
+      expect(mismatchIdx).toBeGreaterThan(hedgeIdx);
+      expect(notHedgedIdx).toBeGreaterThan(mismatchIdx);
+      expect(md).toContain('Mismatch Co — Mismatch Co Billing 04-26');
+      expect(md).toContain('ML Override: -$43,000');
+      expect(md).toContain('Best Case: +$28,000');
+      expect(md).toContain(
+        '      Context: CSE cut override after procurement flagged NetSuite pressure; Gainsight shows low engagement.',
+      );
+      // Context must stay indented under the section — not inline with ||
+      // (embedded newlines previously orphaned account names).
+      expect(md).not.toMatch(/\|\| Context:/);
+    });
+
+    it('mlOverrideMismatchContexts bundles structured facts for Glean', () => {
+      const ctxs = mlOverrideMismatchContexts([mkMismatchView()], AS_OF, 'current');
+      expect(ctxs).toHaveLength(1);
+      expect(ctxs[0]).toMatchObject({
+        opportunityId: 'O-ML1',
+        accountName: 'Mismatch Co',
+        mlOverrideUSD: -43_000,
+        bestCaseUSD: 28_000,
+        gapUSD: -71_000,
+        assignedCseName: 'Pat CSE',
+      });
+    });
+
+  });
+
+  // 2026-05-29 user feedback: each account in the "Accounts to Close
+  // Gap" section carries a Glean-generated owner→action plan,
+  // regenerated every run. The pure renderer splices the upstream-
+  // generated checklist inline beneath the bullet; the web API builds
+  // the plans from `closeGapAccountContexts`.
+  describe('Accounts to Close Gap action plans', () => {
+    function mkGapView() {
+      const acc = mkAccount({
+        accountId: 'GAP1',
+        accountName: 'Gap Co',
+        cseSentiment: 'Red',
+        accountOwner: { id: 'U-AO', name: 'Alice Owner' },
+        assignedCSE: { id: 'U-CSE', name: 'Carol CSE' },
+      });
+      const opp = mkOpportunity({
+        accountId: 'GAP1',
+        type: 'Renewal',
+        forecastCategory: 'Best Case',
+        forecastMostLikely: -50_000,
+        acvDelta: -50_000,
+        availableToRenewUSD: 420_000,
+        salesEngineer: { id: 'U-SE', name: 'Sam SE' },
+      });
+      return mkView(acc, [opp], {
+        bucket: 'Saveable Risk',
+        risk: { level: 'High', source: 'cerebro', rationale: '' },
+      });
+    }
+
+    it('closeGapAccountContexts surfaces the gap account with internal owner names', () => {
+      const ctxs = closeGapAccountContexts([mkGapView()], AS_OF, 'current');
+      expect(ctxs).toHaveLength(1);
+      expect(ctxs[0]).toMatchObject({
+        accountId: 'GAP1',
+        accountName: 'Gap Co',
+        band: 'red',
+        atrUSD: 420_000,
+        accountOwnerName: 'Alice Owner',
+        assignedCseName: 'Carol CSE',
+        salesEngineerName: 'Sam SE',
+      });
+    });
+
+    it('renders the owner→action checklist inline beneath the bullet', () => {
+      const plans: Record<string, CloseGapActionPlan> = {
+        GAP1: {
+          steps: [
+            { owner: 'Alice Owner', action: 'Schedule exec sponsor call by 6/5.' },
+            { owner: 'Carol CSE', action: 'Deliver value-realization recap.' },
+          ],
+        },
+      };
+      const md = generateWeeklyForecast({
+        views: [mkGapView()],
+        changeEvents: [],
+        asOfDate: AS_OF,
+        closeGapActionPlans: plans,
+      });
+      const lines = md.split('\n');
+      const gapHeaderIdx = lines.findIndex((l) =>
+        l.startsWith('Accounts to Close Gap (churn-save renewals):'),
+      );
+      expect(gapHeaderIdx).toBeGreaterThan(-1);
+      const bulletIdx = lines.findIndex(
+        (l, i) => i > gapHeaderIdx && l.includes('Gap Co') && l.includes('ATR'),
+      );
+      expect(bulletIdx).toBeGreaterThan(-1);
+      expect(lines[bulletIdx + 1]).toBe('      Action plan:');
+      expect(lines[bulletIdx + 2]).toBe(
+        '        * Alice Owner - Schedule exec sponsor call by 6/5.',
+      );
+      expect(lines[bulletIdx + 3]).toBe(
+        '        * Carol CSE - Deliver value-realization recap.',
+      );
+    });
+
+    it('renders a stale-marker when the plan is unavailable', () => {
+      const plans: Record<string, CloseGapActionPlan> = {
+        GAP1: { steps: [], unavailableReason: 'Glean chat timed out' },
+      };
+      const md = generateWeeklyForecast({
+        views: [mkGapView()],
+        changeEvents: [],
+        asOfDate: AS_OF,
+        closeGapActionPlans: plans,
+      });
+      expect(md).toContain(
+        '      Action plan: [Glean action plan unavailable — Glean chat timed out]',
+      );
+    });
+
+    it('omits the action plan entirely when no plan is provided (back-compat)', () => {
+      const md = generateWeeklyForecast({
+        views: [mkGapView()],
+        changeEvents: [],
+        asOfDate: AS_OF,
+      });
+      expect(md).toContain('Gap Co');
+      expect(md).not.toContain('Action plan:');
+    });
+
+    it('resolveCloseGapOwner stamps every step with Assigned CSE only', () => {
+      const ctx = closeGapAccountContexts([mkGapView()], AS_OF, 'current')[0]!;
+      expect(isSalesforceUserId('0054u000006gCXoAAM')).toBe(true);
+      // Account Owner / SE ids and names → Assigned CSE, not opp-level roles.
+      expect(
+        resolveCloseGapOwner('0054u000006gCXoAAM', {
+          ...ctx,
+          accountOwnerId: '0054u000006gCXoAAM',
+          accountOwnerName: 'Roopal Shah',
+        }),
+      ).toBe('Carol CSE');
+      expect(
+        resolveCloseGapOwner('005Po00000FMN5NIAX', {
+          ...ctx,
+          assignedCseId: '005Po00000FMN5NIAX',
+          assignedCseName: 'Kiran Rajan',
+        }),
+      ).toBe('Kiran Rajan');
+      expect(resolveCloseGapOwner('Jayaram Iyer', ctx)).toBe('Carol CSE');
+      expect(resolveCloseGapOwner('Shwetha Ravindran', ctx)).toBe('Carol CSE');
+      expect(resolveCloseGapOwner('Kyle Larkin', ctx)).toBe('Carol CSE');
+      expect(resolveCloseGapOwner('Carol CSE', ctx)).toBe('Carol CSE');
+    });
+  });
+
   // 2026-05-20 manager feedback: leadership needs a qualitative
   // health/trajectory summary inside each quarter block. The pure
   // renderer doesn't call an LLM; it just splices the upstream-
@@ -1374,11 +1627,10 @@ describe('generateWeeklyForecast (churn-call script)', () => {
         asOfDate: AS_OF,
       });
       expect(md).not.toContain('Health Snapshot:');
-      // And the deterministic invariant that nothing inserted a stray
-      // blank line between Hedge and Accounts with Hedge in the
-      // no-snapshot path.
+      // KPI block flows Hedge → open/closed summary → account sections
+      // with no Health Snapshot blank line in between.
       expect(md).toMatch(
-        /Hedge: \$\d.*\nAccounts with Hedge \(churn-save renewals\):/,
+        /Hedge: \$\d.*\nOpportunities Open \/ Closed:.*\nAccounts with Hedge \(churn-save renewals\):/,
       );
     });
 

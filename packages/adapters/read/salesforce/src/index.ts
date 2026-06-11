@@ -36,7 +36,8 @@ export const isReadOnly: true = true;
 //   Workshop_Engagement__c.Status   → renamed Workshop_Engagement__c.Status__c
 export const SOQL_ACCOUNTS = `
 SELECT
-  Id, Name, X18_Digit_ID__c, Type, OwnerId, Assigned_CSE__c, Assigned_CSE__r.Name,
+  Id, Name, X18_Digit_ID__c, Type, OwnerId, Owner.Name,
+  Assigned_CSE__c, Assigned_CSE__r.Name,
   Current_FY_Franchise__c, Tenant_ID__c, ZuoraTenant__c,
   Total_ACV__c, All_Time_ARR_Billing__c, All_Time_ARR_Zephr__c,
   Business_Industry_Health__c, CSM_Sentiment_Commentary__c,
@@ -60,7 +61,8 @@ SELECT
   FranchisePicklist__c, Main_Franchise__c,
   ACV__c,
   Available_to_Renew_USD__c, Available_to_Renew_Local__c, fml_DerivedAvailableToRenew__c,
-  Forecast_Most_Likely__c, Forecast_Most_Likely_Override__c, Most_Likely_Confidence__c,
+  Forecast_Most_Likely__c, Forecast_Most_Likely_Override__c, Best_Case_USD__c,
+  Most_Likely_Confidence__c,
   fml_Forecast_Hedge_USD__c,
   fml_DerivedACVDelta_USD__c, Billing_ACV_Delta_USD__c, Revenue_ACV_Delta_USD__c, Zephr_ACV_Delta_USD__c,
   Known_Churn_USD__c,

@@ -24,17 +24,22 @@ import type {
   RefreshContext,
 } from '@mdas/canonical';
 import { latestSuccessfulRun, readSnapshotAccounts } from '@mdas/db';
-import { GleanClient, readGleanCredsFromEnv } from '../../_shared/src/glean.js';
+import {
+  GleanClient,
+  isFreshEnoughToSkip,
+  readGleanCredsFromEnv,
+  resolveGleanEnrichLimit,
+} from '../../_shared/src/glean.js';
 import { fetchAccountContext } from './account-context.js';
 import { fetchAccountEvidence, applyContextAndEvidenceToAccount } from './evidence.js';
 
 export const isReadOnly: true = true;
 
-// Concurrency 2 to share Glean's rate-limit budget with cerebro +
-// gainsight (each account fans out into ~4 searches between
-// account-context + 3 evidence sources). GleanClient's retry-with-
-// backoff absorbs the occasional 429 that still slips through.
-const DEFAULT_CONCURRENCY = 2;
+// Default 5 parallel account workers. The orchestrator defers glean-mcp
+// until cerebro + gainsight finish so it usually runs with exclusive
+// access to Glean's rate limiter; tune down via GLEAN_CONCURRENCY if
+// 429s appear.
+const DEFAULT_CONCURRENCY = 5;
 
 /**
  * Run async fn over each item with bounded parallelism.
@@ -80,27 +85,64 @@ export const gleanMcpAdapter: ReadAdapter = {
     // Discover the account set from the prior successful snapshot. If
     // there is no prior snapshot (cold start), there's nothing to enrich
     // yet — return empty and let SF run first.
-    const prior = await latestSuccessfulRun();
-    if (!prior) {
-      log?.info('glean-mcp.skip', { reason: 'no prior snapshot' });
-      return { accounts: [], opportunities: [] };
+    //
+    // Fast path: use the orchestrator's shared prefetch (ctx.priorRun)
+    // when available. Otherwise fall back to an independent lookup so
+    // this adapter still works when invoked outside the orchestrator
+    // (e.g. one-off scripts).
+    let allAccounts: CanonicalAccount[];
+    if (ctx?.priorRun) {
+      allAccounts = ctx.priorRun.accounts;
+    } else {
+      const prior = await latestSuccessfulRun();
+      if (!prior) {
+        log?.info('glean-mcp.skip', { reason: 'no prior snapshot' });
+        return { accounts: [], opportunities: [] };
+      }
+      allAccounts = await readSnapshotAccounts(prior.id);
     }
-    const allAccounts = await readSnapshotAccounts(prior.id);
     if (allAccounts.length === 0) {
       log?.info('glean-mcp.skip', { reason: 'prior snapshot has no accounts' });
       return { accounts: [], opportunities: [] };
     }
-    // Cap enrichment scope. Each account fans out into ~5 Glean calls
-    // (account-context primary + secondary + 3 evidence sources). At
-    // Glean's effective ~2 req/s ceiling, 300 accounts × 5 ≈ 12 min,
-    // which exceeds the worker timeout. Default 100; override via
-    // GLEAN_ENRICH_LIMIT (set 0 to disable cap).
-    const limit = Number(process.env.GLEAN_ENRICH_LIMIT) || 50;
-    const priorAccounts = limit > 0 ? allAccounts.slice(0, limit) : allAccounts;
+    // Enrichment scope: by default cover **every** account so downstream
+    // never sees "no Glean meetings / account plans" rationales just
+    // because an account fell past an arbitrary cap. Cerebro adopted
+    // this policy in May 2026; we now match it here. resolveGleanEnrichLimit()
+    // also fixes the `Number("0") || 50 === 50` truthiness bug that
+    // previously made the documented "set to 0" override a silent no-op.
+    //
+    // Per-account freshness skip: if `lastFetchedFromSource['glean-mcp']`
+    // is < GLEAN_FRESHNESS_HOURS (default 24h) old, skip this account's
+    // ~4 Glean searches. Account plans and recent meetings change slowly;
+    // the orchestrator's last-write-wins merge keeps the prior snapshot's
+    // data intact for skipped accounts. Bypass: FORCE_REFRESH=1.
+    //
+    // Cost shape: each account = ~4 Glean searches (1 plan-context after
+    // the secondary-query removal in this same change + 3 evidence
+    // sources). At the new rate-limiter ceiling of ~10 req/s aggregate
+    // shared with cerebro+gainsight, a cold-cache run of 347 accounts
+    // ≈ 140s for glean-mcp alone; a warm-cache run is near-zero.
+    const limit = resolveGleanEnrichLimit();
+    const scoped = limit > 0 ? allAccounts.slice(0, limit) : allAccounts;
+    const priorAccounts = scoped.filter(
+      (a) => !isFreshEnoughToSkip(a.lastFetchedFromSource?.['glean-mcp']),
+    );
+    const skippedFresh = scoped.length - priorAccounts.length;
+    if (priorAccounts.length === 0) {
+      log?.info('glean-mcp.skip', {
+        reason: 'all accounts within freshness window',
+        scopedAccounts: scoped.length,
+        skippedFresh,
+      });
+      return { accounts: [], opportunities: [] };
+    }
 
     const client = new GleanClient(creds);
     log?.info('glean-mcp.start', {
       accountCount: priorAccounts.length,
+      scopedAccounts: scoped.length,
+      skippedFresh,
       concurrency,
     });
 
@@ -111,7 +153,13 @@ export const gleanMcpAdapter: ReadAdapter = {
       concurrency,
       async (account: CanonicalAccount): Promise<Partial<CanonicalAccount> | null> => {
         ctx?.reportProgress?.(++gleanProcessed, priorAccounts.length, account.accountName);
-        const input = { accountId: account.accountId, accountName: account.accountName };
+        const input = {
+          accountId: account.accountId,
+          accountName: account.accountName,
+          // Lets fetchAccountContext skip the secondary QBR query when
+          // this account already has plan coverage from a prior snapshot.
+          priorPlanLinks: account.accountPlanLinks?.length ?? 0,
+        };
         const [context, evidence] = await Promise.all([
           fetchAccountContext(client, input),
           fetchAccountEvidence(client, input),

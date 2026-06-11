@@ -415,6 +415,7 @@ function buildAccount(
     availableToRenewUSD: o.atr ?? null,
     forecastMostLikely: o.forecastMostLikely ?? null,
     forecastMostLikelyOverride: null,
+    bestCaseUSD: null,
     mostLikelyConfidence: o.confidence ?? 'Medium',
     forecastHedgeUSD: o.hedge ?? null,
     acvDelta: o.acvDelta ?? 0,

@@ -31,15 +31,24 @@ import { readOnlyGuard } from './index.js';
 // reliable mitigation is to GATE concurrency at the GleanClient layer
 // regardless of how many adapters are running in parallel.
 //
+// Defaults (May 2026 retune): the original defaults (max=2, interval=300ms)
+// hard-capped aggregate throughput at ~3.3 req/s shared across all three
+// Glean adapters, which made a full-scope refresh (~2400 calls for 347
+// accounts) take >20 minutes — most of which the limiter spent idle
+// between bursts. The retry-on-429 path means we can safely probe higher;
+// the new defaults (max=6, interval=100ms) ceiling at ~10 req/s aggregate.
+// In practice Glean tolerates this without sustained 429s; the limiter +
+// backoff still absorbs the occasional spike.
+//
 // Tunables (env vars, all optional):
-//   - GLEAN_MAX_INFLIGHT       max parallel calls in flight (default 2)
-//   - GLEAN_MIN_INTERVAL_MS    min gap between call starts  (default 300)
+//   - GLEAN_MAX_INFLIGHT       max parallel calls in flight (default 6)
+//   - GLEAN_MIN_INTERVAL_MS    min gap between call starts  (default 100)
 //   - GLEAN_MAX_RETRY_ATTEMPTS retries on 429              (default 6)
 //   - GLEAN_RETRY_BASE_MS      first backoff delay         (default 1500)
 // ---------------------------------------------------------------------------
 
-const GLEAN_MAX_INFLIGHT = Number(process.env.GLEAN_MAX_INFLIGHT) || 2;
-const GLEAN_MIN_INTERVAL_MS = Number(process.env.GLEAN_MIN_INTERVAL_MS) || 300;
+const GLEAN_MAX_INFLIGHT = Number(process.env.GLEAN_MAX_INFLIGHT) || 6;
+const GLEAN_MIN_INTERVAL_MS = Number(process.env.GLEAN_MIN_INTERVAL_MS) || 100;
 const GLEAN_MAX_RETRY_ATTEMPTS = Number(process.env.GLEAN_MAX_RETRY_ATTEMPTS) || 6;
 const GLEAN_RETRY_BASE_MS = Number(process.env.GLEAN_RETRY_BASE_MS) || 1500;
 
@@ -991,4 +1000,61 @@ export function readGleanCredsFromEnv(): GleanCredentials | null {
   const e = process.env;
   if (!e.GLEAN_MCP_TOKEN || !e.GLEAN_MCP_BASE_URL) return null;
   return { token: e.GLEAN_MCP_TOKEN, baseUrl: e.GLEAN_MCP_BASE_URL };
+}
+
+/**
+ * Per-account freshness skip.
+ *
+ * Returns true when this account's data from `source` was fetched within
+ * the freshness window (default 24h) — in which case the adapter can
+ * skip the upstream call entirely, saving a Glean search.
+ *
+ * Rationale: cerebro risk scores, gainsight CTAs, and account plans
+ * rarely change in <24h. For daily-or-more-frequent refreshes the
+ * second run onward becomes mostly a no-op on these adapters, which
+ * is the dominant cost of a full-scope refresh.
+ *
+ * Bypass: `FORCE_REFRESH=1` ignores the freshness check and re-enriches
+ * every account. Window override: `GLEAN_FRESHNESS_HOURS=N` (default 24).
+ *
+ * The check is conservative — if `lastFetchedFromSource` is missing or
+ * malformed, we DO refresh (fail-open). Callers pass the bare
+ * `lastFetchedFromSource[source]` ISO string; we don't pass the whole
+ * account so unit tests can be trivially constructed.
+ */
+export function isFreshEnoughToSkip(
+  lastFetchedIso: string | undefined,
+): boolean {
+  if (process.env.FORCE_REFRESH === '1' || process.env.FORCE_REFRESH === 'true') {
+    return false;
+  }
+  if (!lastFetchedIso) return false;
+  const hours = Number(process.env.GLEAN_FRESHNESS_HOURS) || 24;
+  const ageMs = Date.now() - new Date(lastFetchedIso).getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0) return false;
+  return ageMs < hours * 60 * 60 * 1000;
+}
+
+/**
+ * Resolve the per-refresh enrichment cap from GLEAN_ENRICH_LIMIT.
+ *
+ *   unset / empty / "0" / non-numeric  → 0 (no cap; scan ALL accounts)
+ *   positive number                    → cap to that many accounts
+ *
+ * Previously each Glean adapter inlined `Number(env) || 50`, which had
+ * two bugs:
+ *   1. `Number("0") || 50` is `50` — so setting `GLEAN_ENRICH_LIMIT=0`
+ *      (the documented way to disable the cap) silently did nothing.
+ *   2. The default of 50 silently dropped 85% of accounts past the cap,
+ *      which downstream surfaced as "no Cerebro / Gainsight / Glean data"
+ *      rationales in the forecast script (observed 2026-05-13).
+ *
+ * The cerebro-glean adapter was patched in-place; this helper centralizes
+ * the same policy across glean-mcp and gainsight so all three behave
+ * identically. Returns 0 (all accounts) by default; operators set a
+ * positive integer for emergency throttling.
+ */
+export function resolveGleanEnrichLimit(): number {
+  const raw = Number(process.env.GLEAN_ENRICH_LIMIT);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
 }

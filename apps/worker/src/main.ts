@@ -4,9 +4,15 @@
 // (e.g. CloudWatch or Loki) can index `refreshId`, `requestId`, `source`
 // without parsing brackets out of free-form text.
 import pg from 'pg';
-import { claimNextJob, completeJob, audit } from '@mdas/db';
+import { claimNextJob, completeJob, audit, reapStaleJobs } from '@mdas/db';
 import { runRefresh, selectActiveAdapters } from './orchestrate.js';
 import { log } from './logger.js';
+
+// Cutoff for treating a `running` job as orphaned. Historical max refresh
+// in this codebase is ~14min (837s); 1h is comfortably above that and
+// short enough that the UI's 40-minute poll deadline never expires waiting
+// on a zombie. Overridable via env for ops tuning.
+const STALE_JOB_MAX_AGE_MS = Number(process.env.STALE_JOB_MAX_AGE_MS) || 60 * 60 * 1000;
 
 const { Client } = pg;
 
@@ -62,6 +68,28 @@ async function main(): Promise<void> {
   //    not buried inside the next refresh's per-account loop.
   await logAdapterHealth();
 
+  // 0.5) Reap orphaned `running` jobs from a previous worker process that
+  //      died mid-refresh. Without this, the /api/refresh coalesce check
+  //      latches onto the zombie forever and every subsequent click joins
+  //      a job that no worker is actually running. The worker is the only
+  //      legitimate writer of status='running' (it sets it inside
+  //      claimNextJob's FOR UPDATE SKIP LOCKED), so any such row that
+  //      exists at our boot is provably abandoned — no live worker can
+  //      race us here.
+  try {
+    const reaped = await reapStaleJobs(STALE_JOB_MAX_AGE_MS);
+    if (reaped > 0) {
+      log.warn('jobs.reaped', { count: reaped, maxAgeMs: STALE_JOB_MAX_AGE_MS });
+      await audit('worker', 'jobs.reaped', { count: reaped, maxAgeMs: STALE_JOB_MAX_AGE_MS });
+    } else {
+      log.info('jobs.reapCheck', { count: 0, maxAgeMs: STALE_JOB_MAX_AGE_MS });
+    }
+  } catch (err) {
+    // Don't block worker startup on the reaper — at worst we still process
+    // newly enqueued jobs; the next worker boot will re-sweep.
+    log.error('jobs.reapFailed', { error: (err as Error).message });
+  }
+
   // 1) Drain any queued jobs at startup.
   await drain();
 
@@ -95,12 +123,28 @@ async function drain(): Promise<void> {
       const jobLog = log.child({ jobId: job.id, requestId: job.id });
       jobLog.info('job.start', {});
       try {
-        const result = await runRefresh({ actor: 'worker', requestId: job.id });
+        const result = await runRefresh({
+          actor: 'worker',
+          requestId: job.id,
+          jobId: job.id,
+        });
         await completeJob(job.id, result.refreshId, 'success');
         jobLog.info('job.complete', {
           refreshId: result.refreshId,
           status: result.status,
           durationMs: result.durationMs,
+          // Per-adapter wall time + outcome. Surfaced here so a human
+          // tailing the worker can immediately see which source dragged
+          // the refresh (e.g. "cerebro-glean: 18.4s / glean-mcp: 22.1s")
+          // without having to join against refresh_runs.error_log.
+          sections: result.sections.map((s) => ({
+            source: s.source,
+            status: s.status,
+            durationMs: s.durationMs,
+            accounts: s.accounts,
+            opportunities: s.opportunities,
+            ...(s.error ? { error: s.error } : {}),
+          })),
         });
       } catch (err) {
         jobLog.error('job.failed', { error: (err as Error).message });

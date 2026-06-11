@@ -77,6 +77,7 @@ function mkOpp(overrides: Partial<CanonicalOpportunity> = {}): CanonicalOpportun
     availableToRenewUSD: 100_000,
     forecastMostLikely: 100_000,
     forecastMostLikelyOverride: null,
+    bestCaseUSD: null,
     mostLikelyConfidence: 'Medium',
     forecastHedgeUSD: 0,
     acvDelta: 0,

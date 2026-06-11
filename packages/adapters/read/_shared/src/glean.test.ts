@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { parseJwtExpiry, GleanClient, type TokenStatus } from './glean.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  parseJwtExpiry,
+  GleanClient,
+  isFreshEnoughToSkip,
+  resolveGleanEnrichLimit,
+  type TokenStatus,
+} from './glean.js';
 
 // ---------------------------------------------------------------------------
 // parseJwtExpiry
@@ -93,5 +99,104 @@ describe('GleanClient token expiry', () => {
     });
     expect(client.tokenStatus.expired).toBe(false);
     expect(client.tokenStatus.ttlSeconds).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveGleanEnrichLimit — central policy for GLEAN_ENRICH_LIMIT
+// ---------------------------------------------------------------------------
+
+describe('resolveGleanEnrichLimit', () => {
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env.GLEAN_ENRICH_LIMIT;
+    delete process.env.GLEAN_ENRICH_LIMIT;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.GLEAN_ENRICH_LIMIT;
+    else process.env.GLEAN_ENRICH_LIMIT = saved;
+  });
+
+  it('returns 0 (no cap) when unset', () => {
+    expect(resolveGleanEnrichLimit()).toBe(0);
+  });
+
+  // Regression: previously `Number("0") || 50 === 50` made the documented
+  // "set to 0 to disable cap" pattern a silent no-op.
+  it('returns 0 (no cap) when explicitly set to "0"', () => {
+    process.env.GLEAN_ENRICH_LIMIT = '0';
+    expect(resolveGleanEnrichLimit()).toBe(0);
+  });
+
+  it('returns the numeric cap when set to a positive integer', () => {
+    process.env.GLEAN_ENRICH_LIMIT = '25';
+    expect(resolveGleanEnrichLimit()).toBe(25);
+  });
+
+  it('returns 0 (no cap) for negative or non-numeric values', () => {
+    process.env.GLEAN_ENRICH_LIMIT = '-5';
+    expect(resolveGleanEnrichLimit()).toBe(0);
+    process.env.GLEAN_ENRICH_LIMIT = 'banana';
+    expect(resolveGleanEnrichLimit()).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isFreshEnoughToSkip — per-account freshness skip for Glean adapters
+// ---------------------------------------------------------------------------
+
+describe('isFreshEnoughToSkip', () => {
+  let savedHours: string | undefined;
+  let savedForce: string | undefined;
+  beforeEach(() => {
+    savedHours = process.env.GLEAN_FRESHNESS_HOURS;
+    savedForce = process.env.FORCE_REFRESH;
+    delete process.env.GLEAN_FRESHNESS_HOURS;
+    delete process.env.FORCE_REFRESH;
+  });
+  afterEach(() => {
+    if (savedHours === undefined) delete process.env.GLEAN_FRESHNESS_HOURS;
+    else process.env.GLEAN_FRESHNESS_HOURS = savedHours;
+    if (savedForce === undefined) delete process.env.FORCE_REFRESH;
+    else process.env.FORCE_REFRESH = savedForce;
+  });
+
+  it('returns false when lastFetched is undefined (never refreshed)', () => {
+    expect(isFreshEnoughToSkip(undefined)).toBe(false);
+  });
+
+  it('returns true for a timestamp within the freshness window', () => {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    expect(isFreshEnoughToSkip(oneHourAgo)).toBe(true);
+  });
+
+  it('returns false for a timestamp older than the freshness window', () => {
+    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    expect(isFreshEnoughToSkip(twoDaysAgo)).toBe(false);
+  });
+
+  it('honors GLEAN_FRESHNESS_HOURS override', () => {
+    const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+    // Default 24h → fresh.
+    expect(isFreshEnoughToSkip(fiveHoursAgo)).toBe(true);
+    // Tighten to 1h → stale.
+    process.env.GLEAN_FRESHNESS_HOURS = '1';
+    expect(isFreshEnoughToSkip(fiveHoursAgo)).toBe(false);
+  });
+
+  it('FORCE_REFRESH=1 bypasses the freshness check entirely', () => {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    expect(isFreshEnoughToSkip(oneHourAgo)).toBe(true);
+    process.env.FORCE_REFRESH = '1';
+    expect(isFreshEnoughToSkip(oneHourAgo)).toBe(false);
+  });
+
+  it('treats a malformed timestamp as stale (fail-open: do the refresh)', () => {
+    expect(isFreshEnoughToSkip('not-a-date')).toBe(false);
+  });
+
+  it('treats a future timestamp as stale (fail-open: do the refresh)', () => {
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    expect(isFreshEnoughToSkip(future)).toBe(false);
   });
 });

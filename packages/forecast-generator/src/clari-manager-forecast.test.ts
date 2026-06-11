@@ -146,6 +146,7 @@ describe('generateWeeklyForecast + Clari', () => {
       availableToRenewUSD: 5_000_000,
       forecastMostLikely: -50_000,
       forecastMostLikelyOverride: null,
+      bestCaseUSD: null,
       mostLikelyConfidence: null,
       forecastHedgeUSD: 400_000,
       acvDelta: 0,

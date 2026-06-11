@@ -8,8 +8,10 @@ import type {
   ChangeEvent,
   ReadAdapter,
   RefreshContext,
+  SourceLink,
 } from '@mdas/canonical';
 import {
+  attachRefreshRunToJob,
   audit,
   baselineRunForWindow,
   completeRefreshRun,
@@ -101,6 +103,27 @@ const FRANCHISE = 'Expand 3';
 //     after 25000ms" rather than a vague "failed".
 const DEFAULT_ADAPTER_TIMEOUT_MS = 25_000;
 
+// glean-mcp fans out ~4 Glean searches per account. When it runs in
+// parallel with cerebro + gainsight they share one process-wide rate
+// limiter and all three stall. Defer glean-mcp until the other adapters
+// finish so it gets the full throughput budget.
+const DEFERRED_GLEAN_SOURCES = new Set(['glean-mcp']);
+
+/** Split adapters for phased fetch; exported for unit tests. */
+export function partitionAdaptersForFetch(adapters: ReadAdapter[]): {
+  immediate: ReadAdapter[];
+  deferred: ReadAdapter[];
+} {
+  const immediate: ReadAdapter[] = [];
+  const deferred: ReadAdapter[] = [];
+  for (const a of adapters) {
+    const source = a.source ?? a.name;
+    if (DEFERRED_GLEAN_SOURCES.has(source)) deferred.push(a);
+    else immediate.push(a);
+  }
+  return { immediate, deferred };
+}
+
 function adapterTimeoutMs(source: string): number {
   const envKey = `ADAPTER_TIMEOUT_MS_${source.toUpperCase().replace(/-/g, '_')}`;
   const override = process.env[envKey];
@@ -179,7 +202,56 @@ function withAccountDefaults(a: CanonicalAccount): CanonicalAccount {
  *
  * We deep-merge those three fields here so provenance/freshness is
  * preserved while still keeping last-write-wins for every other field.
+ *
+ * `sourceLinks` is deduped by URL (later adapter wins) so consecutive
+ * refreshes do not append duplicate citations — without this, each
+ * adapter re-emitting the same SFDC / Glean link grows snapshot JSONB
+ * without bound and the worker retains ever-larger payloads per refresh.
  */
+export function mergeSourceLinks(
+  existing: SourceLink[] | undefined,
+  next: SourceLink[] | undefined,
+): SourceLink[] {
+  const byUrl = new Map<string, SourceLink>();
+  for (const link of existing ?? []) {
+    if (link.url) byUrl.set(link.url, link);
+  }
+  for (const link of next ?? []) {
+    if (link.url) byUrl.set(link.url, link);
+  }
+  return [...byUrl.values()];
+}
+
+/** Observability helper: surface snapshot citation bloat after merge. */
+export function summarizeSourceLinkCounts(data: MergedData): {
+  accounts: number;
+  opportunities: number;
+  maxSourceLinksPerAccount: number;
+  maxSourceLinksPerOpportunity: number;
+  totalSourceLinks: number;
+} {
+  let maxSourceLinksPerAccount = 0;
+  let totalSourceLinks = 0;
+  for (const a of data.accounts) {
+    const n = a.sourceLinks?.length ?? 0;
+    totalSourceLinks += n;
+    if (n > maxSourceLinksPerAccount) maxSourceLinksPerAccount = n;
+  }
+  let maxSourceLinksPerOpportunity = 0;
+  for (const o of data.opportunities) {
+    const n = o.sourceLinks?.length ?? 0;
+    totalSourceLinks += n;
+    if (n > maxSourceLinksPerOpportunity) maxSourceLinksPerOpportunity = n;
+  }
+  return {
+    accounts: data.accounts.length,
+    opportunities: data.opportunities.length,
+    maxSourceLinksPerAccount,
+    maxSourceLinksPerOpportunity,
+    totalSourceLinks,
+  };
+}
+
 function mergeAccount(
   existing: CanonicalAccount,
   next: CanonicalAccount,
@@ -195,7 +267,7 @@ function mergeAccount(
       ...(existing.sourceErrors ?? {}),
       ...(next.sourceErrors ?? {}),
     },
-    sourceLinks: [...(existing.sourceLinks ?? []), ...(next.sourceLinks ?? [])],
+    sourceLinks: mergeSourceLinks(existing.sourceLinks, next.sourceLinks),
   };
 }
 
@@ -214,7 +286,7 @@ function mergeOpportunity(
       ...(existing.sourceErrors ?? {}),
       ...(next.sourceErrors ?? {}),
     },
-    sourceLinks: [...(existing.sourceLinks ?? []), ...(next.sourceLinks ?? [])],
+    sourceLinks: mergeSourceLinks(existing.sourceLinks, next.sourceLinks),
   };
 }
 
@@ -239,11 +311,40 @@ function mergeAdapterResults(
   };
 }
 
+/**
+ * Per-adapter / per-section outcome surfaced alongside the run-level
+ * status. Mirrors the `RefreshSectionResult<T>` shape requested by the
+ * dashboard refresh contract: data lives in the snapshot tables (we do
+ * not duplicate payloads here), but every other field a UI needs to
+ * render "partially refreshed / last-known-good" is included.
+ */
+export interface RefreshSectionResult {
+  source: string;
+  status: 'success' | 'failed';
+  durationMs: number;
+  /** Number of canonical accounts contributed by this adapter. */
+  accounts: number;
+  /** Number of canonical opportunities contributed by this adapter. */
+  opportunities: number;
+  /** Error message when status === 'failed'. */
+  error?: string;
+  /** ISO timestamp the adapter completed (success or failure). */
+  refreshedAt: string;
+}
+
 export interface RefreshResult {
   refreshId: string;
   status: 'success' | 'partial' | 'failed';
   rowCounts: Record<string, number>;
   durationMs: number;
+  /**
+   * Per-adapter breakdown. Additive — existing callers that destructure
+   * { refreshId, status, rowCounts, durationMs } still work. New surfaces
+   * (job-status API, refresh button toast, /admin/data-quality) can now
+   * show "salesforce: 240 accts in 3.2s; cerebro: failed after 25s" without
+   * a join against refresh_runs.error_log.
+   */
+  sections: RefreshSectionResult[];
 }
 
 /**
@@ -290,7 +391,19 @@ export async function runRefresh(
   // Generated by the API route on POST /api/refresh, persisted on the
   // refresh_jobs row, and threaded into every audit + log record so
   // a manager can find their refresh in worker logs by request-id.
-  options: { actor?: string; injected?: MergedData; requestId?: string } = {},
+  //
+  // jobId, when supplied, is the refresh_jobs row to link to this run.
+  // Today the worker passes jobId === requestId (the job id is the
+  // request id). refresh-once.ts and unit tests omit it. Setting the
+  // FK at start-of-run (instead of at completeJob) is what makes
+  // GET /api/refresh/{jobId} return live progress mid-run instead of
+  // returning progress=null until the very last frame.
+  options: {
+    actor?: string;
+    injected?: MergedData;
+    requestId?: string;
+    jobId?: string;
+  } = {},
 ): Promise<RefreshResult> {
   const start = Date.now();
   const startedAt = new Date(start);
@@ -301,8 +414,29 @@ export async function runRefresh(
     scoringVersion: 'v0.1.0', // TODO: Fix SCORING_VERSION import
     sources: sourceNames,
   });
+  // Link the job row to the run immediately so the status API can
+  // surface live progress from refresh_runs.progress while the run is
+  // in flight. Best-effort: a failure here doesn't abort the refresh
+  // — at worst the UI falls back to its pre-fix "0% until done" behavior.
+  if (options.jobId) {
+    try {
+      await attachRefreshRunToJob(options.jobId, refreshId);
+    } catch (err) {
+      log.warn('refresh.attachJob.failed', {
+        jobId: options.jobId,
+        refreshId,
+        error: (err as Error).message,
+      });
+    }
+  }
   const ctx = buildRefreshContext(refreshId, startedAt, options.requestId);
   const progress = new ProgressTracker(refreshId, sourceNames);
+
+  // Per-adapter outcome buffer. Populated by the parallel fetch loop and
+  // surfaced on RefreshResult.sections so the UI can render a per-source
+  // status line (duration, error, row counts) without re-reading
+  // refresh_runs.error_log.
+  const sections: RefreshSectionResult[] = [];
   try {
     await audit(options.actor ?? 'manual:nick', 'refresh.started', {
       refreshId,
@@ -312,81 +446,186 @@ export async function runRefresh(
 
     progress.startFlushing();
 
-    // Phase 1: Fetch in parallel with isolated failures.
-  const succeeded: string[] = [];
-  const errorLog: { source: string; error: string }[] = [];
-  const fetched = await Promise.all(
-    adapters.map(async (a) => {
+    // Phase 0 — Prefetch prior snapshot ONCE for the whole refresh.
+    //
+    // Previously every Glean enrichment adapter (cerebro, gainsight,
+    // glean-mcp) independently issued the same `readSnapshotAccounts(prior.id)`
+    // query at the top of its `fetch()`. With ~300 accounts × 2KB JSONB
+    // each, that's three identical ~600KB+ reads serialized inside the
+    // worker process. Doing it once here and threading the result via
+    // `ctx.priorRun` lets adapters skip the lookup entirely.
+    //
+    // The reads are parallel and best-effort: a failure here doesn't
+    // abort the refresh (adapters will just fall back to their own
+    // lookup, preserving old behavior).
+    let priorRun: RefreshContext['priorRun'];
+    const priorMeta = await baselineRunForWindow(refreshId, 0).catch(() => null);
+    if (priorMeta) {
+      const [priorAccounts, priorOpps] = await Promise.all([
+        readSnapshotAccounts(priorMeta.id).catch(() => [] as CanonicalAccount[]),
+        readSnapshotOpportunities(priorMeta.id).catch(
+          () => [] as CanonicalOpportunity[],
+        ),
+      ]);
+      priorRun = {
+        id: priorMeta.id,
+        accounts: priorAccounts,
+        opportunities: priorOpps,
+      };
+      ctx.logger.info('refresh.priorRun.prefetched', {
+        priorRunId: priorMeta.id,
+        accounts: priorAccounts.length,
+        opportunities: priorOpps.length,
+      });
+    }
+
+    // Phase 1: Fetch with isolated failures. Non-glean-mcp adapters run
+    // in parallel; glean-mcp is deferred to Phase 1b so it does not
+    // compete with cerebro/gainsight for Glean rate-limit budget.
+    const succeeded: string[] = [];
+    const errorLog: { source: string; error: string }[] = [];
+    const { immediate, deferred } = partitionAdaptersForFetch(adapters);
+
+    async function fetchOneAdapter(
+      a: ReadAdapter,
+    ): Promise<Partial<MergedData>> {
       const source = a.source ?? a.name;
       const adapterStart = Date.now();
-      // PR-B3: per-adapter timeout, env-configurable. See adapterTimeoutMs.
       const timeoutMs = adapterTimeoutMs(source);
-      // Per-adapter context with a progress callback bound to this source.
       const adapterCtx: RefreshContext = {
         ...ctx,
         reportProgress: (current, total, label) =>
           progress.report(a.name, current, total, label),
+        ...(priorRun ? { priorRun } : {}),
       };
       progress.markRunning(a.name, 0);
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       try {
         const r = await Promise.race([
           a.fetch({ franchise: FRANCHISE }, adapterCtx),
-          new Promise<Partial<MergedData>>((_, rej) =>
-            // Descriptive error message so PR-A4's partial-success surface
-            // can show "salesforce timed out after 25000ms" instead of
-            // a generic "failed".
-            setTimeout(
+          new Promise<Partial<MergedData>>((_, rej) => {
+            timeoutHandle = setTimeout(
               () => rej(new Error(`timed out after ${timeoutMs}ms`)),
               timeoutMs,
-            ),
-          ),
+            );
+          }),
         ]);
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         succeeded.push(a.name);
-        progress.markDone(a.name, r.accounts?.length ?? 0);
+        const accountCount = r.accounts?.length ?? 0;
+        const oppCount = r.opportunities?.length ?? 0;
+        const durationMs = Date.now() - adapterStart;
+        progress.markDone(a.name, accountCount);
         ctx.logger.info(`adapter.success`, {
           source,
-          durationMs: Date.now() - adapterStart,
-          accounts: r.accounts?.length ?? 0,
-          opportunities: r.opportunities?.length ?? 0,
+          durationMs,
+          accounts: accountCount,
+          opportunities: oppCount,
+        });
+        sections.push({
+          source: a.name,
+          status: 'success',
+          durationMs,
+          accounts: accountCount,
+          opportunities: oppCount,
+          refreshedAt: new Date().toISOString(),
         });
         return r;
       } catch (err) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         const message = (err as Error).message;
+        const durationMs = Date.now() - adapterStart;
         errorLog.push({ source: a.name, error: message });
         progress.markError(a.name);
         ctx.logger.error(`adapter.failure`, {
           source,
-          durationMs: Date.now() - adapterStart,
+          durationMs,
           error: message,
+        });
+        sections.push({
+          source: a.name,
+          status: 'failed',
+          durationMs,
+          accounts: 0,
+          opportunities: 0,
+          error: message,
+          refreshedAt: new Date().toISOString(),
         });
         return {} as Partial<MergedData>;
       }
-    }),
-  );
+    }
+
+    const fetchResults = new Map<string, Partial<MergedData>>();
+    if (immediate.length > 0) {
+      const immediateResults = await Promise.all(immediate.map(fetchOneAdapter));
+      immediate.forEach((a, i) => {
+        fetchResults.set(a.source ?? a.name, immediateResults[i]!);
+      });
+    }
+    if (deferred.length > 0) {
+      ctx.logger.info('refresh.gleanMcp.deferred', {
+        waitingFor: immediate.map((a) => a.name),
+        deferred: deferred.map((a) => a.name),
+      });
+      for (const a of deferred) {
+        fetchResults.set(a.source ?? a.name, await fetchOneAdapter(a));
+      }
+    }
+    const fetched = adapters.map(
+      (a) => fetchResults.get(a.source ?? a.name) ?? ({} as Partial<MergedData>),
+    );
 
   // Final progress flush before merge/score phase.
   progress.stopFlushing();
   await progress.flush();
 
   // Phase 2: Normalize / merge.
-  let merged: MergedData = options.injected ?? mergeAdapterResults(fetched);
+  const merged: MergedData = options.injected ?? mergeAdapterResults(fetched);
+  const sourceLinkStats = summarizeSourceLinkCounts(merged);
+  ctx.logger.info('refresh.merge.sourceLinks', sourceLinkStats);
 
-  // Phase 3: Persist snapshot.
-  await writeSnapshotAccounts(refreshId, merged.accounts);
-  await writeSnapshotOpportunities(refreshId, merged.opportunities);
-
-  // Phase 4 & 5: Score + WoW diff.
-  // Compare against a run at least DIFF_WINDOW_DAYS old so that multiple
-  // same-day refreshes don't zero out the change events. Falls back to the
-  // earliest available run if nothing is old enough yet (cold start).
+  // Phase 3 + 4 prep — parallelize three independent I/Os.
+  //
+  // Previously:
+  //   await writeSnapshotAccounts(...)          // ~accounts/200 rows  (~150ms)
+  //   await writeSnapshotOpportunities(...)     // ~opps/200 rows      (~80ms)
+  //   const prev = await baselineRunForWindow(...)
+  //   await readSnapshotAccounts(prev.id)       // ~150ms
+  //   await readSnapshotOpportunities(prev.id)  // ~80ms
+  // → serialized ~460ms.
+  //
+  // None of these depend on each other, so we run them concurrently and
+  // gate on Promise.all. With pg's pool size ≥4 (default 10) this cuts the
+  // post-fetch I/O wall time to ~150ms in practice. Errors still propagate
+  // — they're all critical-path so we want them to surface.
   const diffWindowDays = Number(process.env.DIFF_WINDOW_DAYS) || 7;
-  const prevRun = await baselineRunForWindow(refreshId, diffWindowDays);
+  const persistStart = Date.now();
+  const [, , prevRun] = await Promise.all([
+    writeSnapshotAccounts(refreshId, merged.accounts),
+    writeSnapshotOpportunities(refreshId, merged.opportunities),
+    baselineRunForWindow(refreshId, diffWindowDays),
+  ]);
   let prevAccounts: CanonicalAccount[] = [];
   let prevOpps: CanonicalOpportunity[] = [];
   if (prevRun) {
-    prevAccounts = await readSnapshotAccounts(prevRun.id);
-    prevOpps = await readSnapshotOpportunities(prevRun.id);
+    // Reuse the Phase-0 prefetch when it happens to be the same run
+    // (typical case: only one prior run within the diff window).
+    if (priorRun && priorRun.id === prevRun.id) {
+      prevAccounts = priorRun.accounts;
+      prevOpps = priorRun.opportunities;
+    } else {
+      [prevAccounts, prevOpps] = await Promise.all([
+        readSnapshotAccounts(prevRun.id),
+        readSnapshotOpportunities(prevRun.id),
+      ]);
+    }
   }
+  ctx.logger.info('refresh.persist.complete', {
+    durationMs: Date.now() - persistStart,
+    accounts: merged.accounts.length,
+    opportunities: merged.opportunities.length,
+    reusedPriorRun: priorRun != null && prevRun != null && priorRun.id === prevRun.id,
+  });
 
   const events: ChangeEvent[] = diffAll(
     prevRun ? { accounts: prevAccounts, opportunities: prevOpps } : null,
@@ -453,6 +692,7 @@ export async function runRefresh(
       change_events: events.length,
     },
     durationMs: Date.now() - start,
+    sections,
   };
   } finally {
     progress.stopFlushing();

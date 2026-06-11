@@ -39,7 +39,9 @@ import type {
 import { latestSuccessfulRun, readSnapshotAccounts } from '@mdas/db';
 import {
   GleanClient,
+  isFreshEnoughToSkip,
   readGleanCredsFromEnv,
+  resolveGleanEnrichLimit,
   type GleanDocument,
 } from '../../_shared/src/glean.js';
 import { mapCerebroDocument } from './mapper.js';
@@ -107,32 +109,45 @@ export const cerebroGleanAdapter: ReadAdapter = {
       Number(process.env.CEREBRO_CONCURRENCY) || DEFAULT_CONCURRENCY;
 
     // Discover the account set from the prior successful snapshot.
-    const prior = await latestSuccessfulRun();
-    if (!prior) {
-      log?.info('cerebro.skip', { reason: 'no prior snapshot' });
-      return { accounts: [], opportunities: [] };
+    //
+    // Fast path: when the orchestrator prefetched the prior snapshot
+    // (ctx.priorRun) we skip both the metadata lookup and the JSONB
+    // read entirely — three Glean adapters running in parallel used to
+    // issue three identical 600KB reads of the same prior snapshot.
+    let allAccounts: CanonicalAccount[];
+    if (ctx?.priorRun) {
+      allAccounts = ctx.priorRun.accounts;
+    } else {
+      const prior = await latestSuccessfulRun();
+      if (!prior) {
+        log?.info('cerebro.skip', { reason: 'no prior snapshot' });
+        return { accounts: [], opportunities: [] };
+      }
+      allAccounts = await readSnapshotAccounts(prior.id);
     }
-    const allAccounts = await readSnapshotAccounts(prior.id);
     if (allAccounts.length === 0) {
       log?.info('cerebro.skip', { reason: 'prior snapshot has no accounts' });
       return { accounts: [], opportunities: [] };
     }
     // Enrichment scope: by default cover **every** Expand 3 account so
     // the manager-facing forecast script does not emit "no Cerebro data"
-    // rationales (downstream symptom observed 2026-05-13). The previous
-    // default of 50 silently dropped the long tail of accounts past the
-    // cap, leaving them on the scoring fallback path. Glean's per-minute
-    // rate limit is absorbed by the in-process limiter + retries; with
-    // CEREBRO_CONCURRENCY=2 each refresh enriches ~120 accounts/min.
+    // rationales (downstream symptom observed 2026-05-13).
     //
-    // Operator override: `GLEAN_ENRICH_LIMIT=N` still caps the scan (set
-    // a positive number for emergency throttling). When a cap is set we
-    // prioritise accounts most likely to need data: those without any
-    // cerebroRisks signal yet, then by ARR. This makes a small cap
-    // useful instead of arbitrary.
-    const rawLimit = Number(process.env.GLEAN_ENRICH_LIMIT);
-    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 0;
-    const priorAccounts =
+    // Operator override: `GLEAN_ENRICH_LIMIT=N` (positive integer) caps
+    // the scan for emergency throttling. When a cap is set we prioritise
+    // accounts most likely to need data: those without any cerebroRisks
+    // signal yet, then by ARR. This makes a small cap useful instead of
+    // arbitrary. resolveGleanEnrichLimit() is shared with glean-mcp +
+    // gainsight so all three adapters agree on what the env var means
+    // (and correctly handle `GLEAN_ENRICH_LIMIT=0` as "no cap").
+    //
+    // Per-account freshness skip: if `lastFetchedFromSource.cerebro` is
+    // < GLEAN_FRESHNESS_HOURS (default 24h) old, skip this account's
+    // search. Cerebro health-risk pages change slowly (weekly at most);
+    // this turns a same-day re-refresh into a near-no-op. Bypass:
+    // FORCE_REFRESH=1.
+    const limit = resolveGleanEnrichLimit();
+    const scoped =
       limit === 0
         ? allAccounts
         : [...allAccounts]
@@ -143,10 +158,24 @@ export const cerebroGleanAdapter: ReadAdapter = {
               return (b.allTimeARR ?? 0) - (a.allTimeARR ?? 0);
             })
             .slice(0, limit);
+    const priorAccounts = scoped.filter(
+      (a) => !isFreshEnoughToSkip(a.lastFetchedFromSource?.cerebro),
+    );
+    const skippedFresh = scoped.length - priorAccounts.length;
+    if (priorAccounts.length === 0) {
+      log?.info('cerebro.skip', {
+        reason: 'all accounts within freshness window',
+        scopedAccounts: scoped.length,
+        skippedFresh,
+      });
+      return { accounts: [], opportunities: [] };
+    }
 
     const client = new GleanClient(creds);
     log?.info('cerebro.start', {
       accountCount: priorAccounts.length,
+      scopedAccounts: scoped.length,
+      skippedFresh,
       concurrency,
     });
     const startedAt = Date.now();

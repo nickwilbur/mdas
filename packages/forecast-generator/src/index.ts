@@ -118,6 +118,58 @@ export interface ForecastInput {
    * undefined means the sub-section is omitted entirely.
    */
   gleanFlaggedRisks?: GleanFlaggedRisk[];
+
+  /**
+   * Per-account action plans for the "Accounts to Close Gap" section,
+   * keyed by canonical `accountId`. Each plan is a short checklist of
+   * owner→action steps (internal owner — Account Owner / Assigned CSE
+   * / Sales Engineer — paired with the concrete next move to close the
+   * gap), generated fresh every run by an upstream Glean Adaptive chat
+   * call grounded in the account's structured facts + soft signals.
+   *
+   * The renderer splices these inline beneath the matching account's
+   * "Accounts to Close Gap" bullet. When a plan carries
+   * `unavailableReason` (the Glean call failed) the renderer emits a
+   * stale-marker so the manager knows to write the plan themselves
+   * before the leadership call — same convention as `accountContext`.
+   * When a key is absent the bullet renders without an action plan
+   * (back-compat with callers that don't run the Glean step).
+   *
+   * Pure renderer contract: this package does NOT call Glean. The web
+   * API orchestrates the lookup and passes the map here.
+   */
+  closeGapActionPlans?: Record<string, CloseGapActionPlan>;
+
+  /**
+   * Per-opportunity qualitative context for renewals where the CSE's
+   * `forecastMostLikelyOverride` diverges from Salesforce `bestCaseUSD`.
+   * Keyed by `opportunityId`. Rendered in the "ML Override ≠ Best Case"
+   * section directly under `Accounts with Hedge`. Upstream Glean chat
+   * explains WHY the numbers diverge and what soft signals add risk —
+   * not an action plan.
+   */
+  mlOverrideMismatchContext?: Record<string, string>;
+}
+
+/**
+ * One owner→action step in an "Accounts to Close Gap" action plan.
+ * `owner` is the responsible internal name (typically "Name (Role)",
+ * e.g. "Jane Doe (Assigned CSE)"); `action` is the concrete next move.
+ */
+export interface CloseGapActionStep {
+  owner: string;
+  action: string;
+}
+
+/**
+ * Action plan for a single "Accounts to Close Gap" account. Either
+ * carries an ordered list of `steps`, or — when the upstream Glean
+ * call failed — an `unavailableReason` so the renderer can emit a
+ * stale-marker instead of silently dropping the plan.
+ */
+export interface CloseGapActionPlan {
+  steps: CloseGapActionStep[];
+  unavailableReason?: string;
 }
 
 /**
@@ -288,6 +340,89 @@ function isCarriedForecastCategory(opp: CanonicalOpportunity): boolean {
   if (cat === '') return false;
   if (DROPPED_FORECAST_CATEGORIES.has(cat)) return false;
   return true;
+}
+
+/** True when SFDC stage or manager forecast category marks the opp closed. */
+function isClosedOpportunity(opp: CanonicalOpportunity): boolean {
+  const cat = (opp.forecastCategory ?? '').trim().toLowerCase();
+  if (
+    cat === 'closed' ||
+    cat === 'closed won' ||
+    cat === 'closed lost'
+  ) {
+    return true;
+  }
+  const stage = String(opp.stageName ?? '').trim().toLowerCase();
+  return stage.includes('closed');
+}
+
+/** Won / lost when the closed outcome is explicit; otherwise generic closed. */
+function closedOpportunityOutcome(
+  opp: CanonicalOpportunity,
+): 'won' | 'lost' | 'other' | null {
+  if (!isClosedOpportunity(opp)) return null;
+  const cat = (opp.forecastCategory ?? '').trim().toLowerCase();
+  const stage = String(opp.stageName ?? '').trim().toLowerCase();
+  const blob = `${cat} ${stage}`;
+  if (blob.includes('lost')) return 'lost';
+  if (blob.includes('won')) return 'won';
+  return 'other';
+}
+
+interface OpportunityHeaderSummary {
+  open: number;
+  closed: number;
+  closedWon: number;
+  closedLost: number;
+  closedOther: number;
+}
+
+function quarterOpportunityHeaderSummary(
+  rows: QuarterBucket['rows'],
+): OpportunityHeaderSummary {
+  let open = 0;
+  let closedWon = 0;
+  let closedLost = 0;
+  let closedOther = 0;
+  for (const { opp } of rows) {
+    if (!isClosedOpportunity(opp)) {
+      open += 1;
+      continue;
+    }
+    const outcome = closedOpportunityOutcome(opp);
+    if (outcome === 'won') closedWon += 1;
+    else if (outcome === 'lost') closedLost += 1;
+    else closedOther += 1;
+  }
+  return {
+    open,
+    closed: closedWon + closedLost + closedOther,
+    closedWon,
+    closedLost,
+    closedOther,
+  };
+}
+
+/**
+ * One-line open / closed roll-up for the quarter KPI header.
+ * Format mirrors the WoW header: primary counts with a parenthetical
+ * breakdown when closed opps have a won/lost label.
+ */
+function formatOpportunityHeaderSummary(s: OpportunityHeaderSummary): string {
+  if (s.open === 0 && s.closed === 0) return 'none in quarter';
+  const parts: string[] = [`${s.open} open`];
+  if (s.closed === 0) {
+    parts.push('0 closed');
+  } else {
+    const breakdown: string[] = [];
+    if (s.closedWon > 0) breakdown.push(`${s.closedWon} won`);
+    if (s.closedLost > 0) breakdown.push(`${s.closedLost} lost`);
+    if (s.closedOther > 0) breakdown.push(`${s.closedOther} closed`);
+    const tail =
+      breakdown.length > 0 ? ` (${breakdown.join(', ')})` : '';
+    parts.push(`${s.closed} closed${tail}`);
+  }
+  return parts.join(', ');
 }
 
 /**
@@ -555,6 +690,245 @@ export function keySavesAccountContexts(
   collect('yellow');
   collect('green');
   return out;
+}
+
+/**
+ * Select the accounts that appear in the "Accounts to Close Gap"
+ * section for a quarter's rows: churn-save renewals in the red /
+ * yellow bands, deduped to the largest-ATR opp per account, ranked by
+ * ATR, then capped to the top 3 red + top 2 yellow (≤5 total).
+ *
+ * Extracted so the renderer and `closeGapAccountContexts` (which feeds
+ * the upstream Glean action-plan call) select the EXACT same accounts —
+ * the action plans must key on the accounts the manager actually sees
+ * in the pasted script.
+ */
+function selectCloseGapAccounts(
+  rows: QuarterBucket['rows'],
+): { view: AccountView; opp: CanonicalOpportunity; usd: number; band: 'red' | 'yellow' }[] {
+  const gapSeen = new Map<
+    string,
+    { view: AccountView; opp: CanonicalOpportunity; usd: number; band: 'red' | 'yellow' }
+  >();
+  for (const r of rows) {
+    if (!isChurnSaveTarget(r.view, r.opp)) continue;
+    const band = colorBand(r.view);
+    if (band !== 'red' && band !== 'yellow') continue;
+    const atr = r.opp.availableToRenewUSD ?? r.opp.acv ?? 0;
+    if (atr <= 0) continue;
+    const prev = gapSeen.get(r.view.account.accountId);
+    if (!prev || atr > prev.usd) {
+      gapSeen.set(r.view.account.accountId, { view: r.view, opp: r.opp, usd: atr, band });
+    }
+  }
+  const allGap = Array.from(gapSeen.values());
+  const gapReds = allGap.filter((r) => r.band === 'red').sort((a, b) => b.usd - a.usd).slice(0, 3);
+  const gapYellows = allGap
+    .filter((r) => r.band === 'yellow')
+    .sort((a, b) => b.usd - a.usd)
+    .slice(0, 2);
+  return [...gapReds, ...gapYellows].slice(0, 5);
+}
+
+/**
+ * Context bundle for one "Accounts to Close Gap" account, carrying the
+ * internal owner names (Account Owner / Assigned CSE / Sales Engineer)
+ * and the structured facts the upstream Glean action-plan prompt needs
+ * to assign concrete owner→action steps without round-tripping back
+ * through the canonical types.
+ */
+/**
+ * True when the string looks like a Salesforce User Id (15/18-char
+ * `005…`), not a human display name. Used to keep CRM ids out of the
+ * leadership-facing action-plan script.
+ */
+export function isSalesforceUserId(s: string): boolean {
+  return /^005[a-zA-Z0-9]{12,15}$/.test(s.trim());
+}
+
+/** Drop null/blank values and Salesforce User Ids masquerading as names. */
+export function humanPersonName(name: string | null | undefined): string | null {
+  if (!name) return null;
+  const t = name.trim();
+  if (!t || isSalesforceUserId(t)) return null;
+  return t;
+}
+
+export interface CloseGapAccountContext {
+  accountId: string;
+  accountName: string;
+  band: 'red' | 'yellow';
+  atrUSD: number;
+  closeDate: string;
+  forecastMostLikelyUSD: number | null;
+  cerebroRiskCategory: string | null;
+  cseSentiment: string | null;
+  scNextSteps: string | null;
+  accountOwnerId: string | null;
+  /** Salesforce Account Owner display name (never a User Id). */
+  accountOwnerName: string | null;
+  assignedCseId: string | null;
+  assignedCseName: string | null;
+  salesEngineerId: string | null;
+  salesEngineerName: string | null;
+}
+
+/**
+ * The account's Assigned CSE from Salesforce (`Assigned_CSE__c`) —
+ * the ONLY owner we surface on Close-Gap action plans. Opp-level
+ * Sales Engineer / Account Owner fields are intentionally excluded:
+ * they often reference former employees or unrelated opps (e.g. Jayaram
+ * on a legacy Arcserve opp still tied to the Zetta account).
+ */
+export function closeGapPrimaryOwner(ctx: CloseGapAccountContext): string {
+  return ctx.assignedCseName ?? 'Assigned CSE';
+}
+
+/** Allowed action-plan owner — exactly one: the current Assigned CSE. */
+export function closeGapAllowedOwnerNames(ctx: CloseGapAccountContext): string[] {
+  return ctx.assignedCseName ? [ctx.assignedCseName] : [];
+}
+
+/**
+ * Normalize a Glean-returned `owner` to the account's current Assigned
+ * CSE. Glean frequently returns opp-level SEs, note authors, or former
+ * employees — we ignore all of that and stamp every step with the CSE
+ * Salesforce has on the account today.
+ */
+export function resolveCloseGapOwner(
+  rawOwner: string,
+  ctx: CloseGapAccountContext,
+): string {
+  const primary = closeGapPrimaryOwner(ctx);
+  const owner = rawOwner.trim();
+  if (!owner) return primary;
+  if (ctx.assignedCseId && owner === ctx.assignedCseId && ctx.assignedCseName) {
+    return ctx.assignedCseName;
+  }
+  if (isSalesforceUserId(owner)) return primary;
+  if (
+    ctx.assignedCseName &&
+    owner.toLowerCase() === ctx.assignedCseName.toLowerCase()
+  ) {
+    return ctx.assignedCseName;
+  }
+  return primary;
+}
+
+/**
+ * Returns the full context bundles for the accounts that appear in the
+ * "Accounts to Close Gap" section of a quarter, so the web API can
+ * build a per-account Glean action-plan prompt. Same selection /
+ * ordering as the renderer (see `selectCloseGapAccounts`).
+ */
+export function closeGapAccountContexts(
+  views: AccountView[],
+  asOfDate: string,
+  quarter: 'current' | 'next',
+): CloseGapAccountContext[] {
+  const buckets = bucketByQuarter(views, asOfDate);
+  const bucket = quarter === 'current' ? buckets.current : buckets.next;
+  return selectCloseGapAccounts(bucket.rows).map((r) => ({
+    accountId: r.view.account.accountId,
+    accountName: r.view.account.accountName,
+    band: r.band,
+    atrUSD: r.usd,
+    closeDate: r.opp.closeDate,
+    forecastMostLikelyUSD: r.opp.forecastMostLikely ?? null,
+    cerebroRiskCategory: r.view.account.cerebroRiskCategory ?? null,
+    cseSentiment: r.view.account.cseSentiment ?? null,
+    scNextSteps: r.opp.scNextSteps ?? null,
+    accountOwnerId: r.view.account.accountOwner?.id ?? null,
+    accountOwnerName: humanPersonName(r.view.account.accountOwner?.name),
+    assignedCseId: r.view.account.assignedCSE?.id ?? null,
+    assignedCseName: humanPersonName(r.view.account.assignedCSE?.name),
+    salesEngineerId: r.opp.salesEngineer?.id ?? null,
+    salesEngineerName: humanPersonName(r.opp.salesEngineer?.name),
+  }));
+}
+
+/** Minimum |ML Override − Best Case| gap (USD) to surface in the script. */
+const ML_BC_MISMATCH_MIN_USD = 1_000;
+
+/**
+ * Dollar gap when CSE ML Override and Best Case diverge materially;
+ * `null` when either field is missing or the gap is below threshold.
+ */
+export function mlOverrideBestCaseGap(opp: CanonicalOpportunity): number | null {
+  const override = opp.forecastMostLikelyOverride;
+  const bestCase = opp.bestCaseUSD;
+  if (override == null || bestCase == null) return null;
+  if (!Number.isFinite(override) || !Number.isFinite(bestCase)) return null;
+  const gap = override - bestCase;
+  if (Math.abs(gap) < ML_BC_MISMATCH_MIN_USD) return null;
+  return gap;
+}
+
+/**
+ * Renewal opps in the quarter where the manager-set ML Override
+ * materially differs from Best Case USD, ranked by |gap| descending.
+ */
+export function selectMlOverrideMismatchOpps(
+  rows: QuarterBucket['rows'],
+  limit = 8,
+): { view: AccountView; opp: CanonicalOpportunity; gapUSD: number }[] {
+  const out: { view: AccountView; opp: CanonicalOpportunity; gapUSD: number }[] =
+    [];
+  for (const r of rows) {
+    if (!isRenewalLike(r.opp)) continue;
+    if (!isCarriedForecastCategory(r.opp)) continue;
+    const gap = mlOverrideBestCaseGap(r.opp);
+    if (gap == null) continue;
+    out.push({ view: r.view, opp: r.opp, gapUSD: gap });
+  }
+  return out
+    .sort((a, b) => Math.abs(b.gapUSD) - Math.abs(a.gapUSD))
+    .slice(0, limit);
+}
+
+/** Context bundle for one ML Override ≠ Best Case renewal opp. */
+export interface MlOverrideMismatchContext {
+  opportunityId: string;
+  accountId: string;
+  accountName: string;
+  opportunityName: string;
+  closeDate: string;
+  mlOverrideUSD: number;
+  bestCaseUSD: number;
+  gapUSD: number;
+  forecastMostLikelyUSD: number | null;
+  forecastCategory: string | null;
+  cerebroRiskCategory: string | null;
+  cseSentiment: string | null;
+  assignedCseName: string | null;
+}
+
+/**
+ * Returns context for Glean mismatch-explanation calls — same selection
+ * as the renderer (see `selectMlOverrideMismatchOpps`).
+ */
+export function mlOverrideMismatchContexts(
+  views: AccountView[],
+  asOfDate: string,
+  quarter: 'current' | 'next',
+): MlOverrideMismatchContext[] {
+  const buckets = bucketByQuarter(views, asOfDate);
+  const bucket = quarter === 'current' ? buckets.current : buckets.next;
+  return selectMlOverrideMismatchOpps(bucket.rows).map((r) => ({
+    opportunityId: r.opp.opportunityId,
+    accountId: r.view.account.accountId,
+    accountName: r.view.account.accountName,
+    opportunityName: r.opp.opportunityName,
+    closeDate: r.opp.closeDate,
+    mlOverrideUSD: r.opp.forecastMostLikelyOverride!,
+    bestCaseUSD: r.opp.bestCaseUSD!,
+    gapUSD: r.gapUSD,
+    forecastMostLikelyUSD: r.opp.forecastMostLikely ?? null,
+    forecastCategory: r.opp.forecastCategory ?? null,
+    cerebroRiskCategory: r.view.account.cerebroRiskCategory ?? null,
+    cseSentiment: r.view.account.cseSentiment ?? null,
+    assignedCseName: humanPersonName(r.view.account.assignedCSE?.name),
+  }));
 }
 
 /**
@@ -839,6 +1213,77 @@ function renderAccountBullet(
       : `Context: ${gleanBlurb}`
     : detail;
   return keySaveBullet(view.account.accountName, usdLabel, composedDetail);
+}
+
+/**
+ * Lines for one "ML Override ≠ Best Case" entry: structured dollar
+ * facts on the bullet, Glean context on an indented continuation so
+ * embedded newlines cannot orphan account names outside the section.
+ */
+function renderMlOverrideMismatchBullet(
+  view: AccountView,
+  opp: CanonicalOpportunity,
+  gapUSD: number,
+  context?: string,
+): string[] {
+  const override = opp.forecastMostLikelyOverride!;
+  const bestCase = opp.bestCaseUSD!;
+  const facts: string[] = [
+    `ML Override: ${fmtSignedUSD(override)}`,
+    `Best Case: ${fmtSignedUSD(bestCase)}`,
+    `Gap: ${fmtSignedUSD(gapUSD)}`,
+  ];
+  if (opp.closeDate) facts.push(`Renewal: ${opp.closeDate}`);
+  const sent = view.account.cseSentiment;
+  if (sent) facts.push(`Sentiment: ${sent}`);
+  const risk = view.account.cerebroRiskCategory;
+  if (risk) facts.push(`Risk: ${risk}`);
+  const label = `${view.account.accountName} — ${opp.opportunityName}`;
+  const lines = [
+    keySaveBullet(label, `${fmtUSD(Math.abs(gapUSD))} gap`, facts.join('; ')),
+  ];
+  const gleanBlurb = context?.trim();
+  if (gleanBlurb) {
+    // Single-line context — newlines in Glean output previously broke
+    // the script and left trailing account names outside this section.
+    const oneLine = gleanBlurb.replace(/\s+/g, ' ').trim();
+    lines.push(`      Context: ${oneLine}`);
+  }
+  return lines;
+}
+
+/**
+ * Render the indented owner→action checklist beneath an "Accounts to
+ * Close Gap" bullet. Returns the lines to splice in (empty array when
+ * there is no plan, so the bullet renders exactly as before).
+ *
+ * Three shapes:
+ *   - plan with steps   → `Action plan:` header + one `* owner - action`
+ *                          line per step.
+ *   - plan unavailable  → single stale-marker line so the manager sees
+ *                          they need to write the plan before the call.
+ *   - no plan (absent)  → nothing (back-compat).
+ */
+function renderCloseGapActionPlan(
+  plan: CloseGapActionPlan | undefined,
+): string[] {
+  if (!plan) return [];
+  if (plan.unavailableReason) {
+    return [
+      `      Action plan: [Glean action plan unavailable — ${plan.unavailableReason}]`,
+    ];
+  }
+  if (plan.steps.length === 0) return [];
+  const out = ['      Action plan:'];
+  for (const s of plan.steps) {
+    const owner = s.owner.trim();
+    const action = s.action.trim();
+    if (!action) continue;
+    out.push(owner ? `        * ${owner} - ${action}` : `        * ${action}`);
+  }
+  // If every step had an empty action we emitted only the header —
+  // drop it so we don't render a dangling "Action plan:" label.
+  return out.length > 1 ? out : [];
 }
 
 /**
@@ -1211,6 +1656,8 @@ function renderQuarterSection(
   healthSnapshot: string | undefined,
   accountContext: Record<string, string> | undefined,
   gleanFlaggedRisks: GleanFlaggedRisk[] | undefined,
+  closeGapActionPlans: Record<string, CloseGapActionPlan> | undefined,
+  mlOverrideMismatchContext: Record<string, string> | undefined,
 ): string[] {
   const lines: string[] = [];
   const clariFlash = clariSelectionForQuarter(
@@ -1243,6 +1690,11 @@ function renderQuarterSection(
   lines.push(`Gap to Plan: ${formatGapToPlan(flash, resolvedPlan)}`);
   lines.push(`Total Churn/Downsell Risk / Baseline: ${fmtSignedUSD(-total)}`);
   lines.push(`Hedge: ${fmtUSD(hedgeUSD)}`);
+  lines.push(
+    `Opportunities Open / Closed: ${formatOpportunityHeaderSummary(
+      quarterOpportunityHeaderSummary(bucket.rows),
+    )}`,
+  );
 
   // Health Snapshot — qualitative, subjective take on the quarter's
   // health and trajectory. Sits between the dollar-KPI block and the
@@ -1293,6 +1745,35 @@ function renderQuarterSection(
   } else {
     for (const r of sortedHedgeAccounts) {
       lines.push(renderAccountBullet(r.view, r.opp, r.usd));
+    }
+  }
+  lines.push('');
+
+  // Renewals where the CSE's ML Override materially diverges from the
+  // opp's Best Case USD — a hygiene / alignment signal leadership uses
+  // to spot saves where the CSE is more pessimistic (or optimistic) than
+  // the rep's best-case line. Glean context (when provided) explains
+  // WHY and flags additive risk; not an action plan.
+  const mlMismatchOpps = selectMlOverrideMismatchOpps(bucket.rows);
+  const mlMismatchTotal = mlMismatchOpps.reduce(
+    (s, r) => s + Math.abs(r.gapUSD),
+    0,
+  );
+  lines.push(
+    `Renewals where ML Override ≠ Best Case: ${fmtUSD(mlMismatchTotal)} total gap`,
+  );
+  if (mlMismatchOpps.length === 0) {
+    lines.push(`  - None identified`);
+  } else {
+    for (const r of mlMismatchOpps) {
+      lines.push(
+        ...renderMlOverrideMismatchBullet(
+          r.view,
+          r.opp,
+          r.gapUSD,
+          mlOverrideMismatchContext?.[r.opp.opportunityId],
+        ),
+      );
     }
   }
   lines.push('');
@@ -1390,26 +1871,10 @@ function renderQuarterSection(
   // "Accounts to Close Gap" — same churn-save filter, then rank by ATR
   // (dollars that move the gap-to-Plan needle), not by total ACV. We
   // still bias toward red over yellow because that's where save effort
-  // is highest leverage.
-  const gapSeen = new Map<
-    string,
-    { view: AccountView; opp: CanonicalOpportunity; usd: number; band: 'red' | 'yellow' }
-  >();
-  for (const r of bucket.rows) {
-    if (!isChurnSaveTarget(r.view, r.opp)) continue;
-    const band = colorBand(r.view);
-    if (band !== 'red' && band !== 'yellow') continue;
-    const atr = r.opp.availableToRenewUSD ?? r.opp.acv ?? 0;
-    if (atr <= 0) continue;
-    const prev = gapSeen.get(r.view.account.accountId);
-    if (!prev || atr > prev.usd) {
-      gapSeen.set(r.view.account.accountId, { view: r.view, opp: r.opp, usd: atr, band });
-    }
-  }
-  const allGap = Array.from(gapSeen.values());
-  const gapReds = allGap.filter((r) => r.band === 'red').sort((a, b) => b.usd - a.usd).slice(0, 3);
-  const gapYellows = allGap.filter((r) => r.band === 'yellow').sort((a, b) => b.usd - a.usd).slice(0, 2);
-  const gapAccounts = [...gapReds, ...gapYellows].slice(0, 5);
+  // is highest leverage. Selection is shared with
+  // `closeGapAccountContexts` so the Glean action plans key on exactly
+  // these accounts.
+  const gapAccounts = selectCloseGapAccounts(bucket.rows);
   const totalGapATR = gapAccounts.reduce((sum, r) => sum + r.usd, 0);
   lines.push(`Accounts to Close Gap (churn-save renewals): ${fmtUSD(totalGapATR)}`);
   if (gapAccounts.length === 0) {
@@ -1417,6 +1882,13 @@ function renderQuarterSection(
   } else {
     for (const r of gapAccounts) {
       lines.push(renderAccountBullet(r.view, r.opp, r.usd, ' ATR'));
+      // Per 2026-05-29 user feedback: each Close-Gap account carries a
+      // Glean-generated owner→action checklist, regenerated every run.
+      // Rendered inline (indented) beneath the bullet so leadership
+      // reads "who does what to close this" in the same place.
+      lines.push(
+        ...renderCloseGapActionPlan(closeGapActionPlans?.[r.view.account.accountId]),
+      );
     }
   }
   lines.push('');
@@ -1515,6 +1987,8 @@ export function generateWeeklyForecast(input: ForecastInput): string {
       input.healthSnapshot?.currentQuarter,
       input.accountContext,
       input.gleanFlaggedRisks,
+      input.closeGapActionPlans,
+      input.mlOverrideMismatchContext,
     ),
   );
   lines.push(
@@ -1527,6 +2001,8 @@ export function generateWeeklyForecast(input: ForecastInput): string {
       input.healthSnapshot?.nextQuarter,
       input.accountContext,
       input.gleanFlaggedRisks,
+      input.closeGapActionPlans,
+      input.mlOverrideMismatchContext,
     ),
   );
 

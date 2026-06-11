@@ -3,8 +3,6 @@ import { applyContextAndEvidenceToAccount, fetchAccountEvidence } from './eviden
 import type { CanonicalAccount } from '@mdas/canonical';
 import type { GleanClient, GleanDocument } from '../../_shared/src/glean.js';
 
-const NOW = new Date('2026-04-28T18:00:00.000Z');
-
 /**
  * Build a stubbed GleanClient. Glean's MCP `search` tool returns
  * cross-datasource results and the evidence module filters them by
@@ -24,8 +22,14 @@ function makeClientByDatasource(
   } as unknown as GleanClient;
 }
 
-const RECENT = '2026-04-21T18:00:00.000Z'; // 7 days before NOW
-const STALE = '2025-08-01T18:00:00.000Z'; // ~9 months before NOW
+// Derive fixture timestamps from the test wall-clock so the suite doesn't
+// rot as time moves on. Previously these were hardcoded ISO strings
+// pinned to April 2026 — the "RECENT" timestamp aged past the default
+// 30-day recency window in late May 2026, silently failing every test
+// that depended on it.
+const NOW = new Date();
+const RECENT = new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+const STALE = new Date(NOW.getTime() - 270 * 24 * 60 * 60 * 1000).toISOString();
 
 describe('fetchAccountEvidence', () => {
   it('aggregates across calendar, slack, gmail and tags each MeetingSummary correctly', async () => {

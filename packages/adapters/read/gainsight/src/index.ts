@@ -30,7 +30,12 @@ import type {
   SourceLink,
 } from '@mdas/canonical';
 import { latestSuccessfulRun, readSnapshotAccounts } from '@mdas/db';
-import { GleanClient, readGleanCredsFromEnv } from '../../_shared/src/glean.js';
+import {
+  GleanClient,
+  isFreshEnoughToSkip,
+  readGleanCredsFromEnv,
+  resolveGleanEnrichLimit,
+} from '../../_shared/src/glean.js';
 import { mapGainsightCta, normalizeName, type GainsightCtaMapped } from './mapper.js';
 
 export const isReadOnly: true = true;
@@ -50,25 +55,57 @@ export const gainsightAdapter: ReadAdapter = {
     const log = ctx?.logger;
 
     // Build a normalized-name → accountId lookup from the prior snapshot.
-    const prior = await latestSuccessfulRun();
-    if (!prior) {
-      log?.info('gainsight.skip', { reason: 'no prior snapshot' });
-      return { accounts: [], opportunities: [] };
+    // Reuse the orchestrator's shared prefetch when available (avoids a
+    // redundant JSONB read shared with cerebro / glean-mcp).
+    let allAccounts: CanonicalAccount[];
+    if (ctx?.priorRun) {
+      allAccounts = ctx.priorRun.accounts;
+    } else {
+      const prior = await latestSuccessfulRun();
+      if (!prior) {
+        log?.info('gainsight.skip', { reason: 'no prior snapshot' });
+        return { accounts: [], opportunities: [] };
+      }
+      allAccounts = await readSnapshotAccounts(prior.id);
     }
-    const allAccounts = await readSnapshotAccounts(prior.id);
-    // Cap enrichment scope. With Glean's per-minute rate limit + the
-    // process-wide concurrency gate in GleanClient, ~300 accounts × 3
-    // adapters would push the refresh past 10 minutes. Default 100,
-    // overridable via GLEAN_ENRICH_LIMIT (set 0 to disable cap).
-    const limit = Number(process.env.GLEAN_ENRICH_LIMIT) || 50;
-    const priorAccounts = limit > 0 ? allAccounts.slice(0, limit) : allAccounts;
+    // Enrichment scope: by default cover **every** account so downstream
+    // never sees "no Gainsight CTAs" rationales just because an account
+    // fell past an arbitrary cap. Cerebro adopted this policy in May 2026;
+    // glean-mcp + gainsight previously kept a `|| 50` default that
+    // additionally silently ignored `GLEAN_ENRICH_LIMIT=0` due to
+    // JS-truthiness. resolveGleanEnrichLimit() centralizes the policy.
+    //
+    // Per-account freshness skip: if `lastFetchedFromSource.gainsight`
+    // is < GLEAN_FRESHNESS_HOURS (default 24h) old, skip the search for
+    // that account. This makes the 2nd+ refresh of the day a near-no-op
+    // on the slow Glean-backed adapters. Bypass: FORCE_REFRESH=1.
+    const limit = resolveGleanEnrichLimit();
+    const scoped = limit > 0 ? allAccounts.slice(0, limit) : allAccounts;
+    const priorAccounts = scoped.filter(
+      (a) => !isFreshEnoughToSkip(a.lastFetchedFromSource?.gainsight),
+    );
+    const skippedFresh = scoped.length - priorAccounts.length;
     const nameToAccountId = new Map<string, string>();
-    for (const a of priorAccounts) {
+    for (const a of scoped) {
+      // Note: index uses `scoped`, not `priorAccounts` — accounts skipped
+      // for freshness still need to map their stale CTAs through if we
+      // later decide to merge with cached data. Today we just keep them
+      // off the search loop entirely; the prior-snapshot record already
+      // carries their last-known gainsightTasks via the orchestrator's
+      // last-write-wins merge.
       if (!a.accountName) continue;
       nameToAccountId.set(normalizeName(a.accountName), a.accountId);
     }
     if (nameToAccountId.size === 0) {
       log?.info('gainsight.skip', { reason: 'prior snapshot had no accounts' });
+      return { accounts: [], opportunities: [] };
+    }
+    if (priorAccounts.length === 0) {
+      log?.info('gainsight.skip', {
+        reason: 'all accounts within freshness window',
+        scopedAccounts: scoped.length,
+        skippedFresh,
+      });
       return { accounts: [], opportunities: [] };
     }
 
@@ -87,6 +124,8 @@ export const gainsightAdapter: ReadAdapter = {
     // fields embedded in each result.
     log?.info('gainsight.start', {
       accountCount: priorAccounts.length,
+      scopedAccounts: scoped.length,
+      skippedFresh,
       concurrency,
     });
     const startedAt = Date.now();

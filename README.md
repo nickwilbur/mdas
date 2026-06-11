@@ -302,6 +302,29 @@ dedupes against accounts already on the structured `Accounts with
 Hedge` / `not yet hedged` lists so the two never overlap. Block
 omitted entirely when no entries survive deduping.
 
+**Per-account action plans on `Accounts to Close Gap` (2026-05-29):**
+Each account in the `Accounts to Close Gap` section (top 3 red + top 2
+yellow churn-save renewals by ATR, per quarter) carries a
+Glean-generated owner→action checklist, regenerated on every run.
+Orchestrated by `apps/web/src/lib/forecast-close-gap-plan.ts`; the
+deterministic renderer stays LLM-free and accepts an opaque
+`closeGapActionPlans: Record<accountId, CloseGapActionPlan>` map on
+`ForecastInput`, splicing each plan inline (indented) beneath the
+matching bullet as an `Action plan:` header followed by
+`* <owner> - <action>` steps. The accounts are selected by the shared
+`closeGapAccountContexts` helper so the plans key on exactly the
+accounts the renderer shows. Each step is assigned to a named
+**internal** owner — Account Owner / Assigned CSE / Sales Engineer
+pulled from Salesforce and passed into the prompt so Glean assigns
+real people, not "the team". The prompt grounds the model in the same
+structured facts plus the soft Slack / Gmail / account-plan / CSE-note
+/ meeting-transcript context and asks for a strict JSON array of
+`{owner, action}` steps (2–4, ordered by leverage, length-capped).
+Calls are bounded to ≤5 accounts per quarter, run with a concurrency
+cap of 4. Failures become a per-account stale-marker
+`Action plan: [Glean action plan unavailable — <reason>]` so the
+manager knows to write the plan themselves before the leadership call.
+
 **Health Snapshot section (2026-05-20):** Each quarter section now
 renders a qualitative `Health Snapshot:` paragraph between the
 dollar-KPI block (`Hedge:`) and the per-account sections

@@ -20,6 +20,7 @@ const SAMPLE_ACCOUNT_ROW: SfdcAccountRow = {
   X18_Digit_ID__c: '0014u00001zmSSOAA2',
   Type: 'Customer',
   OwnerId: '0050g000005xyzAAA',
+  Owner: null,
   Assigned_CSE__c: '0050g000005z5SbAAI',
   // Added 2026-04-28 (PR-A1): mapper.ts requires the related-record
   // resolver alongside the FK Id so assignedCSE.name renders the human
@@ -121,6 +122,17 @@ describe('mapAccount', () => {
     expect(out.allTimeARR).toBeNull();
   });
 
+  it('resolves accountOwner.name from Owner.Name when present', () => {
+    const out = mapAccount(
+      { ...SAMPLE_ACCOUNT_ROW, Owner: { Name: 'Pat Owner' } },
+      CTX,
+    );
+    expect(out.accountOwner).toEqual({
+      id: '0050g000005xyzAAA',
+      name: 'Pat Owner',
+    });
+  });
+
   it('resolves assignedCSE.name from Assigned_CSE__r.Name when present', () => {
     // Production-relevant: real SOQL pulls Assigned_CSE__r.Name so the
     // UI shows "Jane Doe" instead of "0050g000005z5SbAAI". The default
@@ -156,6 +168,7 @@ const SAMPLE_OPP_ROW: SfdcOpportunityRow = {
   fml_DerivedAvailableToRenew__c: 10500,
   Forecast_Most_Likely__c: 10500,
   Forecast_Most_Likely_Override__c: null,
+  Best_Case_USD__c: 12000,
   Most_Likely_Confidence__c: 'Medium',
   fml_Forecast_Hedge_USD__c: 0,
   fml_DerivedACVDelta_USD__c: 0,
@@ -196,6 +209,7 @@ describe('mapOpportunity', () => {
     expect(out.acv).toBe(10500);
     expect(out.availableToRenewUSD).toBe(10500); // fallback to fml_Derived
     expect(out.forecastMostLikely).toBe(10500);
+    expect(out.bestCaseUSD).toBe(12000);
     expect(out.mostLikelyConfidence).toBe('Medium');
     expect(out.scNextSteps).toBe('Schedule executive sync');
     expect(out.salesEngineer).toEqual({ id: '0050g000005z5SbAAI', name: '0050g000005z5SbAAI' });
