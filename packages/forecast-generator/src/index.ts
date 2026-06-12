@@ -1339,6 +1339,41 @@ function primaryMlMismatchOpp(
   )[0]!;
 }
 
+function accountNameAppearsIn(text: string, accountName: string): boolean {
+  const hay = text.toLowerCase();
+  const name = accountName.trim().toLowerCase();
+  if (!name) return false;
+  if (hay.includes(name)) return true;
+  const firstWord = name.split(/\s+/)[0] ?? '';
+  return firstWord.length > 3 && hay.includes(firstWord);
+}
+
+function formatMlMismatchRollupHeadline(
+  accountName: string,
+  enr: MlOverrideMismatchEnrichment,
+): string | null {
+  let headline = enr.headline?.replace(/\s+/g, ' ').trim();
+  if (!headline || enr.unavailableReason) return null;
+
+  if (
+    headline.startsWith('{') ||
+    headline.includes('"headline"') ||
+    headline.includes('"customerContext"')
+  ) {
+    const context = enr.customerContext?.replace(/\s+/g, ' ').trim();
+    headline = context
+      ? context.match(/^[^.!?]+[.!?]/)?.[0]?.trim().replace(/[.!?]+$/, '') ??
+        context.slice(0, 120)
+      : null;
+    if (!headline) return null;
+  }
+
+  if (!accountNameAppearsIn(headline, accountName)) {
+    headline = `${accountName} — ${headline}`;
+  }
+  return headline;
+}
+
 function renderMlMismatchAccountMeta(group: MlMismatchAccountGroup): string {
   const parts: string[] = [];
   const dates = [...new Set(group.opps.map((o) => o.opp.closeDate).filter(Boolean))].sort();
@@ -1375,18 +1410,19 @@ function renderMlOverrideMismatchSection(
   for (const group of groups) {
     const primary = primaryMlMismatchOpp(group);
     const enr = enrichments?.[primary.opp.opportunityId];
+    const accountName = group.view.account.accountName;
     if (enr?.unavailableReason) {
-      headlines.push(
-        `${group.view.account.accountName} — [context unavailable]`,
-      );
-    } else if (enr?.headline?.trim()) {
-      headlines.push(enr.headline.trim());
+      headlines.push(`${accountName} — [context unavailable]`);
+      continue;
     }
+    if (!enr) continue;
+    const rollup = formatMlMismatchRollupHeadline(accountName, enr);
+    if (rollup) headlines.push(rollup);
   }
 
   if (headlines.length > 0) {
     lines.push('Headlines:');
-    for (const h of headlines) lines.push(`  ${h}`);
+    for (const h of headlines) lines.push(`  - ${h}`);
     lines.push('');
   }
 

@@ -1515,7 +1515,7 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       expect(notHedgedIdx).toBeGreaterThan(mismatchIdx);
       expect(md).toContain('Headlines:');
       expect(md).toContain(
-        '  Mismatch Co is a NetSuite / pricing pressure problem',
+        '  - Mismatch Co is a NetSuite / pricing pressure problem',
       );
       expect(md).toContain('Mismatch Co');
       expect(md).toContain('Renewal: 2026-04-15');

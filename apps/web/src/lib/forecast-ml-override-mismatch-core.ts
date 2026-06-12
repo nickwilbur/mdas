@@ -94,13 +94,82 @@ export function buildMlOverrideMismatchPrompt(
   ].join('\n');
 }
 
+function unescapeJsonString(value: string): string {
+  return value
+    .replace(/\\n/g, ' ')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+    .trim();
+}
+
+function looksLikeRawJson(text: string): boolean {
+  const t = text.trim();
+  return (
+    t.startsWith('{') ||
+    t.includes('"headline"') ||
+    t.includes('"customerContext"')
+  );
+}
+
+function extractLooseJsonFields(text: string): {
+  headline?: string;
+  commentary?: string;
+  customerContext?: string;
+} {
+  const fields: Partial<Record<'headline' | 'commentary' | 'customerContext', string>> =
+    {};
+  for (const key of ['headline', 'commentary', 'customerContext'] as const) {
+    const match = text.match(
+      new RegExp(
+        `"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)(?:"|…|$)`,
+        'i',
+      ),
+    );
+    if (match?.[1]) {
+      fields[key] = unescapeJsonString(match[1].replace(/…$/, ''));
+    }
+  }
+  return fields;
+}
+
+function isSearchMetaHeadline(headline: string): boolean {
+  const h = headline.toLowerCase();
+  if (/\bis a\b/.test(h) || /\bis the\b/.test(h) || /\bis an\b/.test(h)) {
+    return false;
+  }
+  return /\b(slack|gmail|zoom|account-level signal|too restrictive|glean|search pass)\b/.test(
+    h,
+  );
+}
+
+function firstSentence(text: string): string {
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  const match = cleaned.match(/^[^.!?]+[.!?]/);
+  return (match?.[0] ?? cleaned).trim().replace(/[.!?]+$/, '');
+}
+
+function resolveHeadline(
+  headline: string,
+  customerContext: string,
+): string {
+  let resolved = headline.trim();
+  if (looksLikeRawJson(resolved)) {
+    const loose = extractLooseJsonFields(resolved);
+    resolved = loose.headline?.trim() ?? '';
+  }
+  if ((!resolved || isSearchMetaHeadline(resolved)) && customerContext.trim()) {
+    resolved = firstSentence(customerContext);
+  }
+  return resolved;
+}
+
 function enrichmentFromFields(fields: {
   headline: string;
   commentary?: string;
   customerContext: string;
 }): MlOverrideMismatchEnrichment | null {
-  const headline = fields.headline.trim();
   const customerContext = fields.customerContext.trim();
+  const headline = resolveHeadline(fields.headline, customerContext);
   if (!headline && !customerContext) return null;
 
   const resolvedHeadline =
@@ -149,6 +218,20 @@ function parseStructuredProse(text: string): MlOverrideMismatchEnrichment | null
   });
 }
 
+function enrichmentFromLooseJson(text: string): MlOverrideMismatchEnrichment | null {
+  const loose = extractLooseJsonFields(text);
+  if (!loose.headline && !loose.customerContext) return null;
+  return enrichmentFromFields({
+    headline: loose.headline ? sanitizeMlMismatchContext(loose.headline) : '',
+    commentary: loose.commentary
+      ? sanitizeMlMismatchContext(loose.commentary)
+      : undefined,
+    customerContext: loose.customerContext
+      ? sanitizeMlMismatchContext(loose.customerContext)
+      : '',
+  });
+}
+
 function parseJsonObject(raw: string): MlOverrideMismatchEnrichment | null {
   let text = raw.trim();
   if (/^none\.?$/i.test(text)) return null;
@@ -161,10 +244,15 @@ function parseJsonObject(raw: string): MlOverrideMismatchEnrichment | null {
     parsed = JSON.parse(text);
   } catch {
     const brace = text.match(/\{[\s\S]*\}/);
-    if (!brace) return null;
-    try {
-      parsed = JSON.parse(brace[0]!);
-    } catch {
+    if (brace) {
+      try {
+        parsed = JSON.parse(brace[0]!);
+      } catch {
+        return enrichmentFromLooseJson(text);
+      }
+    } else if (looksLikeRawJson(text)) {
+      return enrichmentFromLooseJson(text);
+    } else {
       return null;
     }
   }

@@ -93,7 +93,18 @@ worker_pid() {
   pgrep -f "tsx src/main.ts" 2>/dev/null | head -1 || true
 }
 
+clear_production_next_cache() {
+  local next_dir="$REPO_ROOT/apps/web/.next"
+  # `next build` leaves production artifacts in .next. If `next dev` starts
+  # against that cache, HTML renders but /_next/static/css and chunks 404.
+  if [[ -f "$next_dir/BUILD_ID" || -f "$next_dir/export-marker.json" ]]; then
+    echo "🧹 Clearing production .next cache (required before dev)..."
+    rm -rf "$next_dir"
+  fi
+}
+
 start_web() {
+  clear_production_next_cache
   echo "🌐 Starting web server (screen session: $WEB_SCREEN)..."
   start_screen "$WEB_SCREEN" "$WEB_LOG" "$REPO_ROOT" \
     npm run dev:web

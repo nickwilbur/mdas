@@ -99,4 +99,29 @@ describe('parseMlOverrideMismatchEnrichment', () => {
     expect(parsed?.headline).toContain('Luminary');
     expect(parsed?.customerContext).toContain('weak on both engagement');
   });
+
+  it('extracts fields from truncated JSON instead of leaking raw JSON', () => {
+    const parsed = parseMlOverrideMismatchEnrichment(
+      '{"headline":"Finale is a parent-driven scope reduction, not a product save","commentary":"The manager override is more…',
+    );
+    expect(parsed?.headline).toBe(
+      'Finale is a parent-driven scope reduction, not a product save',
+    );
+    expect(parsed?.headline).not.toContain('"headline"');
+  });
+
+  it('replaces search-meta headlines with customer-context prose', () => {
+    const parsed = parseMlOverrideMismatchEnrichment(
+      JSON.stringify({
+        headline:
+          'direct account-level signal in Salesforce for Rubicon, but the first Slack/Gmail/Zoom passes were too restrictive',
+        commentary: '',
+        customerContext:
+          'Rubicon is a utilization and value-realization save. Procurement pressure is elevated and the CSE override reflects a larger downsell than the rep best-case line.',
+      }),
+    );
+    expect(parsed?.headline).toContain('Rubicon');
+    expect(parsed?.headline).toContain('utilization');
+    expect(parsed?.headline).not.toContain('Slack/Gmail');
+  });
 });
