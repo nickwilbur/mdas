@@ -1844,6 +1844,28 @@ function wowChanges(
 }
 
 /**
+ * Resolve quarter-scoped account maps produced by the web API
+ * (`current:<accountId>` / `next:<accountId>`). Unscoped keys are
+ * kept for backward compatibility with direct callers and tests.
+ */
+function resolveQuarterAccountMap<T>(
+  map: Record<string, T> | undefined,
+  quarter: 'current' | 'next',
+): Record<string, T> | undefined {
+  if (!map) return undefined;
+  const prefix = `${quarter}:`;
+  const out: Record<string, T> = {};
+  for (const [key, value] of Object.entries(map)) {
+    if (key.startsWith(prefix)) {
+      out[key.slice(prefix.length)] = value;
+    } else if (!key.includes(':')) {
+      out[key] = value;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
  * Render one of the two quarter sections. Plain text — no markdown
  * links, bold, or footnotes — because the artifact is pasted into
  * Slack / email as the body of a churn forecast call.
@@ -1862,6 +1884,15 @@ function renderQuarterSection(
     | Record<string, MlOverrideMismatchEnrichment>
     | undefined,
 ): string[] {
+  const quarterScope: 'current' | 'next' = isCurrent ? 'current' : 'next';
+  const quarterAccountContext = resolveQuarterAccountMap(
+    accountContext,
+    quarterScope,
+  );
+  const quarterCloseGapPlans = resolveQuarterAccountMap(
+    closeGapActionPlans,
+    quarterScope,
+  );
   const lines: string[] = [];
   const clariFlash = clariSelectionForQuarter(
     clariRows,
@@ -2082,7 +2113,9 @@ function renderQuarterSection(
       // Rendered inline (indented) beneath the bullet so leadership
       // reads "who does what to close this" in the same place.
       lines.push(
-        ...renderCloseGapActionPlan(closeGapActionPlans?.[r.view.account.accountId]),
+        ...renderCloseGapActionPlan(
+          quarterCloseGapPlans?.[r.view.account.accountId],
+        ),
       );
     }
   }
@@ -2122,7 +2155,7 @@ function renderQuarterSection(
     lines.push(`Accounts in red - risk trending:`);
     if (reds.length === 0) lines.push(`  - None`);
     for (const r of reds) {
-      lines.push(renderAccountBullet(r.view, r.opp, r.usd, '', accountContext));
+      lines.push(renderAccountBullet(r.view, r.opp, r.usd, '', quarterAccountContext));
     }
   }
 
@@ -2130,14 +2163,14 @@ function renderQuarterSection(
   lines.push(`Accounts in yellow - path to add hedge to the line:`);
   if (yellows.length === 0) lines.push(`  - None`);
   for (const r of yellows) {
-    lines.push(renderAccountBullet(r.view, r.opp, r.usd, '', accountContext));
+    lines.push(renderAccountBullet(r.view, r.opp, r.usd, '', quarterAccountContext));
   }
 
   const greens = topAccountsToCloseGap(bucket.rows, 'green', 5);
   lines.push(`Accounts in green - path to capture the existing hedge already in the line:`);
   if (greens.length === 0) lines.push(`  - None`);
   for (const r of greens) {
-    lines.push(renderAccountBullet(r.view, r.opp, r.usd, '', accountContext));
+    lines.push(renderAccountBullet(r.view, r.opp, r.usd, '', quarterAccountContext));
   }
   lines.push('');
 
