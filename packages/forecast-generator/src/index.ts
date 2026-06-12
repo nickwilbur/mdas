@@ -141,14 +141,28 @@ export interface ForecastInput {
   closeGapActionPlans?: Record<string, CloseGapActionPlan>;
 
   /**
-   * Per-opportunity qualitative context for renewals where the CSE's
+   * Per-opportunity qualitative brief for renewals where the CSE's
    * `forecastMostLikelyOverride` diverges from Salesforce `bestCaseUSD`.
    * Keyed by `opportunityId`. Rendered in the "ML Override ≠ Best Case"
-   * section directly under `Accounts with Hedge`. Upstream Glean chat
-   * explains WHY the numbers diverge and what soft signals add risk —
-   * not an action plan.
+   * section as headline roll-up + per-account customer context.
    */
-  mlOverrideMismatchContext?: Record<string, string>;
+  mlOverrideMismatchContext?: Record<string, MlOverrideMismatchEnrichment>;
+}
+
+/**
+ * Glean-generated qualitative brief for one ML Override ≠ Best Case
+ * renewal. Headline feeds the section roll-up; customerContext is the
+ * manager-facing paragraph leadership reads on the churn call.
+ */
+export interface MlOverrideMismatchEnrichment {
+  /** One-line pain headline, e.g. "Perch is a product fit problem". */
+  headline: string;
+  /** Optional AE vs manager forecast posture note. */
+  commentary?: string;
+  /** 2–4 sentence customer context paragraph. */
+  customerContext: string;
+  /** Set when the Glean call failed — renderer emits a stale-marker. */
+  unavailableReason?: string;
 }
 
 /**
@@ -963,7 +977,9 @@ export interface MlOverrideMismatchContext {
   forecastCategory: string | null;
   cerebroRiskCategory: string | null;
   cseSentiment: string | null;
+  accountOwnerName: string | null;
   assignedCseName: string | null;
+  productLine: string | null;
 }
 
 /**
@@ -986,11 +1002,13 @@ export function mlOverrideMismatchContexts(
     mlOverrideUSD: r.opp.forecastMostLikelyOverride!,
     bestCaseUSD: r.opp.bestCaseUSD!,
     gapUSD: r.gapUSD,
-    forecastMostLikelyUSD: r.opp.forecastMostLikely ?? null,
+    forecastMostLikelyUSD: managerForecastMostLikelyUSD(r.opp),
     forecastCategory: r.opp.forecastCategory ?? null,
     cerebroRiskCategory: r.view.account.cerebroRiskCategory ?? null,
     cseSentiment: r.view.account.cseSentiment ?? null,
+    accountOwnerName: humanPersonName(r.view.account.accountOwner?.name),
     assignedCseName: humanPersonName(r.view.account.assignedCSE?.name),
+    productLine: r.opp.productLine ?? null,
   }));
 }
 
@@ -1277,40 +1295,125 @@ function renderAccountBullet(
   return keySaveBullet(view.account.accountName, usdLabel, composedDetail);
 }
 
-/**
- * Lines for one "ML Override ≠ Best Case" entry: structured dollar
- * facts on the bullet, Glean context on an indented continuation so
- * embedded newlines cannot orphan account names outside the section.
- */
-function renderMlOverrideMismatchBullet(
-  view: AccountView,
-  opp: CanonicalOpportunity,
-  gapUSD: number,
-  context?: string,
-): string[] {
-  const override = opp.forecastMostLikelyOverride!;
-  const bestCase = opp.bestCaseUSD!;
-  const facts: string[] = [
-    `ML Override: ${fmtSignedUSD(override)}`,
-    `Best Case: ${fmtSignedUSD(bestCase)}`,
-    `Gap: ${fmtSignedUSD(gapUSD)}`,
-  ];
-  if (opp.closeDate) facts.push(`Renewal: ${opp.closeDate}`);
-  const sent = view.account.cseSentiment;
-  if (sent) facts.push(`Sentiment: ${sent}`);
-  const risk = view.account.cerebroRiskCategory;
-  if (risk) facts.push(`Risk: ${risk}`);
-  const label = `${view.account.accountName} — ${opp.opportunityName}`;
-  const lines = [
-    keySaveBullet(label, `${fmtUSD(Math.abs(gapUSD))} gap`, facts.join('; ')),
-  ];
-  const gleanBlurb = context?.trim();
-  if (gleanBlurb) {
-    // Single-line context — newlines in Glean output previously broke
-    // the script and left trailing account names outside this section.
-    const oneLine = gleanBlurb.replace(/\s+/g, ' ').trim();
-    lines.push(`      Context: ${oneLine}`);
+/** Short product label for multi-opp account metadata lines. */
+function oppProductLabel(opp: CanonicalOpportunity): string {
+  const pl = opp.productLine?.trim();
+  if (pl) return pl;
+  const name = opp.opportunityName ?? '';
+  for (const token of ['RevPro', 'Collections', 'Billing', 'CPQ', 'Revenue']) {
+    if (name.toLowerCase().includes(token.toLowerCase())) return token;
   }
+  return name.trim();
+}
+
+interface MlMismatchAccountGroup {
+  view: AccountView;
+  opps: { opp: CanonicalOpportunity; gapUSD: number }[];
+}
+
+function groupMlMismatchByAccount(
+  rows: { view: AccountView; opp: CanonicalOpportunity; gapUSD: number }[],
+): MlMismatchAccountGroup[] {
+  const byAccount = new Map<string, MlMismatchAccountGroup>();
+  for (const r of rows) {
+    const id = r.view.account.accountId;
+    let group = byAccount.get(id);
+    if (!group) {
+      group = { view: r.view, opps: [] };
+      byAccount.set(id, group);
+    }
+    group.opps.push({ opp: r.opp, gapUSD: r.gapUSD });
+  }
+  return Array.from(byAccount.values()).sort((a, b) => {
+    const maxA = Math.max(...a.opps.map((o) => Math.abs(o.gapUSD)));
+    const maxB = Math.max(...b.opps.map((o) => Math.abs(o.gapUSD)));
+    return maxB - maxA;
+  });
+}
+
+function primaryMlMismatchOpp(
+  group: MlMismatchAccountGroup,
+): { opp: CanonicalOpportunity; gapUSD: number } {
+  return [...group.opps].sort(
+    (a, b) => Math.abs(b.gapUSD) - Math.abs(a.gapUSD),
+  )[0]!;
+}
+
+function renderMlMismatchAccountMeta(group: MlMismatchAccountGroup): string {
+  const parts: string[] = [];
+  const dates = [...new Set(group.opps.map((o) => o.opp.closeDate).filter(Boolean))].sort();
+  if (dates.length > 0) parts.push(`Renewal: ${dates[0]}`);
+  if (group.opps.length > 1) {
+    const labels = [
+      ...new Set(group.opps.map((o) => oppProductLabel(o.opp)).filter(Boolean)),
+    ];
+    if (labels.length > 0) parts.push(`Opportunities: ${labels.join(', ')}`);
+  }
+  const ae = humanPersonName(group.view.account.accountOwner?.name);
+  if (ae) parts.push(`AE: ${ae}`);
+  const cse = humanPersonName(group.view.account.assignedCSE?.name);
+  if (cse) parts.push(`CSE: ${cse}`);
+  return parts.join('  ');
+}
+
+/**
+ * "ML Override ≠ Best Case" section: headline roll-up plus per-account
+ * customer-context blocks (renewal / AE / CSE metadata, optional
+ * commentary, customer context paragraph). Modeled on the manager's
+ * churn-call account briefs — qualitative takeaways, not action plans.
+ */
+function renderMlOverrideMismatchSection(
+  rows: { view: AccountView; opp: CanonicalOpportunity; gapUSD: number }[],
+  enrichments: Record<string, MlOverrideMismatchEnrichment> | undefined,
+): string[] {
+  if (rows.length === 0) return [`  - None identified`];
+
+  const groups = groupMlMismatchByAccount(rows);
+  const lines: string[] = [];
+  const headlines: string[] = [];
+
+  for (const group of groups) {
+    const primary = primaryMlMismatchOpp(group);
+    const enr = enrichments?.[primary.opp.opportunityId];
+    if (enr?.unavailableReason) {
+      headlines.push(
+        `${group.view.account.accountName} — [context unavailable]`,
+      );
+    } else if (enr?.headline?.trim()) {
+      headlines.push(enr.headline.trim());
+    }
+  }
+
+  if (headlines.length > 0) {
+    lines.push('Headlines:');
+    for (const h of headlines) lines.push(`  ${h}`);
+    lines.push('');
+  }
+
+  for (const group of groups) {
+    const primary = primaryMlMismatchOpp(group);
+    const enr = enrichments?.[primary.opp.opportunityId];
+    lines.push(group.view.account.accountName);
+    lines.push(renderMlMismatchAccountMeta(group));
+    lines.push('');
+
+    const commentary = enr?.commentary?.replace(/\s+/g, ' ').trim();
+    if (commentary) {
+      lines.push(`Commentary: ${commentary}`);
+      lines.push('');
+    }
+
+    const context = enr?.customerContext?.replace(/\s+/g, ' ').trim();
+    if (context) {
+      lines.push(`Customer context: ${context}`);
+    } else if (enr?.unavailableReason) {
+      lines.push(
+        `Customer context: [Glean context unavailable — ${enr.unavailableReason}]`,
+      );
+    }
+    lines.push('');
+  }
+
   return lines;
 }
 
@@ -1719,7 +1822,9 @@ function renderQuarterSection(
   accountContext: Record<string, string> | undefined,
   gleanFlaggedRisks: GleanFlaggedRisk[] | undefined,
   closeGapActionPlans: Record<string, CloseGapActionPlan> | undefined,
-  mlOverrideMismatchContext: Record<string, string> | undefined,
+  mlOverrideMismatchContext:
+    | Record<string, MlOverrideMismatchEnrichment>
+    | undefined,
 ): string[] {
   const lines: string[] = [];
   const clariFlash = clariSelectionForQuarter(
@@ -1824,20 +1929,12 @@ function renderQuarterSection(
   lines.push(
     `Renewals where ML Override ≠ Best Case: ${fmtUSD(mlMismatchTotal)} total gap`,
   );
-  if (mlMismatchOpps.length === 0) {
-    lines.push(`  - None identified`);
-  } else {
-    for (const r of mlMismatchOpps) {
-      lines.push(
-        ...renderMlOverrideMismatchBullet(
-          r.view,
-          r.opp,
-          r.gapUSD,
-          mlOverrideMismatchContext?.[r.opp.opportunityId],
-        ),
-      );
-    }
-  }
+  lines.push(
+    ...renderMlOverrideMismatchSection(
+      mlMismatchOpps,
+      mlOverrideMismatchContext,
+    ),
+  );
   lines.push('');
 
   // Churn-save targets MDAS believes belong in the hedge list but that

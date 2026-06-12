@@ -6,6 +6,14 @@
 // initial: 200 kB initial-load JS for /) and wire a CI assertion in
 // the lighthouse job.
 import bundleAnalyzer from '@next/bundle-analyzer';
+import nextEnv from '@next/env';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Monorepo: shared .env lives at the repo root, not under apps/web.
+// Without this, `next dev` started outside restart.sh (or after the
+// parent shell loses exported vars) cannot see GLEAN_MCP_* / DATABASE_URL.
+nextEnv.loadEnvConfig(path.join(path.dirname(fileURLToPath(import.meta.url)), '../..'));
 
 const withBundleAnalyzer = bundleAnalyzer({
   enabled: process.env.ANALYZE === '1',

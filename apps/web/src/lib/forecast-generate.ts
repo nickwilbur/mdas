@@ -12,6 +12,7 @@ import {
   type ForecastInput,
   type GleanFlaggedRisk,
   type CloseGapActionPlan,
+  type MlOverrideMismatchEnrichment,
 } from '@mdas/forecast-generator';
 import type { AccountView } from '@mdas/canonical';
 import { getDashboardData, getWoWChangeEvents } from '@/lib/read-model';
@@ -224,7 +225,9 @@ export async function generateForecastScript(
     progress('closeGap', 'Close-gap action plans skipped', 86);
   }
 
-  let mlOverrideMismatchContext: Record<string, string> | undefined;
+  let mlOverrideMismatchContext:
+    | Record<string, MlOverrideMismatchEnrichment>
+    | undefined;
   progress('mlMismatch', 'ML override context (Glean)…', 90);
   try {
     const currentMl = mlOverrideMismatchContexts(views, asOfDate, 'current');

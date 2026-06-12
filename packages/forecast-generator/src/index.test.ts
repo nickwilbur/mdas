@@ -1490,14 +1490,19 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       expect(mlOverrideMismatchContexts([view], AS_OF, 'current')).toHaveLength(1);
     });
 
-    it('renders the section directly under Accounts with Hedge with Glean context', () => {
+    it('renders headline roll-up and per-account customer context under Accounts with Hedge', () => {
       const md = generateWeeklyForecast({
         views: [mkMismatchView()],
         changeEvents: [],
         asOfDate: AS_OF,
         mlOverrideMismatchContext: {
-          'O-ML1':
-            'CSE cut override after procurement flagged NetSuite pressure; Gainsight shows low engagement.',
+          'O-ML1': {
+            headline: 'Mismatch Co is a NetSuite / pricing pressure problem',
+            commentary:
+              'The AE best-case line is more optimistic than the CSE override on this renewal.',
+            customerContext:
+              'Procurement is evaluating NetSuite as an alternative and engagement has been light since the last pricing conversation. The CSE override reflects a larger downsell than the rep best-case line carries.',
+          },
         },
       });
       const hedgeIdx = md.indexOf('Accounts with Hedge (churn-save renewals):');
@@ -1508,15 +1513,15 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       expect(hedgeIdx).toBeGreaterThan(-1);
       expect(mismatchIdx).toBeGreaterThan(hedgeIdx);
       expect(notHedgedIdx).toBeGreaterThan(mismatchIdx);
-      expect(md).toContain('Mismatch Co — Mismatch Co Billing 04-26');
-      expect(md).toContain('ML Override: -$43,000');
-      expect(md).toContain('Best Case: +$28,000');
+      expect(md).toContain('Headlines:');
       expect(md).toContain(
-        '      Context: CSE cut override after procurement flagged NetSuite pressure; Gainsight shows low engagement.',
+        '  Mismatch Co is a NetSuite / pricing pressure problem',
       );
-      // Context must stay indented under the section — not inline with ||
-      // (embedded newlines previously orphaned account names).
-      expect(md).not.toMatch(/\|\| Context:/);
+      expect(md).toContain('Mismatch Co');
+      expect(md).toContain('Renewal: 2026-04-15');
+      expect(md).toContain('Commentary: The AE best-case line is more optimistic');
+      expect(md).toContain('Customer context: Procurement is evaluating NetSuite');
+      expect(md).not.toContain('ML Override: -$43,000');
     });
 
     it('mlOverrideMismatchContexts bundles structured facts for Glean', () => {
@@ -1529,6 +1534,7 @@ describe('generateWeeklyForecast (churn-call script)', () => {
         bestCaseUSD: 28_000,
         gapUSD: -71_000,
         assignedCseName: 'Pat CSE',
+        forecastMostLikelyUSD: -43_000,
       });
     });
 
