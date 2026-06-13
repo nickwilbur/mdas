@@ -23,13 +23,17 @@ export function applySalesforceAuthoritativeSnapshot(
   if (sfAccounts.length === 0 && sfOpps.length === 0) return merged;
 
   const sfAccountIds = new Set(sfAccounts.map((a) => a.accountId));
+  const sfOppIds = new Set(sfOpps.map((o) => o.opportunityId));
   const accounts =
     sfAccountIds.size > 0
       ? merged.accounts.filter((a) => sfAccountIds.has(a.accountId))
       : merged.accounts;
+  // Filter the merged opportunity rows (preserving deep-merged
+  // sourceLinks / provenance from the adapter pipeline) instead of
+  // substituting the raw Salesforce adapter payload.
   const opportunities =
-    sfOpps.length > 0
-      ? (sfOpps as CanonicalOpportunity[])
+    sfOppIds.size > 0
+      ? merged.opportunities.filter((o) => sfOppIds.has(o.opportunityId))
       : merged.opportunities;
 
   return { accounts, opportunities };
