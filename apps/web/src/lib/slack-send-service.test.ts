@@ -92,6 +92,14 @@ vi.mock('@mdas/db', () => {
         } else if (params.length === 9) {
           const [account_id, mode, target_type, target_slack_id_or_channel, message_body, confirmed_by, result, failure_reason, preview_of] =
             params as [string, string, string, string | null, string, string, string, string | null, string | null];
+          if (preview_of) {
+            const duplicate = [...state.audits.values()].some((a) => a.preview_of === preview_of);
+            if (duplicate) {
+              const err = new Error('duplicate key value violates unique constraint') as Error & { code: string };
+              err.code = '23505';
+              throw err;
+            }
+          }
           state.audits.set(id, {
             id,
             account_id,
@@ -110,6 +118,20 @@ vi.mock('@mdas/db', () => {
           throw new Error(`Unhandled insert param count: ${params.length}`);
         }
         return { rows: [{ id }], rowCount: 1 };
+      }
+
+      if (s.startsWith('UPDATE SLACK_MESSAGE_AUDIT')) {
+        const id = params[0] as string;
+        const row = state.audits.get(id);
+        if (!row) return { rows: [], rowCount: 0 };
+        if (s.includes("SET RESULT = 'SENT'")) {
+          row.result = 'sent';
+          row.failure_reason = null;
+        } else if (s.includes("SET RESULT = 'FAILED'")) {
+          row.result = 'failed';
+          row.failure_reason = params[1] as string;
+        }
+        return { rows: [], rowCount: 1 };
       }
 
       if (s.startsWith('SELECT * FROM SLACK_MESSAGE_AUDIT WHERE ID =')) {
@@ -333,6 +355,33 @@ describe('slack-send-service', () => {
     await expect(
       confirmSend({ previewId: p.previewId, actor: 'tester' }),
     ).rejects.toThrow(/already been acted on/);
+    expect(postMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('concurrent confirm on same preview delivers at most one Slack message', async () => {
+    process.env.ENABLE_SLACK_SEND = 'true';
+    process.env.SLACK_BOT_TOKEN = 'xoxb-test';
+    postMessageMock.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve({ ok: true, channel: 'C0123ABCD', ts: '1' }), 25)),
+    );
+
+    seedMapping({ account_id: 'A1' });
+    const { previewSend, confirmSend } = await import('./slack-send-service.js');
+    const p = await previewSend({
+      accountId: 'A1',
+      messageBody: 'race',
+      targetType: 'customer_channel',
+      actor: 'tester',
+    });
+
+    const results = await Promise.allSettled([
+      confirmSend({ previewId: p.previewId, actor: 'tester' }),
+      confirmSend({ previewId: p.previewId, actor: 'tester' }),
+    ]);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
     expect(postMessageMock).toHaveBeenCalledTimes(1);
   });
 });

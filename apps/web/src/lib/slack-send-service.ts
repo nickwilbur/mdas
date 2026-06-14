@@ -232,7 +232,20 @@ export async function confirmSend(input: ConfirmInput): Promise<ConfirmResult> {
     return { ok: false, auditId: auditRow, result: 'blocked', failureReason: reason };
   }
 
-  // 4. Send.
+  // 4. Claim this preview before calling Slack so concurrent confirms cannot
+  //    both pass the read-check and deliver duplicate messages.
+  const auditRow = await insertAuditRow({
+    accountId: preview.account_id,
+    mode,
+    targetType: preview.target_type,
+    targetSlackIdOrChannel: channel,
+    messageBody: preview.message_body,
+    confirmedBy: input.actor,
+    result: 'failed',
+    failureReason: PENDING_SEND_MARKER,
+    previewOf: preview.id,
+  });
+
   try {
     const r = await postMessage({
       botToken: cfg.botToken!,
@@ -242,17 +255,12 @@ export async function confirmSend(input: ConfirmInput): Promise<ConfirmResult> {
           ? `[TEST MODE — redirected from customer channel] ` + preview.message_body
           : preview.message_body,
     });
-    const auditRow = await insertAuditRow({
-      accountId: preview.account_id,
-      mode,
-      targetType: preview.target_type,
-      targetSlackIdOrChannel: channel,
-      messageBody: preview.message_body,
-      confirmedBy: input.actor,
-      result: 'sent',
-      failureReason: null,
-      previewOf: preview.id,
-    });
+    await query(
+      `UPDATE slack_message_audit
+          SET result = 'sent', failure_reason = NULL
+        WHERE id = $1`,
+      [auditRow],
+    );
     await audit(input.actor, 'slack.send.sent', {
       previewId: preview.id,
       auditId: auditRow,
@@ -263,17 +271,12 @@ export async function confirmSend(input: ConfirmInput): Promise<ConfirmResult> {
     return { ok: true, auditId: auditRow, result: 'sent', failureReason: null, ts: r.ts };
   } catch (e) {
     const reason = e instanceof SlackApiError ? `${e.slackError}: ${e.message}` : String(e);
-    const auditRow = await insertAuditRow({
-      accountId: preview.account_id,
-      mode,
-      targetType: preview.target_type,
-      targetSlackIdOrChannel: channel,
-      messageBody: preview.message_body,
-      confirmedBy: input.actor,
-      result: 'failed',
-      failureReason: reason,
-      previewOf: preview.id,
-    });
+    await query(
+      `UPDATE slack_message_audit
+          SET result = 'failed', failure_reason = $2
+        WHERE id = $1`,
+      [auditRow, reason],
+    );
     await audit(input.actor, 'slack.send.failed', {
       previewId: preview.id,
       auditId: auditRow,
@@ -323,24 +326,42 @@ async function insertAuditRow(args: {
   failureReason: string | null;
   previewOf: string | null;
 }): Promise<string> {
-  const r = await query<{ id: string }>(
-    `INSERT INTO slack_message_audit
-       (account_id, mode, target_type, target_slack_id_or_channel,
-        message_body, confirmed_by, confirmed_at, result, failure_reason, preview_of)
-     VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,$8,$9) RETURNING id`,
-    [
-      args.accountId,
-      args.mode,
-      args.targetType,
-      args.targetSlackIdOrChannel,
-      args.messageBody,
-      args.confirmedBy,
-      args.result,
-      args.failureReason,
-      args.previewOf,
-    ],
+  try {
+    const r = await query<{ id: string }>(
+      `INSERT INTO slack_message_audit
+         (account_id, mode, target_type, target_slack_id_or_channel,
+          message_body, confirmed_by, confirmed_at, result, failure_reason, preview_of)
+       VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,$8,$9) RETURNING id`,
+      [
+        args.accountId,
+        args.mode,
+        args.targetType,
+        args.targetSlackIdOrChannel,
+        args.messageBody,
+        args.confirmedBy,
+        args.result,
+        args.failureReason,
+        args.previewOf,
+      ],
+    );
+    return r.rows[0]!.id;
+  } catch (e) {
+    if (isUniquePreviewOfViolation(e)) {
+      throw new Error(`Preview ${args.previewOf} has already been acted on.`);
+    }
+    throw e;
+  }
+}
+
+const PENDING_SEND_MARKER = '__pending_send__';
+
+function isUniquePreviewOfViolation(err: unknown): boolean {
+  return (
+    typeof err === 'object'
+    && err !== null
+    && 'code' in err
+    && (err as { code: string }).code === '23505'
   );
-  return r.rows[0]!.id;
 }
 
 export async function listRecentAudits(limit = 50): Promise<{

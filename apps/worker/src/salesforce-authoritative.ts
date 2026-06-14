@@ -27,10 +27,14 @@ export function applySalesforceAuthoritativeSnapshot(
     sfAccountIds.size > 0
       ? merged.accounts.filter((a) => sfAccountIds.has(a.accountId))
       : merged.accounts;
+  // When SF returned accounts, an empty opp payload is authoritative too —
+  // do not keep prior-snapshot opps (e.g. aged-out CloseDate rows).
   const opportunities =
     sfOpps.length > 0
       ? (sfOpps as CanonicalOpportunity[])
-      : merged.opportunities;
+      : sfAccountIds.size > 0
+        ? []
+        : merged.opportunities;
 
   return { accounts, opportunities };
 }
