@@ -23,14 +23,21 @@ export function applySalesforceAuthoritativeSnapshot(
   if (sfAccounts.length === 0 && sfOpps.length === 0) return merged;
 
   const sfAccountIds = new Set(sfAccounts.map((a) => a.accountId));
+  const sfOppIds = new Set(sfOpps.map((o) => o.opportunityId));
   const accounts =
     sfAccountIds.size > 0
       ? merged.accounts.filter((a) => sfAccountIds.has(a.accountId))
       : merged.accounts;
+  // Filter merged opportunity rows (preserving deep-merged sourceLinks /
+  // provenance from the adapter pipeline) instead of substituting the raw
+  // Salesforce adapter payload. When SF returned accounts, an empty opp
+  // payload is authoritative too — do not keep prior-snapshot opps.
   const opportunities =
-    sfOpps.length > 0
-      ? (sfOpps as CanonicalOpportunity[])
-      : merged.opportunities;
+    sfOppIds.size > 0
+      ? merged.opportunities.filter((o) => sfOppIds.has(o.opportunityId))
+      : sfAccountIds.size > 0
+        ? []
+        : merged.opportunities;
 
   return { accounts, opportunities };
 }
