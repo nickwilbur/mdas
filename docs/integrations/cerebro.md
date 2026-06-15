@@ -126,6 +126,16 @@ docker compose up -d --build worker
 
 Worker startup runs `cerebro-rest` `healthCheck()` when the adapter is active.
 
+## Account page (live Engage drill-down)
+
+When `CEREBRO_API_TOKEN` is set, `/accounts/[id]` loads live Cerebro Engage intelligence:
+
+- Account synthesis (`summary` from `POST /api/accounts/details`)
+- 30-day engagement summary (`GET /api/engagement/accounts/{id}/summary`)
+- Deep links to health risk and catalysts in Cerebro Engage
+
+This is on-demand (not snapshotted) so managers see the latest synthesis without waiting for refresh.
+
 ## Read-only invariant
 
-REST client uses GET only. `readOnlyGuard` allowlists `*.corpdata.zuora.com/api/*`. CI guard unchanged.
+REST client uses GET and read-only POST (`/api/accounts/details`). `readOnlyGuard` allowlists `*.corpdata.zuora.com/api/*`. CI guard unchanged.

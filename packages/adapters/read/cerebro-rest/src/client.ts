@@ -5,6 +5,7 @@ import type { CerebroRestCredentials } from './config.js';
 import {
   CerebroApiError as ApiError,
   type CerebroAccountDetailsBatch,
+  type CerebroAccountEngagementSummary,
   type CerebroGuideResponse,
   type CerebroRequestMeta,
   type CerebroWhoAmI,
@@ -125,6 +126,17 @@ export class CerebroRestClient {
       '/api/accounts/details',
       'cerebro:account-details',
       { salesforceAccountIds },
+    );
+  }
+
+  async getEngagementSummary(
+    salesforceAccountId: string,
+  ): Promise<{ data: CerebroAccountEngagementSummary; meta: CerebroRequestMeta }> {
+    const id = encodeURIComponent(salesforceAccountId);
+    return this.request<CerebroAccountEngagementSummary>(
+      'GET',
+      `/api/engagement/accounts/${id}/summary`,
+      'cerebro:engagement-summary',
     );
   }
 }

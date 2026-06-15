@@ -17,6 +17,8 @@ import {
 } from '@/components/ui';
 import { RiskScoreExplainer } from '@/components/RiskScoreExplainer';
 import { AccountGleanButton } from '@/components/AccountGleanButton';
+import { CerebroEngagePanel } from '@/components/CerebroEngagePanel';
+import { fetchCerebroAccountIntel } from '@/lib/cerebro-account-intel';
 import type { AdapterSource } from '@mdas/canonical';
 
 // Sources we expect to have run for an Expand 3 account when adapters
@@ -59,6 +61,8 @@ export default async function AccountPage({
   if (!v) notFound();
 
   const a = v.account;
+  const sfId = a.salesforceAccountId || a.accountId;
+  const cerebroIntel = await fetchCerebroAccountIntel(sfId);
   const opps = v.opportunities;
   const isExec = mode === 'exec';
 
@@ -171,6 +175,12 @@ export default async function AccountPage({
           </div>
         )}
       </Card>
+
+      {cerebroIntel ? (
+        <Card title="Cerebro Engage Intelligence">
+          <CerebroEngagePanel intel={cerebroIntel} execMode={isExec} />
+        </Card>
+      ) : null}
 
       <Card
         title="CSE Sentiment Commentary"

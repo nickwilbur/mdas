@@ -36,8 +36,33 @@ export interface CerebroCustomerState {
   asOfDate?: string;
 }
 
+export interface CerebroAccountSummary {
+  headline?: string | null;
+  whatChanged?: string[];
+  suggestedFocus?: string[];
+  risksAndConcerns?: string[];
+  asOfDate?: string;
+}
+
+export interface CerebroTeamMemberUser {
+  name?: string;
+  email?: string;
+}
+
+export interface CerebroTeamMemberEntry {
+  user?: CerebroTeamMemberUser;
+  role?: string;
+}
+
+export interface CerebroAccountTeam {
+  members?: CerebroTeamMemberEntry[];
+  asOfDate?: string;
+}
+
 export interface CerebroAccountDetails {
   account?: CerebroAccountRef;
+  team?: CerebroAccountTeam | null;
+  summary?: CerebroAccountSummary | null;
   customerState?: CerebroCustomerState | null;
   asOfDate?: string;
 }
@@ -45,6 +70,34 @@ export interface CerebroAccountDetails {
 export interface CerebroAccountDetailsBatch {
   items: CerebroAccountDetails[];
   notFound: string[];
+}
+
+export interface CerebroEngagementTypeSummary {
+  engagementType?: string;
+  eventCount?: number;
+  totalScore?: number;
+  averageScore?: number;
+  latestEngagementDate?: string | null;
+}
+
+export interface CerebroEngagementEvent {
+  engagementDate?: string;
+  engagementType?: string;
+  score?: number;
+  scoreReasons?: string[];
+}
+
+export interface CerebroAccountEngagementSummary {
+  salesforceAccountId?: string;
+  accountName?: string;
+  daysBack?: number;
+  totalEvents?: number;
+  totalScore?: number;
+  averageScore?: number;
+  latestEngagementDate?: string | null;
+  engagementLevel?: string;
+  topEngagementTypes?: CerebroEngagementTypeSummary[];
+  recentEvents?: CerebroEngagementEvent[];
 }
 
 /** Flat legacy health-risk payload (Glean-style field names). */
