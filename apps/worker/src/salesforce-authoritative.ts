@@ -23,14 +23,22 @@ export function applySalesforceAuthoritativeSnapshot(
   if (sfAccounts.length === 0 && sfOpps.length === 0) return merged;
 
   const sfAccountIds = new Set(sfAccounts.map((a) => a.accountId));
+  const sfOppIds = new Set(sfOpps.map((o) => o.opportunityId));
   const accounts =
     sfAccountIds.size > 0
       ? merged.accounts.filter((a) => sfAccountIds.has(a.accountId))
       : merged.accounts;
+  // Mirror the account path: keep merged opportunity rows (SF field
+  // values + provenance from prior adapters) but drop anything SF no
+  // longer returns. Raw `sfOpps` would discard merged sourceLinks;
+  // when SF succeeds with accounts but an empty opp payload, filter
+  // by account id so orphan opps for dropped accounts do not linger.
   const opportunities =
-    sfOpps.length > 0
-      ? (sfOpps as CanonicalOpportunity[])
-      : merged.opportunities;
+    sfOppIds.size > 0
+      ? merged.opportunities.filter((o) => sfOppIds.has(o.opportunityId))
+      : sfAccountIds.size > 0
+        ? merged.opportunities.filter((o) => sfAccountIds.has(o.accountId))
+        : merged.opportunities;
 
   return { accounts, opportunities };
 }
