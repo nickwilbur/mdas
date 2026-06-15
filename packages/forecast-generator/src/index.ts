@@ -1026,12 +1026,23 @@ export function computeQuarterKpis(
   asOfDate: string,
   quarter: 'current' | 'next',
   planUSD: number | null,
+  clariRows?: ClariManagerForecastRow[],
 ): QuarterKpiSnapshot {
   const buckets = bucketByQuarter(views, asOfDate);
   const bucket = quarter === 'current' ? buckets.current : buckets.next;
-  const flash = mdasAccountFlashChurnUSD(bucket.rows);
+  const mdasFlash = mdasAccountFlashChurnUSD(bucket.rows);
   const total = totalRisk(bucket.rows);
-  const hedgeUSD = hedge(bucket.rows);
+  const mdasHedgeUSD = hedge(bucket.rows);
+  const clariFlash =
+    clariRows && bucket.key
+      ? clariSelectionForQuarter(clariRows, bucket.key, 'Churn/Downsell Flash')
+      : null;
+  const clariHedge =
+    clariRows && bucket.key
+      ? clariSelectionForQuarter(clariRows, bucket.key, 'Hedge')
+      : null;
+  const flash = clariFlash?.clariForecastValue ?? mdasFlash;
+  const hedgeUSD = clariHedge?.clariForecastValue ?? mdasHedgeUSD;
   const uniqueAccounts = new Set<string>();
   let redCount = 0;
   let yellowCount = 0;

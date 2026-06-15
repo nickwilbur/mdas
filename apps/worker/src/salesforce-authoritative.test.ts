@@ -35,4 +35,42 @@ describe('applySalesforceAuthoritativeSnapshot', () => {
     };
     expect(applySalesforceAuthoritativeSnapshot(merged, {})).toBe(merged);
   });
+
+  it('drops orphan opportunities when SF returns accounts but no opps', () => {
+    const merged = {
+      accounts: [accountFixture('A1'), accountFixture('STALE')],
+      opportunities: [
+        { opportunityId: 'O-stale', accountId: 'STALE' } as never,
+        { opportunityId: 'O-live', accountId: 'A1' } as never,
+      ],
+    };
+    const sf = {
+      accounts: [accountFixture('A1')],
+      opportunities: [],
+    };
+    const out = applySalesforceAuthoritativeSnapshot(merged, sf);
+    expect(out.accounts.map((a) => a.accountId)).toEqual(['A1']);
+    expect(out.opportunities.map((o) => o.opportunityId)).toEqual(['O-live']);
+  });
+
+  it('keeps merged opportunity provenance when filtering to the SF opp set', () => {
+    const mergedOpp = {
+      opportunityId: 'O-live',
+      accountId: 'A1',
+      sourceLinks: [{ source: 'local-snapshots', url: 'https://example.com/prior' }],
+    } as never;
+    const merged = {
+      accounts: [accountFixture('A1')],
+      opportunities: [mergedOpp],
+    };
+    const sf = {
+      accounts: [accountFixture('A1')],
+      opportunities: [{ opportunityId: 'O-live', accountId: 'A1' } as never],
+    };
+    const out = applySalesforceAuthoritativeSnapshot(merged, sf);
+    expect(out.opportunities).toHaveLength(1);
+    expect(out.opportunities[0]!.sourceLinks).toEqual([
+      { source: 'local-snapshots', url: 'https://example.com/prior' },
+    ]);
+  });
 });
