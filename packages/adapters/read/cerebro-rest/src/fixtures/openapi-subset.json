@@ -1,0 +1,35 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cerebro API (sanitized subset for MDAS tests)",
+    "version": "0.0.0-test"
+  },
+  "paths": {
+    "/api/whoami": {
+      "get": {
+        "operationId": "whoami",
+        "tags": ["auth"]
+      }
+    },
+    "/api/guide/api": {
+      "get": {
+        "operationId": "getApiGuide",
+        "tags": ["guide"]
+      }
+    },
+    "/api/accounts/details": {
+      "post": {
+        "operationId": "postAccountDetails",
+        "tags": ["accounts"]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

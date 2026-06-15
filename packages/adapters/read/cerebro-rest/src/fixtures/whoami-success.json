@@ -1,0 +1,5 @@
+{
+  "email": "engineer@zuora.com",
+  "scopes": ["read:health", "read:accounts"],
+  "clientId": "api-token"
+}

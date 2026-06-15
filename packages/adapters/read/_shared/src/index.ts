@@ -15,6 +15,9 @@ const ALLOWED_POST_PATHS: { host: string; pathRegex: RegExp }[] = [
   { host: '*.zuora.com', pathRegex: /\/(query|api\/data-query)/ },
   // Zuora Remote MCP (POST is the JSON-RPC transport; tool gating happens upstream by allowlist)
   { host: '*.zuora.com', pathRegex: /\/mcp(\/|$)/ },
+  // Cerebro Engage REST (read-only GET; bearer token)
+  { host: '*.corpdata.zuora.com', pathRegex: /^\/api\// },
+  { host: '*.zuora.com', pathRegex: /^\/api\// },
 ];
 
 function hostMatches(pattern: string, host: string): boolean {

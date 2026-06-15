@@ -1,113 +1,131 @@
 # Cerebro Integration
 
-MDAS reads Cerebro health-risk data via Glean — Cerebro has no public REST API, so Glean's federated search is the only programmatic access path.
+MDAS enriches accounts with Cerebro health-risk data using a **direct REST adapter** when a Cerebro Engage API token is configured, with **Glean federated search** as fallback.
 
 ## Architecture
 
 ```
-Cerebro web UI                       Cerebro Glean datasource
-(no public API)         ───────►    (app:cerebro, type:healthrisk)
-                                              │
-                                              ▼
-                                     packages/adapters/read/cerebro-glean
-                                              │
-                                              ▼
-                                     CanonicalAccount.cerebroRisks
-                                     CanonicalAccount.cerebroSubMetrics
+Cerebro Engage API token          Glean MCP (fallback)
+        │                                  │
+        ▼                                  ▼
+packages/adapters/read/cerebro-rest   packages/adapters/read/cerebro-glean
+        │                                  │
+        └──────────────┬───────────────────┘
+                       ▼
+              CanonicalAccount.cerebroRisks
+              CanonicalAccount.cerebroRiskCategory  ← REST may populate
+              CanonicalAccount.cerebroRiskAnalysis    ← REST may populate
+              CanonicalAccount.cerebroSubMetrics
 ```
 
-## What Cerebro's Glean index exposes
+When `ADAPTER_CEREBRO=real`:
 
-Verified via `mcp2_search` and `mcp2_read_document` on 2026-04-28. Each Cerebro Health Risk page is one Glean document (`type: healthrisk`) with the following structured fields exposed via `richDocumentData.facets.keywordFacets` (canonical-cased) and `matchingFilters` (lowercase):
+1. **`cerebro-rest`** runs first if `CEREBRO_API_TOKEN` is set (production path).
+2. **`cerebro-glean`** runs second; fills gaps when REST creds are missing or per-account REST 404.
 
-**Identity**
-- `crSalesforceAccountId` — primary join key into `snapshot_account.account_id`
-- `crCustomerName` — for cross-checking the SFDC `Account.Name`
+See also: [Cerebro connection analysis](../engineering/cerebro-connection-analysis.md).
 
-**The 7 risk booleans** (mapped to `CanonicalAccount.cerebroRisks`)
-- `crEngagementRisk`
-- `crExpertiseRisk`
-- `crLegacyTechRisk`
-- `crPricingRisk`
-- `crShareRisk`
-- `crSuiteRisk`
-- `crUtilizationRisk`
+## Required access
 
-**Sub-metrics** (mapped to `CanonicalAccount.cerebroSubMetrics`, via `richDocumentData.facets.intFacets`)
-- `crProjectedBillingUtilization` (%)
-- `crProjectedRevenueUtilization` (%)
-- `crExecutiveMeetingCount`
-- `crBillingProductShare` / `crRevenueProductShare` (%)
-- `crOrdersApiUsage` (%)
-- `crEmailedInvoices`, `crEpaymentsProcessed`, `crInvoicesPosted`, `crJournalEntries`, `crOrders`, `crQuotes`
-- `crRevenueAmount`, `crBillingCost`, `crRevenueCost`, `crDso`
+| Requirement | Notes |
+|---|---|
+| **Cerebro Engage** | Web UI + API token minting at `/settings/api-tokens` |
+| **Corp network** | VPN / Zscaler; group `AMG-Zscaler-Cerebro` for warehouse access |
+| **API token** | Long-lived bearer; show-once at creation — store in secret manager / `.env` |
 
-**Has-flags** (mapped into `cerebroSubMetrics` as booleans)
-- `crHasEnhancedServices`, `crHasEsa`, `crHasInvoiceSettlement`, `crHasMs`, `crHasPes`, `crHasTam`, `crHasUno`, `crReportingUse`
+Without Cerebro Engage access, the REST adapter no-ops and Glean remains the only path (Risk Category / Analysis still absent from Glean index).
 
-**Freshness**
-- `updateTime` on the Glean document — surfaced as `lastFetchedFromSource.cerebro` and renderable as a "Cerebro indexed at" pill on the Account Drill-In (PR-5).
+## Configuration
 
-## What Cerebro's Glean index does NOT expose
+```bash
+ADAPTER_CEREBRO=real
+CEREBRO_API_TOKEN=...          # Cerebro Engage → Settings → API Tokens
+CEREBRO_BASE_URL=https://cerebro-mcp.corpdata.zuora.com
 
-> **Risk Category** (`Low` / `Medium` / `High` / `Critical`) and **Risk Analysis** (the prose paragraph describing why a customer is at risk) — verified absent from `app:cerebro` documents in both `search` and `read_document` responses.
+# Fallback (when REST token absent or for gap-fill):
+GLEAN_MCP_TOKEN=...
+GLEAN_MCP_BASE_URL=https://api.glean.com
+```
 
-These two fields appear to live in a curated weekly Google Sheet (`Cerebro Accounts with NASE`) that a separate process generates. **MDAS does not read from this sheet today.** Risk Category passthrough therefore activates the scoring layer's documented fallback path:
+Verify REST auth:
 
-```ts
-// packages/canonical/src/index.ts
-export interface RiskIdentifier {
-  level: CerebroRiskCategory | 'Unknown';
-  source: 'cerebro' | 'fallback';   // ◄ 'fallback' until a sheet adapter lands
-  rationale: string;
+```bash
+curl -s -H "Authorization: Bearer $CEREBRO_API_TOKEN" \
+  "$CEREBRO_BASE_URL/api/whoami"
+```
+
+Fetch live REST guide (endpoint shapes, pagination, errors):
+
+```bash
+curl -s -H "Authorization: Bearer $CEREBRO_API_TOKEN" \
+  "$CEREBRO_BASE_URL/api/guide/api"
+```
+
+Interactive OpenAPI: `$CEREBRO_BASE_URL/docs`
+
+## MCP (IDE / discovery only)
+
+MCP endpoint: `https://cerebro-mcp.corpdata.zuora.com/mcp`
+
+- Authenticates via **Cerebro Engage OAuth** on first Cursor connect.
+- Use for tool/capability discovery — **not** used by the MDAS worker.
+- Add to user `~/.cursor/mcp.json`:
+
+```json
+"zuora-cerebro": {
+  "url": "https://cerebro-mcp.corpdata.zuora.com/mcp"
 }
 ```
 
-Per Section 10 of the refactor prompt: *"Risk Category is a direct passthrough from Cerebro... The fallback (when Cerebro data is missing) is the only place a derivation happens."* The current behavior is consistent with that rule — the Cerebro Glean index simply does not carry the value.
+Repo allowlist: `mcp.config.json` → `zuora-cerebro` (empty tool list until authenticated discovery).
 
-### Future work (PR-4.b, awaiting decision)
+## What Cerebro REST exposes (health risk)
 
-A Google-Sheet adapter (`packages/adapters/read/cerebro-sheet`) would:
-1. Read the canonical "Cerebro Accounts with NASE" sheet via Glean's gdrive datasource
-2. Parse `Risk Category` (column) and `Risk Analysis` (column) verbatim, keyed by SFDC Account ID
-3. Populate `CanonicalAccount.cerebroRiskCategory` and `cerebroRiskAnalysis` directly
-4. Emit a `SourceLink { source: 'cerebro', label: 'Risk Analysis (NASE export)', url: <sheet>, citationId, snippetIndex }`
+Mapped to `CanonicalAccount` by `packages/adapters/read/cerebro-rest/src/mapper.ts`:
 
-This is deferred until you confirm: (a) the canonical sheet URL, (b) refresh cadence, (c) whether the data is published-readable to the worker's Glean credentials.
+**Risk category / analysis** (REST path — not in Glean index)
 
-## Auth + rate limits
+- `cerebroRiskCategory`: Low | Medium | High | Critical
+- `cerebroRiskAnalysis`: prose paragraph
 
-Same Glean credentials as the rest of the integration:
+**Seven risk booleans** (`cerebroRisks`)
 
-| Env var | Value |
-|---|---|
-| `GLEAN_MCP_TOKEN` | Bearer token |
-| `GLEAN_MCP_BASE_URL` | e.g., `https://api.glean.com` |
+- Utilization, Engagement, Suite, Share, Legacy Tech, Expertise, Pricing
 
-Glean rate limits are not formally documented to MDAS; the GleanClient maintains an in-memory per-refresh cache (`docCache`) so that re-fetching the same Cerebro doc within a single refresh is free. Adapters share a single `GleanClient` instance per refresh via the planned `RefreshContext.glean` slot (see PR-5).
+**Sub-metrics** (`cerebroSubMetrics`)
 
-## Read-only invariant
+- PBU/PRU %, executive meeting count, product share %, API usage, invoice/ePayment counts, revenue amounts, has-flags (ESA, TAM, UNO, …)
 
-The GleanClient at `packages/adapters/read/_shared/src/glean.ts` exposes only `search`, `searchAll`, `getDocuments`, and `healthCheck`. No write methods. All POSTs route through `readOnlyGuard` which only permits Glean's `search`, `chat`, `getdocument`, and `documents` paths. CI guard `scripts/ci-guard.mjs` check #4 greps adapter source for any `glean_(create|update|delete|post|send|upsert)_*` patterns; none exist today.
+**Provenance**
+
+- `sourceLinks[]` with deep link to `cerebro.na.zuora.com/.../health`
+- `lastFetchedFromSource.cerebro`
+
+## Glean fallback limitations
+
+Glean `app:cerebro` documents (`type:healthrisk`) omit Risk Category and Risk Analysis. When only Glean is available, scoring uses the **fallback** heuristic (`via fallback` badge in UI).
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| REST adapter returns empty | No `CEREBRO_API_TOKEN` | Mint token in Cerebro Engage |
+| `401` on whoami | Expired/invalid token | Re-mint token |
+| `403` | Insufficient Engage permissions | Request access from Corporate Data |
+| Network / TLS errors | VPN / Zscaler | Join `AMG-Zscaler-Cerebro`; see README corp TLS section |
+| MCP won't connect in Cursor | No Cerebro Engage access | Complete Engage login / OAuth |
+| Risk Category still `via fallback` | Only Glean path active | Set `CEREBRO_API_TOKEN` and re-refresh |
 
 ## Activation
 
 ```bash
 echo "ADAPTER_CEREBRO=real" >> .env
-echo "GLEAN_MCP_TOKEN=..." >> .env
-echo "GLEAN_MCP_BASE_URL=https://api.glean.com" >> .env
+echo "CEREBRO_API_TOKEN=..." >> .env
 docker compose up -d --build worker
 ```
 
-Trigger a refresh, then verify in Postgres:
+Worker startup runs `cerebro-rest` `healthCheck()` when the adapter is active.
 
-```sql
-SELECT account_id,
-       payload->'cerebroRisks',
-       payload->'cerebroSubMetrics'->>'crProjectedBillingUtilization',
-       payload->'lastFetchedFromSource'->>'cerebro'
-  FROM snapshot_account
- WHERE refresh_id = (SELECT id FROM refresh_runs WHERE status='success' ORDER BY started_at DESC LIMIT 1)
-   AND payload->'lastFetchedFromSource' ? 'cerebro'
- LIMIT 5;
-```
+## Read-only invariant
+
+REST client uses GET only. `readOnlyGuard` allowlists `*.corpdata.zuora.com/api/*`. CI guard unchanged.

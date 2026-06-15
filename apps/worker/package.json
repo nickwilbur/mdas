@@ -14,6 +14,7 @@
     "@mdas/scoring": "*",
     "@mdas/adapter-salesforce": "*",
     "@mdas/adapter-cerebro-glean": "*",
+    "@mdas/adapter-cerebro-rest": "*",
     "@mdas/adapter-gainsight": "*",
     "@mdas/adapter-staircase-gmail": "*",
     "@mdas/adapter-zuora-mcp": "*",

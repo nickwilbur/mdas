@@ -1,0 +1,17 @@
+{
+  "crSalesforceAccountId": "0017000000FAKEACE",
+  "crCustomerName": "Example Corp",
+  "crRiskCategory": "High",
+  "crRiskAnalysis": "Executive engagement gap with renewal in 90 days.",
+  "crEngagementRisk": true,
+  "crExpertiseRisk": false,
+  "crLegacyTechRisk": false,
+  "crPricingRisk": false,
+  "crShareRisk": true,
+  "crSuiteRisk": false,
+  "crUtilizationRisk": true,
+  "crProjectedBillingUtilization": 54,
+  "crExecutiveMeetingCount": 2,
+  "crHasUno": true,
+  "updatedAt": "2026-06-01T12:00:00.000Z"
+}

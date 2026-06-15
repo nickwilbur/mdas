@@ -33,6 +33,7 @@ import {
 import { log } from './logger.js';
 import { ProgressTracker } from './progress-tracker.js';
 import { salesforceAdapter } from '@mdas/adapter-salesforce';
+import { cerebroRestAdapter } from '@mdas/adapter-cerebro-rest';
 import { cerebroGleanAdapter } from '@mdas/adapter-cerebro-glean';
 import { gainsightAdapter } from '@mdas/adapter-gainsight';
 import { staircaseGmailAdapter } from '@mdas/adapter-staircase-gmail';
@@ -67,6 +68,8 @@ export { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative
 // pipeline; anything else / unset → omitted, no mock fallback).
 // Order in this array determines execution order.
 const REAL_ADAPTERS: ReadonlyArray<readonly [string, ReadAdapter]> = [
+  // REST first (direct Cerebro Engage API token); Glean fallback second.
+  ['ADAPTER_CEREBRO', cerebroRestAdapter],
   ['ADAPTER_CEREBRO', cerebroGleanAdapter],
   ['ADAPTER_GAINSIGHT', gainsightAdapter],
   ['ADAPTER_GLEAN_MCP', gleanMcpAdapter],

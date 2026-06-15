@@ -5,8 +5,10 @@
 // Persona ask: "which Tier-1 ARR accounts have stale Cerebro analysis
 // older than 7 days?" Answer is now reachable in one query and one click.
 import { getDataQuality } from '@/lib/read-model';
+import { getCerebroConnectorStatuses } from '@/lib/cerebro-connectors';
 import { Card, RelativeTime, StatTile, fmtUSD } from '@/components/ui';
 import { RefreshButton } from '@/components/RefreshButton';
+import { CerebroConnectorsPanel } from './CerebroConnectorsPanel';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +20,10 @@ const STATE_COLOR: Record<'fresh' | 'stale' | 'error' | 'missing', string> = {
 };
 
 export default async function DataQualityPage(): Promise<JSX.Element> {
-  const dq = await getDataQuality();
+  const [dq, cerebroConnectors] = await Promise.all([
+    getDataQuality(),
+    getCerebroConnectorStatuses(),
+  ]);
 
   if (!dq.refreshId) {
     return (
@@ -59,6 +64,61 @@ export default async function DataQualityPage(): Promise<JSX.Element> {
           sub="critical-data presence checks"
         />
       </div>
+
+      <Card title="Cerebro connectors (Cerebro Engage vs Cerebro / Glean)">
+        <CerebroConnectorsPanel initialConnectors={cerebroConnectors} />
+      </Card>
+
+      {dq.cerebroSnapshot ? (
+        <Card title="Cerebro data path in latest snapshot">
+          <p className="mb-3 text-xs text-gray-600">
+            How Expand 3 accounts were enriched on the last refresh. Risk
+            Category implies the <strong>Cerebro Engage REST</strong> path ran.
+            Booleans-only usually means <strong>Cerebro via Glean</strong>{' '}
+            (or REST without category in the payload).
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-left text-xs uppercase text-gray-600">
+                <tr>
+                  <th className="px-3 py-2">Path signal</th>
+                  <th className="px-3 py-2 text-right">Accounts</th>
+                  <th className="px-3 py-2 text-right">ARR</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-t border-gray-100">
+                  <td className="px-3 py-2">Engage REST — Risk Category present</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {dq.cerebroSnapshot.withRiskCategory}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {fmtUSD(dq.cerebroSnapshot.withRiskCategoryARR)}
+                  </td>
+                </tr>
+                <tr className="border-t border-gray-100">
+                  <td className="px-3 py-2">Glean / booleans only (no Risk Category)</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {dq.cerebroSnapshot.withBooleansOnly}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {fmtUSD(dq.cerebroSnapshot.withBooleansOnlyARR)}
+                  </td>
+                </tr>
+                <tr className="border-t border-gray-100">
+                  <td className="px-3 py-2">No Cerebro data</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {dq.cerebroSnapshot.withNeither}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {fmtUSD(dq.cerebroSnapshot.withNeitherARR)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      ) : null}
 
       <Card title="Per-source freshness × ARR">
         <p className="mb-3 text-xs text-gray-600">

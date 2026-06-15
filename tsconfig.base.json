@@ -26,6 +26,7 @@
       "@mdas/adapters-mock": ["packages/adapters/mock/src/index.ts"],
       "@mdas/adapter-salesforce": ["packages/adapters/read/salesforce/src/index.ts"],
       "@mdas/adapter-cerebro-glean": ["packages/adapters/read/cerebro-glean/src/index.ts"],
+      "@mdas/adapter-cerebro-rest": ["packages/adapters/read/cerebro-rest/src/index.ts"],
       "@mdas/adapter-gainsight": ["packages/adapters/read/gainsight/src/index.ts"],
       "@mdas/adapter-staircase-gmail": ["packages/adapters/read/staircase-gmail/src/index.ts"],
       "@mdas/adapter-zuora-mcp": ["packages/adapters/read/zuora-mcp/src/index.ts"],

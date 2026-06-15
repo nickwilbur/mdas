@@ -36,6 +36,8 @@ services:
       AUTH_MODE: ${AUTH_MODE:-none}
       GLEAN_MCP_TOKEN: ${GLEAN_MCP_TOKEN-}
       GLEAN_MCP_BASE_URL: ${GLEAN_MCP_BASE_URL-}
+      CEREBRO_API_TOKEN: ${CEREBRO_API_TOKEN-}
+      CEREBRO_BASE_URL: ${CEREBRO_BASE_URL-}
       # Corporate TLS interception bundle (same rationale as the
       # worker service below — Glean's *.glean.com endpoints often
       # transit Zscaler in corp networks).
@@ -72,6 +74,8 @@ services:
       SALESFORCE_INSTANCE_URL: ${SALESFORCE_INSTANCE_URL-}
       GLEAN_MCP_TOKEN: ${GLEAN_MCP_TOKEN-}
       GLEAN_MCP_BASE_URL: ${GLEAN_MCP_BASE_URL-}
+      CEREBRO_API_TOKEN: ${CEREBRO_API_TOKEN-}
+      CEREBRO_BASE_URL: ${CEREBRO_BASE_URL:-https://cerebro-mcp.corpdata.zuora.com}
       GAINSIGHT_GLEAN_CONNECTOR: ${GAINSIGHT_GLEAN_CONNECTOR-true}
       ZUORA_MCP_CLIENT_ID: ${ZUORA_MCP_CLIENT_ID-}
       ZUORA_MCP_CLIENT_SECRET: ${ZUORA_MCP_CLIENT_SECRET-}

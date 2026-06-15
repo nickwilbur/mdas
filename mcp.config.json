@@ -12,6 +12,13 @@
         "run_report"
       ]
     },
+    "zuora-cerebro": {
+      "baseUrl": "https://cerebro-mcp.corpdata.zuora.com/mcp",
+      "transport": "http",
+      "auth": "oauth2_authorization_code",
+      "comment": "Discovery/IDE only. Production MDAS worker uses CEREBRO_API_TOKEN REST. Requires Cerebro Engage access on first connect.",
+      "allowedTools": []
+    },
     "glean-mcp": {
       "transport": "http",
       "auth": "bearer",

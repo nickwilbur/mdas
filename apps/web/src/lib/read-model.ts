@@ -14,6 +14,7 @@ import {
 } from '@mdas/db';
 import type { AccountView, CanonicalOpportunity, ChangeEvent } from '@mdas/canonical';
 import { diffAll, computeRiskScore } from '@mdas/scoring';
+import { summarizeCerebroSnapshotQuality } from '@/lib/cerebro-connectors';
 
 // PR-B1 — enrich views with the composite Risk Score at read time.
 //
@@ -212,6 +213,11 @@ export interface DataQualitySummary {
   totalARR: number;
   perSource: SourceQualityRow[];
   perField: FieldQualityRow[];
+  cerebroSnapshot: ReturnType<typeof summarizeCerebroSnapshotQuality> | null;
+}
+
+function asString(v: unknown): string {
+  return typeof v === 'string' ? v : '';
 }
 
 function dqStateForIso(iso: string | null, errored: boolean, asOf: number): DataQualityState {
@@ -232,14 +238,18 @@ function blank(): SourceQualityRow {
   };
 }
 
-function asString(v: unknown): string {
-  return typeof v === 'string' ? v : '';
-}
-
 export async function getDataQuality(): Promise<DataQualitySummary> {
   const run = await latestSuccessfulRun();
   if (!run) {
-    return { refreshId: null, startedAt: null, totalAccounts: 0, totalARR: 0, perSource: [], perField: [] };
+    return {
+      refreshId: null,
+      startedAt: null,
+      totalAccounts: 0,
+      totalARR: 0,
+      perSource: [],
+      perField: [],
+      cerebroSnapshot: null,
+    };
   }
   const [accounts, opps] = await Promise.all([
     readSnapshotAccounts(run.id),
@@ -319,6 +329,18 @@ export async function getDataQuality(): Promise<DataQualitySummary> {
       },
     },
     {
+      field: 'cerebroRiskCategory',
+      description:
+        'No Cerebro Risk Category — requires Cerebro Engage REST (not in Glean index).',
+      missing: (a) => !a.cerebroRiskCategory,
+    },
+    {
+      field: 'cerebroRiskAnalysis',
+      description:
+        'No Cerebro Risk Analysis prose — requires Cerebro Engage REST.',
+      missing: (a) => !asString(a.cerebroRiskAnalysis).trim(),
+    },
+    {
       field: 'recentMeetings',
       description: 'No recent meetings recorded.',
       missing: (a) => (a.recentMeetings?.length ?? 0) === 0,
@@ -352,6 +374,7 @@ export async function getDataQuality(): Promise<DataQualitySummary> {
     totalARR,
     perSource: Array.from(bySource.values()),
     perField,
+    cerebroSnapshot: summarizeCerebroSnapshotQuality(inFranchise),
   };
 }
 

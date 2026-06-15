@@ -1,0 +1,33 @@
+{
+  "items": [
+    {
+      "account": {
+        "salesforceAccountId": "0017000000FAKEACE",
+        "accountName": "Example Corp",
+        "accountType": "customer"
+      },
+      "customerState": {
+        "arr": 125000,
+        "productLineCount": 2,
+        "risks": {
+          "riskCategory": "High",
+          "riskAnalysis": "Executive engagement gap with renewal in 90 days.",
+          "riskCategoryRationale": "Elevated share and utilization risks.",
+          "asOfDate": "2026-06-01"
+        },
+        "healthRisks": [
+          { "name": "utilization", "atRisk": true, "details": "Billing Projected Utilization: 54%" },
+          { "name": "share", "atRisk": true, "details": "Billing Product Share: 13%" },
+          { "name": "engagement", "atRisk": true, "details": "Executive Meetings: 2" },
+          { "name": "pricing", "atRisk": false, "details": "Within threshold" },
+          { "name": "legacyTech", "atRisk": false, "details": "Invoice Settlement: True" },
+          { "name": "suite", "atRisk": false, "details": "Single product line" },
+          { "name": "expertise", "atRisk": false, "details": "TAM assigned" }
+        ],
+        "asOfDate": "2026-06-01"
+      },
+      "asOfDate": "2026-06-01"
+    }
+  ],
+  "notFound": []
+}

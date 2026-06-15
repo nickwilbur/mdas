@@ -14,6 +14,8 @@
     "lucide-react": "^0.414.0",
     "clsx": "^2.1.1",
     "@mdas/adapter-shared": "*",
+    "@mdas/adapter-cerebro-rest": "*",
+    "@mdas/adapter-cerebro-glean": "*",
     "@mdas/canonical": "*",
     "@mdas/db": "*",
     "@mdas/scoring": "*",
