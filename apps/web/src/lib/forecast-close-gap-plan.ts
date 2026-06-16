@@ -25,17 +25,17 @@ import { gleanForRequest } from './glean-server';
 import type { GleanChatRequestMessage } from '@mdas/adapter-shared/glean';
 import {
   closeGapPrimaryOwner,
-  resolveCloseGapOwner,
   type CloseGapAccountContext,
   type CloseGapActionPlan,
-  type CloseGapActionStep,
 } from '@mdas/forecast-generator';
 import { cleanGleanChatReply } from './clean-glean-chat-reply';
+import {
+  MAX_CLOSE_GAP_ACTION_CHARS,
+  MAX_CLOSE_GAP_STEPS,
+  parseCloseGapActionSteps,
+} from './forecast-close-gap-plan-core';
 
 const CONCURRENCY = 4;
-const MAX_STEPS = 4;
-const MAX_ACTION_CHARS = 180;
-const MAX_OWNER_CHARS = 80;
 
 function unavailable(reason: string | undefined): CloseGapActionPlan {
   const cleaned = (reason ?? '').trim().replace(/\s+/g, ' ').slice(0, 200);
@@ -100,8 +100,8 @@ function buildPrompt(
     `  - Account plans and CSE notes in Gainsight / Salesforce`,
     `  - Meeting transcripts from Zoom / Gong with this customer`,
     ``,
-    `OUTPUT FORMAT — strict JSON array, no markdown, no preamble. 2–${MAX_STEPS} steps, ordered by leverage (highest-impact action first). Each step:`,
-    `  {"owner": "${primaryOwner}", "action": "<concrete next move, ≤${MAX_ACTION_CHARS} chars, ideally with a timeframe>"}`,
+    `OUTPUT FORMAT — strict JSON array, no markdown, no preamble. 2–${MAX_CLOSE_GAP_STEPS} steps, ordered by leverage (highest-impact action first). Each step:`,
+    `  {"owner": "${primaryOwner}", "action": "<concrete next move, ≤${MAX_CLOSE_GAP_ACTION_CHARS} chars, ideally with a timeframe>"}`,
     ``,
     `Example shape (note: same owner on every line):`,
     `[`,
@@ -111,52 +111,6 @@ function buildPrompt(
     ``,
     `Ground each action in a real signal where possible (Slack, email, account plan, meeting) but do NOT cite URLs, do NOT invent details, and do NOT use note authors as the "owner". Reply with ONLY the JSON array.`,
   ].join('\n');
-}
-
-/**
- * Strict parser + validator for one account's reply. Drops the
- * surrounding markdown fence if the model added one, parses JSON,
- * keeps only well-formed {owner, action} entries, caps step count and
- * field lengths. Returns null when nothing usable parsed so the caller
- * can fall back to a stale-marker.
- */
-function parseSteps(
-  raw: string,
-  ctx: CloseGapAccountContext,
-): CloseGapActionStep[] | null {
-  let payload = raw.trim();
-  const fence = payload.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/);
-  if (fence) payload = fence[1]!.trim();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed)) return null;
-
-  const cap = (s: string, max: number) =>
-    s.length <= max ? s : s.slice(0, max).trimEnd() + '…';
-
-  const out: CloseGapActionStep[] = [];
-  for (const entry of parsed) {
-    if (out.length >= MAX_STEPS) break;
-    if (!entry || typeof entry !== 'object') continue;
-    const e = entry as { owner?: unknown; action?: unknown };
-    if (typeof e.action !== 'string') continue;
-    const action = e.action.trim();
-    if (!action) continue;
-    const ownerRaw = typeof e.owner === 'string' ? e.owner.trim() : '';
-    // Always stamp the account's Assigned CSE — ignore Glean's owner
-    // field except to normalize SFDC User Id → name when it matches CSE.
-    const owner = cap(resolveCloseGapOwner(ownerRaw, ctx), MAX_OWNER_CHARS);
-    out.push({
-      owner,
-      action: cap(action, MAX_ACTION_CHARS),
-    });
-  }
-  return out.length > 0 ? out : null;
 }
 
 /**
@@ -223,7 +177,7 @@ async function runOneAccount(
     const reply = await client.chat({ messages, stream: false });
     const text = cleanGleanChatReply(reply.text);
     if (!text) return unavailable('empty reply from Glean chat');
-    const steps = parseSteps(text, ctx);
+    const steps = parseCloseGapActionSteps(text, ctx);
     if (!steps) return unavailable('Glean returned no parseable action plan');
     return { steps };
   } catch (err) {
