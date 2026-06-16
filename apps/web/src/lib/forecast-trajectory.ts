@@ -168,6 +168,7 @@ export async function loadForecastTrajectory(
         asOfDate,
         'current',
         resolvedCurrentPlan ?? null,
+        clariRows.length > 0 ? clariRows : undefined,
       );
       if (currentKpis.fiscalQuarterKey) {
         currentPoints.push({
@@ -192,6 +193,7 @@ export async function loadForecastTrajectory(
         asOfDate,
         'next',
         plan?.nextQuarterUSD ?? clariNextPlan ?? null,
+        clariRows.length > 0 ? clariRows : undefined,
       );
       if (nextKpis.fiscalQuarterKey) {
         nextPoints.push({

@@ -43,6 +43,16 @@ export interface ForecastGenerateResult {
   asOfDate: string;
 }
 
+/** Prefix account-scoped Glean maps so current/next quarter values cannot collide. */
+function namespaceAccountMap<T extends Record<string, unknown>>(
+  map: T,
+  quarter: 'current' | 'next',
+): T {
+  return Object.fromEntries(
+    Object.entries(map).map(([accountId, value]) => [`${quarter}:${accountId}`, value]),
+  ) as T;
+}
+
 function narrativeFailureMarker(reason: string | undefined): string {
   const cleaned = (reason ?? '').trim().replace(/\s+/g, ' ').slice(0, 200);
   return cleaned
@@ -175,7 +185,10 @@ export async function generateForecastScript(
       generateAccountContext(req, currentCtxs, asOfDate, currentLabel),
       generateAccountContext(req, nextCtxs, asOfDate, nextLabel),
     ]);
-    accountContext = { ...nextMap, ...currMap };
+    accountContext = {
+      ...namespaceAccountMap(nextMap, 'next'),
+      ...namespaceAccountMap(currMap, 'current'),
+    };
     if (Object.keys(accountContext).length === 0) accountContext = undefined;
     progress('context', 'Key Saves context complete', 56);
   } catch (err) {
@@ -212,7 +225,10 @@ export async function generateForecastScript(
       generateCloseGapActionPlans(req, currentCtxs, asOfDate, currentLabel),
       generateCloseGapActionPlans(req, nextCtxs, asOfDate, nextLabel),
     ]);
-    closeGapActionPlans = { ...nextMap, ...currMap };
+    closeGapActionPlans = {
+      ...namespaceAccountMap(nextMap, 'next'),
+      ...namespaceAccountMap(currMap, 'current'),
+    };
     if (Object.keys(closeGapActionPlans).length === 0) {
       closeGapActionPlans = undefined;
     }
