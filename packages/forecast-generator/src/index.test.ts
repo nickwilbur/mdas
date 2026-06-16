@@ -1538,6 +1538,44 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       });
     });
 
+    it('prefixes rollup headlines that omit the account name', () => {
+      const md = generateWeeklyForecast({
+        views: [mkMismatchView()],
+        changeEvents: [],
+        asOfDate: AS_OF,
+        mlOverrideMismatchContext: {
+          'O-ML1': {
+            headline: 'is a NetSuite / pricing pressure problem',
+            customerContext:
+              'Procurement is evaluating NetSuite as an alternative and engagement has been light.',
+          },
+        },
+      });
+      expect(md).toContain(
+        '  - Mismatch Co — is a NetSuite / pricing pressure problem',
+      );
+    });
+
+    it('replaces raw JSON headlines with the first customer-context sentence', () => {
+      const md = generateWeeklyForecast({
+        views: [mkMismatchView()],
+        changeEvents: [],
+        asOfDate: AS_OF,
+        mlOverrideMismatchContext: {
+          'O-ML1': {
+            headline:
+              '{"headline":"Finale is a parent-driven scope reduction, not a product save"',
+            customerContext:
+              'Procurement is evaluating NetSuite as an alternative. Engagement has been light since the last pricing conversation.',
+          },
+        },
+      });
+      expect(md).toContain(
+        '  - Mismatch Co — Procurement is evaluating NetSuite as an alternative',
+      );
+      expect(md).not.toContain('"headline"');
+    });
+
   });
 
   // 2026-05-29 user feedback: each account in the "Accounts to Close

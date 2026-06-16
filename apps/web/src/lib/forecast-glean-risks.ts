@@ -27,31 +27,17 @@ import { gleanForRequest } from './glean-server';
 import type { GleanChatRequestMessage } from '@mdas/adapter-shared/glean';
 import type { GleanFlaggedRisk } from '@mdas/forecast-generator';
 import { cleanGleanChatReply } from './clean-glean-chat-reply';
+import {
+  MAX_GLEAN_FLAGGED_PER_QUARTER,
+  MAX_GLEAN_RATIONALE_CHARS,
+  parseGleanFlaggedRisksResponse,
+  type QuarterAccountUniverse,
+} from './forecast-glean-risks-core';
 
-const MAX_RATIONALE_CHARS = 240;
-const MAX_FLAGGED_PER_QUARTER = 8;
+export type { QuarterAccountUniverse };
 
-export interface QuarterAccountUniverse {
-  quarter: 'current' | 'next';
-  fiscalQuarterLabel: string;
-  /**
-   * Bounded universe of accounts in this quarter we want Glean to
-   * consider. Each entry includes the canonical accountId (used to
-   * dedupe against structurally-flagged accounts in the renderer)
-   * and a short list of accountId / accountName / hasStructuralFlag
-   * so the prompt can ask Glean to ignore accounts already on the
-   * structured list.
-   */
-  accounts: {
-    accountId: string;
-    accountName: string;
-    /** True when this account already appears on the deterministic
-     *  Confirmed Churn / Saveable / not-yet-hedged path — Glean is
-     *  told NOT to surface these (they're already on the manager's
-     *  read). */
-    alreadyStructurallyFlagged: boolean;
-  }[];
-}
+const MAX_RATIONALE_CHARS = MAX_GLEAN_RATIONALE_CHARS;
+const MAX_FLAGGED_PER_QUARTER = MAX_GLEAN_FLAGGED_PER_QUARTER;
 
 /**
  * Run the bounded identify call for both quarters. Returns a flat
@@ -124,7 +110,7 @@ async function runOneQuarter(
   const text = cleanGleanChatReply(reply.text);
   if (!text) return [];
 
-  return parseAndValidate(text, universe);
+  return parseGleanFlaggedRisksResponse(text, universe);
 }
 
 function buildPrompt(
@@ -169,64 +155,4 @@ function buildPrompt(
     ``,
     `Reply with ONLY the JSON array.`,
   ].join('\n');
-}
-
-/**
- * Strict parser + validator. JSON.parse the reply (after stripping a
- * surrounding markdown fence if the model added one despite the
- * prompt), validate each entry has a known accountId from the
- * bounded universe, and length-cap each rationale.
- *
- * Anything malformed → empty array. We prefer "no Glean-flagged
- * section" over "Glean section with bogus accounts" on the
- * leadership churn-call.
- */
-function parseAndValidate(
-  raw: string,
-  universe: QuarterAccountUniverse,
-): GleanFlaggedRisk[] {
-  // Strip ``` fences if the model added them despite the prompt
-  // asking for raw JSON.
-  let payload = raw.trim();
-  const fenceMatch = payload.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/);
-  if (fenceMatch) payload = fenceMatch[1]!.trim();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-
-  const universeById = new Map(
-    universe.accounts.map((a) => [a.accountId, a.accountName]),
-  );
-  const out: GleanFlaggedRisk[] = [];
-  for (const entry of parsed) {
-    if (out.length >= MAX_FLAGGED_PER_QUARTER) break;
-    if (!entry || typeof entry !== 'object') continue;
-    const e = entry as { accountId?: unknown; rationale?: unknown };
-    if (typeof e.accountId !== 'string') continue;
-    if (typeof e.rationale !== 'string') continue;
-    const name = universeById.get(e.accountId);
-    // Drop anything not in the bounded universe — this is the
-    // hallucination guard. The model occasionally invents plausible-
-    // looking accountIds when it has no signal; we must never paste
-    // those into the leadership doc.
-    if (!name) continue;
-    const rationale = e.rationale.trim();
-    if (rationale.length === 0) continue;
-    const capped =
-      rationale.length <= MAX_RATIONALE_CHARS
-        ? rationale
-        : rationale.slice(0, MAX_RATIONALE_CHARS).trimEnd() + '…';
-    out.push({
-      accountId: e.accountId,
-      accountName: name,
-      quarter: universe.quarter,
-      rationale: capped,
-    });
-  }
-  return out;
 }
