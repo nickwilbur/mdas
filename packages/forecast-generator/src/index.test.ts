@@ -27,6 +27,7 @@ import {
   generateWeeklyForecast,
   keySavesAccountContexts,
   keySavesAccountIds,
+  parseClariManagerForecastExportCsv,
   type CloseGapActionPlan,
 } from './index';
 
@@ -2414,6 +2415,36 @@ describe('computeQuarterKpis', () => {
     expect(current.fiscalQuarterLabel).toBe('FY27 Q1');
     expect(next.fiscalQuarterLabel).toBe('FY27 Q2');
   });
+
+  it('applies Clari Flash and Hedge overrides so trajectory KPIs match the script header', () => {
+    const clariCsv = `User,Email,CRM User ID,Role,Parent Role,Timeframe,Field,Week,Start Day,End Day,Data Type,Data Value
+Nick,nick@example.com,U1,FLM Expand 3,,FY27 Q2,Churn/Downsell Flash,3,05/12/2026,05/18/2026,Forecast Value,-2473435.0
+Nick,nick@example.com,U1,FLM Expand 3,,FY27 Q2,Churn/Downsell Plan,3,05/12/2026,05/18/2026,Forecast Value,-2164000.0
+Nick,nick@example.com,U1,FLM Expand 3,,FY27 Q2,Hedge,3,05/12/2026,05/18/2026,Forecast Value,95000.0`;
+    const clariRows = parseClariManagerForecastExportCsv(clariCsv);
+    const acc = mkAccount({ accountId: 'A1', accountName: 'Noise Co' });
+    const opp = mkOpportunity({
+      accountId: 'A1',
+      closeDate: '2026-05-15',
+      knownChurnUSD: 50_000,
+      forecastHedgeUSD: 5_000,
+    });
+    const view = mkView(acc, [opp]);
+    const mdasOnly = computeQuarterKpis([view], '2026-05-13', 'current', null);
+    expect(mdasOnly.flashUSD).toBe(-50_000);
+    expect(mdasOnly.hedgeUSD).toBe(5_000);
+
+    const withClari = computeQuarterKpis(
+      [view],
+      '2026-05-13',
+      'current',
+      -2_164_000,
+      clariRows,
+    );
+    expect(withClari.flashUSD).toBe(-2_473_435);
+    expect(withClari.hedgeUSD).toBe(95_000);
+    expect(withClari.gapUSD).toBe(-2_473_435 - -2_164_000);
+  });
 });
 
 // Per 2026-05-21 user feedback: every Key Saves bullet should carry a
@@ -2548,6 +2579,57 @@ describe('accountContext (Glean per-account blurb)', () => {
     expect(md).toContain(
       '|| Context: [Glean context unavailable — Glean upstream 503]',
     );
+  });
+
+  it('uses quarter-scoped Glean blurbs when the same account appears in both quarters', () => {
+    const shared = mkAccount({
+      accountId: 'BOTH',
+      accountName: 'Dual Quarter Co',
+      cseSentiment: 'Yellow',
+      cerebroRiskCategory: 'Medium',
+    });
+    const currentOpp = mkOpportunity({
+      opportunityId: 'O-CUR',
+      accountId: 'BOTH',
+      type: 'Renewal',
+      closeDate: '2026-04-15',
+      acv: 200_000,
+      forecastMostLikely: -40_000,
+      forecastCategory: 'Best Case',
+    });
+    const nextOpp = mkOpportunity({
+      opportunityId: 'O-NXT',
+      accountId: 'BOTH',
+      type: 'Renewal',
+      closeDate: '2026-07-10',
+      acv: 180_000,
+      forecastMostLikely: -30_000,
+      forecastCategory: 'Best Case',
+    });
+    const view = mkView(shared, [currentOpp, nextOpp], { bucket: 'Saveable Risk' });
+    const md = generateWeeklyForecast({
+      views: [view],
+      changeEvents: [],
+      asOfDate: AS_OF,
+      accountContext: {
+        'current:BOTH': 'Current-quarter save motion: procurement escalation this week.',
+        'next:BOTH': 'Next-quarter save motion: renewal scope review in July.',
+      },
+    });
+
+    const currentYellow = md.slice(
+      md.indexOf('Current Quarter'),
+      md.indexOf('Next Quarter'),
+    );
+    const nextYellow = md.slice(md.indexOf('Next Quarter'));
+    expect(currentYellow).toContain(
+      '|| Context: Current-quarter save motion: procurement escalation this week.',
+    );
+    expect(currentYellow).not.toContain('Next-quarter save motion');
+    expect(nextYellow).toContain(
+      '|| Context: Next-quarter save motion: renewal scope review in July.',
+    );
+    expect(nextYellow).not.toContain('Current-quarter save motion');
   });
 });
 
