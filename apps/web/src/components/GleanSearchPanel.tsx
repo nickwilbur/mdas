@@ -75,6 +75,12 @@ export function GleanSearchPanel({
     if (autoFocus) inputRef.current?.focus();
   }, [autoFocus]);
 
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
   // Auto-search if an initial query was passed in (drill-in entry point).
   // We use a ref-tracked latch so a parent re-rendering with the same
   // initialQuery doesn't re-fire the search.

@@ -26,7 +26,7 @@
 // others. Glean's MCP chat tool is rate-limited gently and 15
 // parallel asks is well within tolerance in observed runs.
 import 'server-only';
-import { gleanForRequest } from './glean-server';
+import { gleanForRequest, type GleanClient } from './glean-server';
 import type { GleanChatRequestMessage } from '@mdas/adapter-shared/glean';
 import type { KeySaveAccountContext } from '@mdas/forecast-generator';
 import { cleanGleanChatReply } from './clean-glean-chat-reply';
@@ -115,12 +115,13 @@ export async function generateAccountContext(
   contexts: KeySaveAccountContext[],
   asOfDate: string,
   quarterLabel: string,
+  sharedClient?: GleanClient,
 ): Promise<Record<string, string>> {
   if (contexts.length === 0) return {};
 
-  let glean: Awaited<ReturnType<typeof gleanForRequest>>;
+  let client: GleanClient;
   try {
-    glean = await gleanForRequest(req);
+    client = sharedClient ?? (await gleanForRequest(req)).client;
   } catch (err) {
     // No client at all — credentials missing, request not authed,
     // etc. Every account gets the same stale marker so the manager
@@ -144,7 +145,7 @@ export async function generateAccountContext(
           const ctx = queue.shift();
           if (!ctx) return;
           out[ctx.accountId] = await runOneAccount(
-            glean.client,
+            client,
             ctx,
             asOfDate,
             quarterLabel,
@@ -165,7 +166,7 @@ export async function generateAccountContext(
 }
 
 async function runOneAccount(
-  client: Awaited<ReturnType<typeof gleanForRequest>>['client'],
+  client: GleanClient,
   ctx: KeySaveAccountContext,
   asOfDate: string,
   quarterLabel: string,

@@ -21,7 +21,7 @@
 // modest concurrency cap so a slow upstream account doesn't pin the
 // wall-clock and one transient failure doesn't poison the batch.
 import 'server-only';
-import { gleanForRequest } from './glean-server';
+import { gleanForRequest, type GleanClient } from './glean-server';
 import type { GleanChatRequestMessage } from '@mdas/adapter-shared/glean';
 import {
   closeGapPrimaryOwner,
@@ -174,12 +174,13 @@ export async function generateCloseGapActionPlans(
   contexts: CloseGapAccountContext[],
   asOfDate: string,
   quarterLabel: string,
+  sharedClient?: GleanClient,
 ): Promise<Record<string, CloseGapActionPlan>> {
   if (contexts.length === 0) return {};
 
-  let glean: Awaited<ReturnType<typeof gleanForRequest>>;
+  let client: GleanClient;
   try {
-    glean = await gleanForRequest(req);
+    client = sharedClient ?? (await gleanForRequest(req)).client;
   } catch (err) {
     const message = (err as Error)?.message ?? String(err);
     const marker = unavailable(message);
@@ -196,7 +197,7 @@ export async function generateCloseGapActionPlans(
           const ctx = queue.shift();
           if (!ctx) return;
           out[ctx.accountId] = await runOneAccount(
-            glean.client,
+            client,
             ctx,
             asOfDate,
             quarterLabel,
@@ -210,7 +211,7 @@ export async function generateCloseGapActionPlans(
 }
 
 async function runOneAccount(
-  client: Awaited<ReturnType<typeof gleanForRequest>>['client'],
+  client: GleanClient,
   ctx: CloseGapAccountContext,
   asOfDate: string,
   quarterLabel: string,

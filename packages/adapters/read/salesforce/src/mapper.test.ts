@@ -30,11 +30,7 @@ const SAMPLE_ACCOUNT_ROW: SfdcAccountRow = {
   // path coverage is added below.
   Assigned_CSE__r: null,
   Current_FY_Franchise__c: 'Expand 3',
-  // Added 2026-04-28 (PR-A1): SOQL_ACCOUNTS already filters by
-  // Customer_Status__c IN ('Live', 'Implementing', 'In Production',
-  // 'Churned (Live)'). Mapper currently doesn't read it — kept on the
-  // row interface for future use and to keep fixture parity with the
-  // SOQL projection.
+  // Customer_Status__c is mapped to canonical customerStatus for Expand 3 churn scoping.
   Customer_Status__c: 'Live',
   Tenant_ID__c: 'tenant-stenograph',
   ZuoraTenant__c: null,
@@ -68,6 +64,7 @@ describe('mapAccount', () => {
     expect(out.engagementMinutes30d).toBe(60);
     expect(out.engagementMinutes90d).toBe(180);
     expect(out.isConfirmedChurn).toBe(false);
+    expect(out.customerStatus).toBe('Live');
     expect(out.lastUpdated).toBe(REFRESH_AT.toISOString());
     expect(out.lastFetchedFromSource).toEqual({ salesforce: REFRESH_AT.toISOString() });
     expect(out.sourceLinks).toEqual([
@@ -176,6 +173,7 @@ const SAMPLE_OPP_ROW: SfdcOpportunityRow = {
   Revenue_ACV_Delta_USD__c: null,
   Zephr_ACV_Delta_USD__c: null,
   Known_Churn_USD__c: 0,
+  Churn_Risk__c: 'At Risk',
   FLM_Notes__c: null,
   SLM_Notes__c: null,
   SE_Next_Steps__c: 'Schedule executive sync',
@@ -211,6 +209,7 @@ describe('mapOpportunity', () => {
     expect(out.forecastMostLikely).toBe(10500);
     expect(out.bestCaseUSD).toBe(12000);
     expect(out.mostLikelyConfidence).toBe('Medium');
+    expect(out.churnRisk).toBe('At Risk');
     expect(out.scNextSteps).toBe('Schedule executive sync');
     expect(out.salesEngineer).toEqual({ id: '0050g000005z5SbAAI', name: '0050g000005z5SbAAI' });
     expect(out.productLine).toBe('Core Zuora');

@@ -4,8 +4,11 @@ import { existsSync } from 'fs';
 import { resolve } from 'path';
 import { randomUUID } from 'crypto';
 import {
+  CTA_JOB_MAX_CONCURRENT,
+  countRunningCtaJobs,
   listCtaJobsSortedRecent,
   putCtaJob,
+  registerCtaJobChild,
   type CTAJob,
 } from '@/lib/cta-generation-jobs';
 
@@ -16,6 +19,16 @@ export const dynamic = 'force-dynamic';
 const MAX_STDERR_CAPTURE_CHARS = 64 * 1024;
 
 export async function POST(): Promise<Response> {
+  if (countRunningCtaJobs() >= CTA_JOB_MAX_CONCURRENT) {
+    return NextResponse.json(
+      {
+        error: `At most ${CTA_JOB_MAX_CONCURRENT} CTA generations can run at once`,
+        code: 'too-many-running',
+      },
+      { status: 429 },
+    );
+  }
+
   const jobId = randomUUID();
   const job: CTAJob = {
     id: jobId,
@@ -46,7 +59,7 @@ export async function POST(): Promise<Response> {
 
   let stderr = '';
 
-  child.stdout.on('data', (data: Buffer) => {
+  const onStdout = (data: Buffer): void => {
     const lines = data.toString().split('\n').filter(Boolean);
     for (const line of lines) {
       try {
@@ -70,11 +83,14 @@ export async function POST(): Promise<Response> {
         // Non-JSON stdout line, ignore
       }
     }
-  });
+  };
 
-  child.stderr.on('data', (data: Buffer) => {
+  const onStderr = (data: Buffer): void => {
     stderr = (stderr + data.toString()).slice(-MAX_STDERR_CAPTURE_CHARS);
-  });
+  };
+
+  child.stdout.on('data', onStdout);
+  child.stderr.on('data', onStderr);
 
   child.on('close', (code) => {
     job.finishedAt = new Date().toISOString();
@@ -96,6 +112,8 @@ export async function POST(): Promise<Response> {
       }),
     );
   });
+
+  registerCtaJobChild(jobId, child);
 
   return NextResponse.json({ jobId });
 }

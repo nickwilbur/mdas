@@ -333,6 +333,12 @@ export function SlackMappingsClient(props: Props): JSX.Element {
     fetchPage({ page, filters: debouncedFilters, sort, dir });
   }, [page, debouncedFilters, sort, dir]);
 
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
   // Toggle sort column / direction. Click on the current sort column
   // flips asc ↔ desc; click on a different column sets that column to
   // its natural direction (timestamps default to descending so the
@@ -461,6 +467,42 @@ export function SlackMappingsClient(props: Props): JSX.Element {
   const end = Math.min(total, page * props.pageSize);
 
   const [showImport, setShowImport] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const exportCsv = useCallback(async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams({ sort, dir });
+      if (debouncedFilters.status) params.set('status', debouncedFilters.status);
+      if (debouncedFilters.source) params.set('source', debouncedFilters.source);
+      if (debouncedFilters.q) params.set('q', debouncedFilters.q);
+      if (debouncedFilters.channelNameQ) params.set('channelNameQ', debouncedFilters.channelNameQ);
+      if (debouncedFilters.refreshedAfter) {
+        params.set('refreshedAfter', debouncedFilters.refreshedAfter);
+      }
+      if (debouncedFilters.refreshedBefore) {
+        params.set('refreshedBefore', debouncedFilters.refreshedBefore);
+      }
+      const r = await fetch(`/api/slack/mappings/export?${params.toString()}`);
+      if (!r.ok) throw new Error(`export failed: ${r.status}`);
+      const blob = await r.blob();
+      const disposition = r.headers.get('Content-Disposition');
+      const filename =
+        disposition?.match(/filename="([^"]+)"/)?.[1] ?? 'slack-mappings.csv';
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(objectUrl);
+      const n = r.headers.get('X-Row-Count');
+      setRefreshMsg(n ? `Exported ${n} rows to ${filename}` : `Exported ${filename}`);
+    } catch (e) {
+      setRefreshMsg(`Export error: ${(e as Error).message}`);
+    } finally {
+      setExporting(false);
+    }
+  }, [debouncedFilters, sort, dir]);
 
   return (
     <>
@@ -478,6 +520,14 @@ export function SlackMappingsClient(props: Props): JSX.Element {
           title="Paste CSV from the operational tracker spreadsheet"
         >
           {showImport ? 'Hide CSV import' : 'Import sheet CSV…'}
+        </button>
+        <button
+          onClick={exportCsv}
+          disabled={exporting || refreshing !== null}
+          className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+          title="Download mappings as CSV (respects current filters and sort). Includes mapping source and whether the Salesforce Internal_Customer_Slack_Channel__c field is filled."
+        >
+          {exporting ? 'Exporting…' : 'Export CSV'}
         </button>
         {refreshMsg ? (
           <span className="text-xs text-gray-700" role="status">

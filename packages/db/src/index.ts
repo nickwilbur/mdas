@@ -38,7 +38,9 @@ export interface RefreshRun {
   sources_succeeded: string[];
   row_counts: Record<string, number> | null;
   error_log: unknown;
-  progress: RefreshProgress;
+  progress?: RefreshProgress;
+  /** Memoized Health Snapshot KPIs — see migration 0005. */
+  trajectory_kpis?: unknown;
 }
 
 // ---------- Refresh progress ----------
@@ -144,6 +146,64 @@ export async function listSuccessfulRunsSince(
          AND started_at >= $1::timestamptz
      ORDER BY started_at ASC`,
     [sinceIso],
+  );
+  return r.rows;
+}
+
+export async function listAllSuccessfulRefreshRuns(): Promise<RefreshRun[]> {
+  const r = await query<RefreshRun>(
+    `SELECT * FROM refresh_runs
+       WHERE status IN ('success','partial')
+     ORDER BY started_at ASC`,
+  );
+  return r.rows;
+}
+
+export async function updateRefreshTrajectoryKpis(
+  refreshId: string,
+  kpis: unknown,
+): Promise<void> {
+  await query(
+    `UPDATE refresh_runs SET trajectory_kpis = $2::jsonb WHERE id = $1`,
+    [refreshId, JSON.stringify(kpis)],
+  );
+}
+
+export interface SourceLinkBloatRow {
+  refresh_id: string;
+  started_at: string;
+  max_account_links: number;
+  max_opp_links: number;
+}
+
+/** Audit helper for compact-snapshot-source-links.ts */
+export async function auditSourceLinkBloat(limit = 20): Promise<SourceLinkBloatRow[]> {
+  const r = await query<SourceLinkBloatRow>(
+    `
+    WITH acct AS (
+      SELECT refresh_id,
+             COALESCE(MAX(jsonb_array_length(payload->'sourceLinks')), 0)::int AS max_account_links
+      FROM snapshot_account
+      GROUP BY refresh_id
+    ),
+    opp AS (
+      SELECT refresh_id,
+             COALESCE(MAX(jsonb_array_length(payload->'sourceLinks')), 0)::int AS max_opp_links
+      FROM snapshot_opportunity
+      GROUP BY refresh_id
+    )
+    SELECT r.id AS refresh_id,
+           r.started_at,
+           COALESCE(a.max_account_links, 0) AS max_account_links,
+           COALESCE(o.max_opp_links, 0) AS max_opp_links
+    FROM refresh_runs r
+    LEFT JOIN acct a ON a.refresh_id = r.id
+    LEFT JOIN opp o ON o.refresh_id = r.id
+    WHERE r.status IN ('success','partial')
+    ORDER BY GREATEST(COALESCE(a.max_account_links, 0), COALESCE(o.max_opp_links, 0)) DESC
+    LIMIT $1
+    `,
+    [limit],
   );
   return r.rows;
 }
@@ -258,6 +318,15 @@ export async function writeSnapshotAccounts(
   );
 }
 
+/** Replace the full account snapshot for a refresh (drops rows not in `accounts`). */
+export async function replaceSnapshotAccounts(
+  refreshId: string,
+  accounts: CanonicalAccount[],
+): Promise<void> {
+  await query(`DELETE FROM snapshot_account WHERE refresh_id = $1`, [refreshId]);
+  await writeSnapshotAccounts(refreshId, accounts);
+}
+
 export async function writeSnapshotOpportunities(
   refreshId: string,
   opps: CanonicalOpportunity[],
@@ -278,6 +347,15 @@ export async function writeSnapshotOpportunities(
      ON CONFLICT (refresh_id, opportunity_id) DO UPDATE SET payload = EXCLUDED.payload`,
     params,
   );
+}
+
+/** Replace the full opportunity snapshot for a refresh (drops rows not in `opps`). */
+export async function replaceSnapshotOpportunities(
+  refreshId: string,
+  opps: CanonicalOpportunity[],
+): Promise<void> {
+  await query(`DELETE FROM snapshot_opportunity WHERE refresh_id = $1`, [refreshId]);
+  await writeSnapshotOpportunities(refreshId, opps);
 }
 
 export async function readSnapshotAccounts(
@@ -320,6 +398,15 @@ export async function writeAccountViews(
      ON CONFLICT (refresh_id, account_id) DO UPDATE SET view_payload = EXCLUDED.view_payload`,
     params,
   );
+}
+
+/** Replace all account views for a refresh (drops rows not in `views`). */
+export async function replaceAccountViews(
+  refreshId: string,
+  views: AccountView[],
+): Promise<void> {
+  await query(`DELETE FROM account_view WHERE refresh_id = $1`, [refreshId]);
+  await writeAccountViews(refreshId, views);
 }
 
 export async function readAccountViews(

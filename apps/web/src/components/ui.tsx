@@ -148,17 +148,34 @@ export function StatTile({
   label,
   value,
   sub,
+  title,
+  onClick,
+  active,
 }: {
   label: string;
   value: string | number;
   sub?: string;
+  /** Tooltip explaining the metric definition. */
+  title?: string;
+  onClick?: () => void;
+  active?: boolean;
 }) {
+  const Tag = onClick ? 'button' : 'div';
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+    <Tag
+      type={onClick ? 'button' : undefined}
+      onClick={onClick}
+      title={title}
+      className={clsx(
+        'rounded-lg border bg-white p-4 shadow-sm text-left w-full',
+        active ? 'border-blue-500 ring-1 ring-blue-200' : 'border-gray-200',
+        onClick && 'cursor-pointer hover:border-gray-300',
+      )}
+    >
       <div className="text-xs uppercase tracking-wide text-gray-500">{label}</div>
       <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
       {sub ? <div className="mt-1 text-xs text-gray-500">{sub}</div> : null}
-    </div>
+    </Tag>
   );
 }
 

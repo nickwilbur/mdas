@@ -138,9 +138,13 @@ export default async function DashboardPage({
     <div className="space-y-6">
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Manager Dashboard</h1>
+          <h1 className="text-2xl font-semibold">Operations</h1>
           <p className="text-xs text-gray-500">
             Last refresh: <RelativeTime iso={startedAt} />
+            {' · '}
+            <Link href="/renewals" className="text-blue-700 hover:underline">
+              Renewal dashboard →
+            </Link>
           </p>
         </div>
         <div className="flex items-center gap-3">

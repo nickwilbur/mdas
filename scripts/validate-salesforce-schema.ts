@@ -90,6 +90,7 @@ const EXPECTED_REFERENCES: readonly ReferenceSet[] = [
       { apiName: 'Revenue_ACV_Delta_USD__c', expectedType: ['currency', 'double'] },
       { apiName: 'Zephr_ACV_Delta_USD__c', expectedType: ['currency', 'double'] },
       { apiName: 'Known_Churn_USD__c', expectedType: ['currency', 'double'] },
+      { apiName: 'Churn_Risk__c', expectedType: ['picklist', 'string'] },
       { apiName: 'FLM_Notes__c' },
       { apiName: 'SLM_Notes__c' },
       // Section 6 spelled this SC_Next_Steps__c. Org has SE_Next_Steps__c

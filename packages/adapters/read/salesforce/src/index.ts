@@ -51,7 +51,7 @@ SELECT
   engagio__EngagementMinutesLast3Months__c
 FROM Account
 WHERE Current_FY_Franchise__c = 'Expand 3'
-  AND Customer_Status__c IN ('Live', 'Implementing', 'In Production', 'Churned (Live)')
+  AND Customer_Status__c IN ('Live', 'Implementing', 'In Production')
 `;
 
 export const SOQL_OPPS = `
@@ -66,6 +66,7 @@ SELECT
   fml_Forecast_Hedge_USD__c,
   fml_DerivedACVDelta_USD__c, Billing_ACV_Delta_USD__c, Revenue_ACV_Delta_USD__c, Zephr_ACV_Delta_USD__c,
   Known_Churn_USD__c,
+  Churn_Risk__c,
   FLM_Notes__c, SLM_Notes__c, SE_Next_Steps__c,
   Sales_Engineer__c, Sales_Engineer__r.Name,
   Full_Churn_Notification_to_Owner_Date__c, Full_Churn_Final_Email_Sent_Date__c,

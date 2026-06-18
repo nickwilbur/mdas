@@ -1,9 +1,16 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import clsx from 'clsx';
-import { Check, Copy, ExternalLink, ChevronDown, ChevronUp, Filter } from 'lucide-react';
+import { Check, Copy, ExternalLink, ChevronDown, ChevronUp, Filter, CheckCircle2, RotateCcw } from 'lucide-react';
 import { safeHttpUrl, isLikelySfdcId } from '@/lib/url-safety';
+import {
+  lookupAccountHoverContext,
+  type CTAAccountHoverContext,
+} from '@/lib/cta-account-context';
+import { correctCseOwner, resolveMentionTarget } from '@/lib/cta-utils';
+import { SentimentBadge } from '@/components/ui';
+import type { CSESentiment } from '@mdas/canonical';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -55,6 +62,8 @@ export interface CTAEntry {
   team_aware?: boolean;
   situation_read?: string | null;
   point_of_view?: string | null;
+  atr_at_risk_usd?: number | null;
+  renewal_opportunity_name?: string | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -76,6 +85,7 @@ const PLAY_TYPE_LABELS: Record<string, string> = {
   churn_retro: 'Churn Retro',
   managed_wind_down: 'Managed Wind-Down',
   no_strategic_engagement: 'No Strategic Engagement',
+  data_quality_gap: 'Data Quality Gap',
 };
 
 const PLAY_TYPE_COLORS: Record<string, string> = {
@@ -148,7 +158,142 @@ const RISK_BORDER: Record<string, string> = {
   '🟢': 'border-l-emerald-400',
 };
 
-function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string }) {
+function formatUsd(n: number): string {
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `$${m % 1 === 0 ? m.toFixed(0) : m.toFixed(1)}M`;
+  }
+  if (n >= 1_000) return `$${Math.round(n / 1_000)}K`;
+  return `$${Math.round(n).toLocaleString()}`;
+}
+
+function AccountHoverPopover({
+  accountName,
+  context,
+}: {
+  accountName: string;
+  context: CTAAccountHoverContext | null;
+}) {
+  if (!context) {
+    return <h3 className="text-sm font-semibold text-gray-900 truncate">{accountName}</h3>;
+  }
+
+  return (
+    <div className="group/account relative min-w-0">
+      <h3 className="cursor-default border-b border-dotted border-gray-400 text-sm font-semibold text-gray-900 truncate">
+        {accountName}
+      </h3>
+      <div
+        className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-[min(22rem,calc(100vw-2rem))] rounded-lg border border-gray-200 bg-white p-3 shadow-lg group-hover/account:block"
+        role="tooltip"
+      >
+        <div className="space-y-3 text-xs">
+          <div>
+            <p className="font-semibold uppercase tracking-wide text-gray-500">Overall Summary</p>
+            <p className="mt-1 leading-relaxed text-gray-800">
+              {context.overallSummary ?? '—'}
+            </p>
+          </div>
+          <div>
+            <p className="font-semibold uppercase tracking-wide text-gray-500">Cerebro Signals</p>
+            <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+              {context.cerebroSignals.map((signal) => (
+                <div
+                  key={signal.key}
+                  className="flex items-center justify-between rounded border border-gray-100 px-2 py-1"
+                >
+                  <span className="text-gray-600">{signal.label}</span>
+                  <span
+                    className={clsx(
+                      'font-medium tabular-nums',
+                      signal.atRisk === true
+                        ? 'text-red-700'
+                        : signal.atRisk === false
+                          ? 'text-gray-600'
+                          : 'text-gray-400',
+                    )}
+                  >
+                    {signal.atRisk == null ? '—' : signal.atRisk ? 'At risk' : 'OK'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <p className="font-semibold uppercase tracking-wide text-gray-500">CSE Sentiment</p>
+            {context.cseSentiment ? (
+              <SentimentBadge value={context.cseSentiment as CSESentiment} />
+            ) : (
+              <span className="text-gray-400">—</span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ownerMatches(
+  a: CTAOwner | null | undefined,
+  b: { name: string } | null | undefined,
+): boolean {
+  return Boolean(a && b && a.name === b.name);
+}
+
+function TeamHeaderBadges({ cta }: { cta: CTAEntry }) {
+  const mention = resolveMentionTarget(cta);
+  const displayCse = cta.cse ? correctCseOwner(cta.cse) ?? cta.cse : null;
+
+  return (
+    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1 text-[10px]">
+      {displayCse ? (
+        <span
+          className={clsx(
+            'rounded px-1.5 py-0.5',
+            ownerMatches(displayCse, mention.owner)
+              ? 'bg-blue-100 font-semibold text-blue-800 ring-1 ring-blue-300'
+              : 'bg-blue-50 text-blue-700',
+          )}
+          title={ownerMatches(displayCse, mention.owner) ? 'Tagged in Slack' : undefined}
+        >
+          CSE {displayCse.name}
+        </span>
+      ) : null}
+      {cta.ae ? (
+        <span
+          className={clsx(
+            'rounded px-1.5 py-0.5',
+            ownerMatches(cta.ae, mention.owner)
+              ? 'bg-gray-200 font-semibold text-gray-900 ring-1 ring-gray-400'
+              : 'bg-gray-100 text-gray-600',
+          )}
+          title={ownerMatches(cta.ae, mention.owner) ? 'Tagged in Slack' : undefined}
+        >
+          AE {cta.ae.name}
+        </span>
+      ) : null}
+      {!cta.cse && !cta.ae ? (
+        <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700">No owner</span>
+      ) : null}
+    </div>
+  );
+}
+
+function CTACard({
+  cta,
+  slackMessage,
+  accountContext,
+  onMarkDone,
+  onReopen,
+  statusBusy,
+}: {
+  cta: CTAEntry;
+  slackMessage: string;
+  accountContext: CTAAccountHoverContext | null;
+  onMarkDone?: () => void;
+  onReopen?: () => void;
+  statusBusy?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const playLabel = PLAY_TYPE_LABELS[cta.play_type] ?? cta.play_type;
   const playColor = PLAY_TYPE_COLORS[cta.play_type] ?? 'bg-gray-100 text-gray-800 ring-gray-300';
@@ -164,7 +309,6 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
   // inject javascript:/data: URLs into <a href>, and gate the computed
   // SFDC Lightning URL on a real-looking SFDC object id to prevent
   // path-style injection like Account/..%2Flogout.
-  const safeRenewalOppUrl = safeHttpUrl(cta.renewal_opportunity_url);
   const safeSlackChannelUrl = safeHttpUrl(cta.destination_slack_channel);
   const sfdcAccountUrl = isLikelySfdcId(cta.salesforce_account_id)
     ? `https://zuora.lightning.force.com/lightning/r/Account/${cta.salesforce_account_id}/view`
@@ -176,18 +320,16 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
       <div className="flex items-center justify-between gap-3 px-4 py-2.5">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <span className="text-sm" title={cta.risk_color}>{riskEmoji}</span>
-          <h3 className="text-sm font-semibold text-gray-900 truncate">{cta.account_name}</h3>
-          {safeRenewalOppUrl ? (
-            <a
-              href={safeRenewalOppUrl}
-              className="inline-flex items-center gap-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-100"
-              target="_blank"
-              rel="noopener noreferrer"
-              title="SFDC Opportunity"
+          <AccountHoverPopover accountName={cta.account_name} context={accountContext} />
+          {cta.atr_at_risk_usd != null && cta.atr_at_risk_usd > 0 && (
+            <span
+              className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-amber-900 ring-1 ring-amber-200"
+              title="Available to renew at risk"
             >
-              <ExternalLink className="h-2.5 w-2.5" /> SFDC Opp
-            </a>
-          ) : sfdcAccountUrl ? (
+              ATR {formatUsd(cta.atr_at_risk_usd)}
+            </span>
+          )}
+          {sfdcAccountUrl ? (
             <a
               href={sfdcAccountUrl}
               className="inline-flex items-center gap-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-100"
@@ -222,10 +364,7 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <div className="flex gap-1 text-[10px] text-gray-500">
-            {cta.ae && <span className="rounded bg-gray-100 px-1.5 py-0.5">{cta.ae.name}</span>}
-            {cta.cse && <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">{cta.cse.name}</span>}
-          </div>
+          <TeamHeaderBadges cta={cta} />
           <button
             onClick={() => setExpanded(!expanded)}
             className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
@@ -270,19 +409,7 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
             </a>
           </>
         )}
-        {safeRenewalOppUrl ? (
-          <>
-            <span className="text-gray-300">|</span>
-            <a
-              href={safeRenewalOppUrl}
-              className="inline-flex items-center gap-0.5 text-blue-600 hover:underline"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <ExternalLink className="h-3 w-3" /> SFDC Opp
-            </a>
-          </>
-        ) : sfdcAccountUrl ? (
+        {sfdcAccountUrl ? (
           <>
             <span className="text-gray-300">|</span>
             <a
@@ -295,6 +422,34 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
             </a>
           </>
         ) : null}
+        {cta.status === 'open' && onMarkDone && (
+          <>
+            <span className="text-gray-300">|</span>
+            <button
+              type="button"
+              onClick={onMarkDone}
+              disabled={statusBusy}
+              className="inline-flex items-center gap-0.5 font-medium text-green-700 hover:underline disabled:opacity-50"
+            >
+              <CheckCircle2 className="h-3 w-3" />
+              Mark done
+            </button>
+          </>
+        )}
+        {cta.status === 'closed_done' && onReopen && (
+          <>
+            <span className="text-gray-300">|</span>
+            <button
+              type="button"
+              onClick={onReopen}
+              disabled={statusBusy}
+              className="inline-flex items-center gap-0.5 font-medium text-blue-700 hover:underline disabled:opacity-50"
+            >
+              <RotateCcw className="h-3 w-3" />
+              Reopen
+            </button>
+          </>
+        )}
         <span
           className={clsx(
             'ml-auto rounded px-1.5 py-0.5 text-[10px] uppercase font-medium',
@@ -429,16 +584,40 @@ function CTACard({ cta, slackMessage }: { cta: CTAEntry; slackMessage: string })
 interface CTABoardProps {
   ctas: CTAEntry[];
   slackMessages: Record<string, string>;
+  accountContexts?: Record<string, CTAAccountHoverContext>;
 }
 
 type RiskFilter = 'all' | '🔴' | '🟡' | '🟢';
-type StatusFilter = 'all' | 'open' | 'closed_done' | 'stalled';
+type BoardView = 'open' | 'done';
 
-export function CTABoard({ ctas, slackMessages }: CTABoardProps) {
+export function CTABoard({ ctas: initialCtas, slackMessages, accountContexts = {} }: CTABoardProps) {
+  const [ctas, setCtas] = useState(initialCtas);
+  const [boardView, setBoardView] = useState<BoardView>('open');
   const [riskFilter, setRiskFilter] = useState<RiskFilter>('all');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [ownerFilter, setOwnerFilter] = useState<string>('all');
   const [showFilters, setShowFilters] = useState(false);
+  const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
+
+  const updateCtaStatus = useCallback(async (ctaId: string, status: 'open' | 'closed_done') => {
+    setStatusBusyId(ctaId);
+    try {
+      const res = await fetch(`/api/ctas/${encodeURIComponent(ctaId)}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      });
+      if (!res.ok) return;
+      setCtas((prev) =>
+        prev.map((c) =>
+          c.cta_id === ctaId
+            ? { ...c, status, last_checked_at: new Date().toISOString() }
+            : c,
+        ),
+      );
+    } finally {
+      setStatusBusyId(null);
+    }
+  }, []);
 
   const owners = Array.from(new Set(ctas.map((c) => ownerName(c.primary_owner)))).sort();
 
@@ -446,18 +625,20 @@ export function CTABoard({ ctas, slackMessages }: CTABoardProps) {
   const isYellow = (c: CTAEntry) => c.risk_color === '🟡' || c.risk_color === 'Yellow';
 
   const filtered = ctas.filter((c) => {
+    if (boardView === 'open' && c.status === 'closed_done') return false;
+    if (boardView === 'done' && c.status !== 'closed_done') return false;
     if (riskFilter === '🔴' && !isRed(c)) return false;
     if (riskFilter === '🟡' && !isYellow(c)) return false;
-    if (statusFilter !== 'all' && c.status !== statusFilter) return false;
     if (ownerFilter !== 'all' && ownerName(c.primary_owner) !== ownerFilter) return false;
     return true;
   });
 
-  const redCount = ctas.filter(isRed).length;
-  const yellowCount = ctas.filter(isYellow).length;
-  const openCount = ctas.filter((c) => c.status === 'open').length;
+  const redCount = ctas.filter((c) => c.status !== 'closed_done' && isRed(c)).length;
+  const yellowCount = ctas.filter((c) => c.status !== 'closed_done' && isYellow(c)).length;
+  const openCount = ctas.filter((c) => c.status !== 'closed_done').length;
+  const doneCount = ctas.filter((c) => c.status === 'closed_done').length;
   const overdueCount = ctas.filter(
-    (c) => c.status === 'open' && daysUntil(c.deadline) < 0,
+    (c) => c.status !== 'closed_done' && daysUntil(c.deadline) < 0,
   ).length;
 
   const copyAll = useCallback(async () => {
@@ -471,10 +652,36 @@ export function CTABoard({ ctas, slackMessages }: CTABoardProps) {
   return (
     <div className="space-y-4">
       {/* Summary Tiles */}
+      {/* View tabs + summary */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setBoardView('open')}
+            className={clsx(
+              'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+              boardView === 'open' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900',
+            )}
+          >
+            Open ({openCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setBoardView('done')}
+            className={clsx(
+              'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+              boardView === 'done' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900',
+            )}
+          >
+            Done ({doneCount})
+          </button>
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
           <div className="text-xs uppercase tracking-wide text-gray-500">Total CTAs</div>
-          <div className="mt-1 text-2xl font-semibold tabular-nums">{ctas.length}</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums">{openCount + doneCount}</div>
         </div>
         <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
           <div className="text-xs uppercase tracking-wide text-gray-500">Open</div>
@@ -509,7 +716,7 @@ export function CTABoard({ ctas, slackMessages }: CTABoardProps) {
         >
           <Filter className="h-3.5 w-3.5" />
           Filters
-          {(riskFilter !== 'all' || statusFilter !== 'all' || ownerFilter !== 'all') && (
+          {(riskFilter !== 'all' || ownerFilter !== 'all') && (
             <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
               active
             </span>
@@ -517,7 +724,7 @@ export function CTABoard({ ctas, slackMessages }: CTABoardProps) {
         </button>
         <div className="ml-auto flex items-center gap-2">
           <span className="text-xs text-gray-500">
-            {filtered.length} of {ctas.length} CTAs
+            {filtered.length} of {boardView === 'open' ? openCount : doneCount} CTAs
           </span>
           <CopyAllButton onClick={copyAll} count={filtered.length} />
         </div>
@@ -548,27 +755,6 @@ export function CTABoard({ ctas, slackMessages }: CTABoardProps) {
           </div>
           <div>
             <label className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
-              Status
-            </label>
-            <div className="mt-1 flex gap-1">
-              {(['all', 'open', 'closed_done', 'stalled'] as StatusFilter[]).map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setStatusFilter(v)}
-                  className={clsx(
-                    'rounded px-2.5 py-1 text-xs font-medium',
-                    statusFilter === v
-                      ? 'bg-gray-900 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200',
-                  )}
-                >
-                  {v === 'all' ? 'All' : v.replace('_', ' ')}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <label className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
               Owner
             </label>
             <select
@@ -588,7 +774,6 @@ export function CTABoard({ ctas, slackMessages }: CTABoardProps) {
             <button
               onClick={() => {
                 setRiskFilter('all');
-                setStatusFilter('all');
                 setOwnerFilter('all');
               }}
               className="text-xs text-blue-700 hover:underline"
@@ -603,7 +788,9 @@ export function CTABoard({ ctas, slackMessages }: CTABoardProps) {
       <div className="space-y-3">
         {filtered.length === 0 ? (
           <div className="rounded-lg border border-gray-200 bg-white p-6 text-center text-sm text-gray-500">
-            No CTAs match the current filters.
+            {boardView === 'done'
+              ? 'No completed CTAs yet. Mark items done from the Open view.'
+              : 'No open CTAs match the current filters.'}
           </div>
         ) : (
           filtered.map((cta) => (
@@ -611,6 +798,18 @@ export function CTABoard({ ctas, slackMessages }: CTABoardProps) {
               key={cta.cta_id}
               cta={cta}
               slackMessage={slackMessages[cta.cta_id] ?? ''}
+              accountContext={lookupAccountHoverContext(accountContexts, cta)}
+              onMarkDone={
+                boardView === 'open'
+                  ? () => updateCtaStatus(cta.cta_id, 'closed_done')
+                  : undefined
+              }
+              onReopen={
+                boardView === 'done'
+                  ? () => updateCtaStatus(cta.cta_id, 'open')
+                  : undefined
+              }
+              statusBusy={statusBusyId === cta.cta_id}
             />
           ))
         )}
@@ -631,28 +830,65 @@ interface GenerateJob {
 
 export function GenerateCTAsButton() {
   const [job, setJob] = useState<GenerateJob | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+    };
+  }, []);
 
   const startGeneration = useCallback(async () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    if (reloadTimerRef.current) {
+      clearTimeout(reloadTimerRef.current);
+      reloadTimerRef.current = null;
+    }
+
     try {
       const res = await fetch('/api/ctas/generate', { method: 'POST' });
+      if (res.status === 429) {
+        setJob({
+          id: '',
+          status: 'error',
+          progress: null,
+          result: null,
+          error: 'Another generation is already running',
+        });
+        return;
+      }
       const { jobId } = await res.json();
       setJob({ id: jobId, status: 'running', progress: null, result: null, error: null });
 
-      // Poll for progress
-      const poll = setInterval(async () => {
+      pollRef.current = setInterval(async () => {
         try {
           const statusRes = await fetch(`/api/ctas/generate/${jobId}`);
+          if (!mountedRef.current) return;
           const data = await statusRes.json();
+          if (!mountedRef.current) return;
           setJob(data);
           if (data.status === 'done' || data.status === 'error') {
-            clearInterval(poll);
-            // Reload page after success to show new CTAs
-            if (data.status === 'done') {
-              setTimeout(() => window.location.reload(), 1500);
+            if (pollRef.current) {
+              clearInterval(pollRef.current);
+              pollRef.current = null;
+            }
+            if (data.status === 'done' && mountedRef.current) {
+              reloadTimerRef.current = setTimeout(() => window.location.reload(), 1500);
             }
           }
         } catch {
-          clearInterval(poll);
+          if (pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+          }
         }
       }, 1000);
     } catch {

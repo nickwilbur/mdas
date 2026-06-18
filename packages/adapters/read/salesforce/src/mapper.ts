@@ -80,6 +80,7 @@ export interface SfdcOpportunityRow extends SalesforceQueryRecord {
   Revenue_ACV_Delta_USD__c: number | null;
   Zephr_ACV_Delta_USD__c: number | null;
   Known_Churn_USD__c: number | null;
+  Churn_Risk__c: string | null;
   FLM_Notes__c: string | null;
   SLM_Notes__c: string | null;
   SE_Next_Steps__c: string | null;
@@ -161,7 +162,7 @@ export function mapAccount(
     assignedCSE: row.Assigned_CSE__c ? { id: row.Assigned_CSE__c, name: row.Assigned_CSE__r?.Name ?? row.Assigned_CSE__c } : null,
     csCoverage: mapCsCoverage(row.CS_Coverage__c),
 
-    franchise: row.Current_FY_Franchise__c ?? 'Expand 3',
+    franchise: row.Current_FY_Franchise__c ?? '',
 
     cseSentiment: mapSentiment(row.Business_Industry_Health__c),
     cseSentimentCommentary: row.CSM_Sentiment_Commentary__c,
@@ -180,6 +181,7 @@ export function mapAccount(
     // churnReasonSummary is sourced from Opportunity.Churn_Destription__c —
     // populated in the opportunity merge step, not here.
     churnDate: dateOnly(row.Churn_Date__c),
+    customerStatus: row.Customer_Status__c,
 
     // Verbatim — URL parsing is the consumer's job (@mdas/slack-send/parse).
     // Trim only; never normalize or rewrite. Empty string treated as null.
@@ -243,6 +245,7 @@ export function mapOpportunity(
     forecastHedgeUSD: row.fml_Forecast_Hedge_USD__c,
     acvDelta: row.fml_DerivedACVDelta_USD__c ?? row.Billing_ACV_Delta_USD__c,
     knownChurnUSD: row.Known_Churn_USD__c,
+    churnRisk: row.Churn_Risk__c,
     productLine: row.Product_Line__c,
     forecastCategory:
       row.fml_Manager_ForecastCategory__c ?? row.ForecastCategoryName ?? null,

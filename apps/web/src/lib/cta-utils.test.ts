@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   parseScanMarkdown,
   generateSlackMessage,
+  resolveMentionTarget,
+  formatSlackMention,
   riskEmoji,
   riskLabel,
   type RichCTA,
@@ -166,13 +168,7 @@ describe('parseScanMarkdown', () => {
   });
 });
 
-// ── generateSlackMessage — v2 voice (CSE-manager perspective) ───────────────
-//
-// v2 calibration example:
-//   🔴 @kyle — D&B renews 5/28/26, $1.1M, and sentiment flagged red.
-//   can you take a look at this account today and send me your readout
-//   on the usage situation, risk level, and what you think we should do
-//   next by 5/21/26? <url|Renewal opp>
+// ── generateSlackMessage — v3 voice (customer-channel style) ───────────────
 
 describe('generateSlackMessage', () => {
   // ── Structure ────────────────────────────────────────────────────────────
@@ -186,44 +182,40 @@ describe('generateSlackMessage', () => {
     const msg = generateSlackMessage(MINIMAL_CTA);
     expect(msg).not.toContain('•');
     expect(msg).not.toContain('**');
-    expect(msg).not.toContain('_');
   });
 
-  it('starts with risk emoji then @firstname lowercase', () => {
+  it('starts with Slack risk shortcode and full-name @mention', () => {
     const msg = generateSlackMessage(MINIMAL_CTA);
-    expect(msg).toMatch(/^🔴 @jane —/);
+    expect(msg).toMatch(/^:red_circle: @Jane Doe —/);
   });
 
-  it('ends with deadline or Renewal opp', () => {
+  it('does not include card deadline in the message', () => {
     const msg = generateSlackMessage(MINIMAL_CTA);
-    expect(msg).toMatch(/by (EOW|\d+\/\d+\/\d+)\?$/);
+    expect(msg).not.toMatch(/by (EOW|\d+\/\d+\/\d+)/);
+    expect(msg).not.toContain('2026-06-15');
   });
 
-  // ── Opener: @firstname — account + key context (v2 voice) ───────────────
-
-  it('uses @firstname lowercase in opener', () => {
+  it('uses full display name in opener', () => {
     const msg = generateSlackMessage(MINIMAL_CTA);
-    expect(msg).toContain('@jane —');
+    expect(msg).toContain('@Jane Doe —');
   });
 
-  it('includes account name after dash', () => {
+  it('includes account name in the message', () => {
     const msg = generateSlackMessage(MINIMAL_CTA);
-    expect(msg).toContain('— Acme Corp');
+    expect(msg).toContain('Acme Corp');
   });
 
-  it('does NOT use "sentiment is X" template (v2: let signals speak)', () => {
+  it('does NOT use "sentiment is X" template', () => {
     const msg = generateSlackMessage(MINIMAL_CTA);
     expect(msg).not.toContain('sentiment is red');
     expect(msg).not.toContain('sentiment is yellow');
     expect(msg).not.toContain('sentiment is green');
   });
 
-  it('starts with correct risk emoji for all colors', () => {
-    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: 'Yellow' })).toMatch(/^🟡/);
-    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: 'Green' })).toMatch(/^🟢/);
+  it('starts with correct risk shortcode for all colors', () => {
+    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: 'Yellow' })).toMatch(/^:large_yellow_circle:/);
+    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: 'Green' })).toMatch(/^:large_green_circle:/);
   });
-
-  // ── Dates as m/d/yy format (v2: always include 2-digit year) ───────────
 
   it('formats renewal date as m/d/yy when present in drivers', () => {
     const cta: RichCTA = {
@@ -231,49 +223,39 @@ describe('generateSlackMessage', () => {
       drivers: ['Renewal date: 2026-07-22', 'Low usage'],
     };
     const msg = generateSlackMessage(cta);
-    expect(msg).toContain('renews 7/22/26');
+    expect(msg).toContain('7/22/26');
     expect(msg).not.toContain('2026-07-22');
   });
 
-  it('includes ARR from drivers in opener, formatted as $XK', () => {
+  it('includes ARR from drivers when renewal is present', () => {
     const cta: RichCTA = {
       ...MINIMAL_CTA,
       drivers: ['Renewal date: 2026-07-22', 'ARR: $54,060', 'Low usage'],
     };
     const msg = generateSlackMessage(cta);
-    expect(msg).toContain('renews 7/22/26, $54K');
+    expect(msg).toContain('$54K');
+    expect(msg).toContain('7/22/26');
   });
 
-  // ── Structure: opener → supporting fact → ask+deadline (v2) ────────────
-
-  it('places signals in opener, ask after', () => {
+  it('uses conversational intent language, not dashboard dumps', () => {
     const msg = generateSlackMessage(MINIMAL_CTA);
-    const signalIdx = msg.indexOf('flagged red');
-    const askIdx = msg.indexOf('can you');
-    expect(signalIdx).toBeGreaterThan(0);
-    expect(askIdx).toBeGreaterThan(signalIdx);
+    expect(msg).toMatch(/wanted to flag|get ahead|trying to get/i);
+    expect(msg).not.toContain('flagged red across');
   });
 
-  // ── Signals: narrativized, not raw dumps ─────────────────────────────────
-
-  it('narrativizes driver signals instead of dumping raw text', () => {
+  it('humanizes driver signals instead of dumping raw text', () => {
     const msg = generateSlackMessage(MINIMAL_CTA);
-    // "Low usage" + "Engagement Red" should be collapsed into a natural phrase
-    expect(msg).toContain('usage');
-    expect(msg).toContain('engagement');
-    expect(msg).toContain('flagged red');
-    // Should NOT be raw driver dump
+    expect(msg).toMatch(/usage looks soft/i);
     expect(msg).not.toContain('Low usage. Engagement Red.');
   });
 
-  it('filters ARR/Products from signals and keeps specific data points', () => {
+  it('filters ARR/Products meta from the fact sentence', () => {
     const cta: RichCTA = {
       ...MINIMAL_CTA,
       drivers: ['ARR: $100K', 'Products: Z-Billing', 'Low usage', 'Share at 31%'],
     };
     const msg = generateSlackMessage(cta);
-    expect(msg).toContain('share at 31%');
-    // ARR goes in opener, not signals
+    expect(msg).toMatch(/usage looks soft/i);
     expect(msg).not.toContain('ARR: $100K.');
     expect(msg).not.toContain('Products:');
   });
@@ -285,22 +267,20 @@ describe('generateSlackMessage', () => {
     expect(msg).not.toContain('sentiment is red');
   });
 
-  // ── Commentary: first sentence, lowercase, skip boilerplate ──────────────
-
-  it('weaves first sentence of commentary inline, lowercased', () => {
+  it('weaves commentary with Current State and Renewal Risk label', () => {
     const msg = generateSlackMessage(FULL_CTA);
-    // Should start lowercase
-    expect(msg).toContain('customer winding down due to acquisition');
+    expect(msg).toMatch(/customer winding down due to acquisition/i);
   });
 
-  it('strips STATE AND RENEWAL RISK prefix from commentary', () => {
+  it('strips STATE AND RENEWAL RISK prefix into Current State label', () => {
     const cta: RichCTA = {
       ...MINIMAL_CTA,
+      drivers: [],
       cse_sentiment_commentary: 'STATE AND RENEWAL RISK: The account is confirmed downselling by $800K.',
     };
     const msg = generateSlackMessage(cta);
-    expect(msg).not.toContain('STATE AND RENEWAL RISK');
-    expect(msg).toContain('the account is confirmed downselling');
+    expect(msg).toContain('Current State and Renewal Risk:');
+    expect(msg).toMatch(/confirmed downselling/i);
   });
 
   it('skips commentary that just restates "CSE Sentiment Red"', () => {
@@ -312,36 +292,28 @@ describe('generateSlackMessage', () => {
     expect(msg).not.toContain('cse sentiment red');
   });
 
-  // ── cc: NOT injected into message (v2: manager speaks directly to owner) ──
-
   it('does not inject cc names into message', () => {
     const msg = generateSlackMessage(FULL_CTA);
-    // cc_owners exist but are not auto-injected into the ask
     expect(msg).not.toContain('@nick');
     expect(msg).not.toContain('Nick W');
   });
 
-  // ── Ask: manager-style, play_type-aware (v2) ──────────────────────────
-
-  it('uses play_type-aware manager ask with deadline', () => {
+  it('uses play_type-aware conversational ask', () => {
     const msg = generateSlackMessage(MINIMAL_CTA);
     expect(msg).toContain('?');
-    // utilization_risk → readout-style ask
-    expect(msg).toContain('send me your readout');
-    expect(msg).toMatch(/by (EOW|\d+\/\d+\/\d+)\?/);
+    expect(msg).toContain('dig into usage');
+    expect(msg).not.toMatch(/by (EOW|\d+\/\d+\/\d+)/);
   });
 
   it('uses play_type for ask regardless of requested_action', () => {
     const cta: RichCTA = { ...MINIMAL_CTA, requested_action: undefined };
     const msg = generateSlackMessage(cta);
-    // Still uses play_type-based ask, not a generic fallback
-    expect(msg).toContain('send me your readout');
+    expect(msg).toContain('dig into usage');
   });
 
   it('uses different ask for dark_renewal play type', () => {
     const cta: RichCTA = { ...MINIMAL_CTA, play_type: 'dark_renewal' };
     const msg = generateSlackMessage(cta);
-    expect(msg).toContain('connect with the AE');
     expect(msg).toContain('game plan before renewal');
   });
 
@@ -351,51 +323,42 @@ describe('generateSlackMessage', () => {
     expect(msg).toContain('gut check');
   });
 
-  // ── Data gaps: NOT in message body (v2: data_gaps go in JSON only) ─────
-
-  it('does NOT include data gaps in message body (v2)', () => {
+  it('does NOT include data gaps in message body', () => {
     const msg = generateSlackMessage(FULL_CTA);
     expect(msg).not.toContain('heads up');
     expect(msg).not.toContain('no slack channel');
   });
 
-  // ── Risk emoji at start only ─────────────────────────────────────────────
+  // ── Risk shortcode at start only ───────────────────────────────────────────
 
-  it('starts with risk emoji for all colors', () => {
-    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: 'Yellow' })).toMatch(/^🟡/);
-    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: 'Green' })).toMatch(/^🟢/);
-    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: '🔴' })).toMatch(/^🔴/);
-    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: '🟡' })).toMatch(/^🟡/);
+  it('starts with risk shortcode for all colors', () => {
+    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: 'Yellow' })).toMatch(/^:large_yellow_circle:/);
+    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: 'Green' })).toMatch(/^:large_green_circle:/);
+    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: '🔴' })).toMatch(/^:red_circle:/);
+    expect(generateSlackMessage({ ...MINIMAL_CTA, risk_color: '🟡' })).toMatch(/^:large_yellow_circle:/);
   });
 
   // ── String primary_owner fallback ────────────────────────────────────────
 
-  it('handles string primary_owner with @firstname', () => {
+  it('handles string primary_owner with full name mention', () => {
     const cta: RichCTA = { ...MINIMAL_CTA, primary_owner: 'Bob Smith' };
     const msg = generateSlackMessage(cta);
-    expect(msg).toContain('🔴 @bob — ');
+    expect(msg).toContain(':red_circle: @Bob Smith — ');
   });
 
-  // ── Renewal opp link (v2: Slack mrkdwn format at end) ─────────────────
+  // ── No renewal opp link in message body ───────────────────────────────
 
-  it('appends Renewal opp link when URL exists', () => {
+  it('never appends Renewal opp link even when URL exists', () => {
     const cta: RichCTA = {
       ...MINIMAL_CTA,
       renewal_opportunity_url: 'https://zuora.lightning.force.com/lightning/r/Opportunity/006ABC/view',
     };
     const msg = generateSlackMessage(cta);
-    expect(msg).toContain('<https://zuora.lightning.force.com/lightning/r/Opportunity/006ABC/view|Renewal opp>');
-  });
-
-  it('omits Renewal opp when no URL', () => {
-    const msg = generateSlackMessage(MINIMAL_CTA);
     expect(msg).not.toContain('Renewal opp');
+    expect(msg).not.toContain('lightning.force.com');
   });
 
-  // Security regression: a tampered scan file could try to embed a
-  // javascript: URL hoping Slack (or our preview tooling) renders it
-  // as a clickable trampoline. safeHttpUrl drops anything non-http(s).
-  it('strips javascript: URLs out of the Renewal opp link', () => {
+  it('never embeds javascript: URLs from tampered renewal_opportunity_url', () => {
     const cta: RichCTA = {
       ...MINIMAL_CTA,
       renewal_opportunity_url: 'javascript:alert(1)',
@@ -403,6 +366,123 @@ describe('generateSlackMessage', () => {
     const msg = generateSlackMessage(cta);
     expect(msg).not.toContain('javascript:');
     expect(msg).not.toContain('Renewal opp');
+  });
+
+  it('@mentions CSE when assigned even if primary_owner is AE-shaped legacy data', () => {
+    const cta: RichCTA = {
+      ...MINIMAL_CTA,
+      primary_owner: { name: 'Brandon LaTourelle', role: 'AE' },
+      ae: { name: 'Brandon LaTourelle', role: 'AE' },
+      cse: { name: 'Manoj Raja Krishnan', role: 'CSE' },
+    };
+    const msg = generateSlackMessage(cta);
+    expect(msg).toContain('@Manoj Raja Krishnan —');
+    expect(msg).not.toContain('@Brandon');
+  });
+
+  it('@mentions AE for digital accounts without a CSE', () => {
+    const cta: RichCTA = {
+      ...MINIMAL_CTA,
+      primary_owner: { name: 'Brian Bertges', role: 'AE' },
+      ae: { name: 'Brian Bertges', role: 'AE' },
+      cse: null,
+    };
+    const msg = generateSlackMessage(cta);
+    expect(msg).toContain('@Brian Bertges —');
+  });
+});
+
+describe('formatSlackMention', () => {
+  it('uses slack_handle when set', () => {
+    expect(formatSlackMention({ name: 'Ethan Wookey', slack_handle: 'ethanw' })).toBe('@ethanw');
+  });
+
+  it('falls back to full display name', () => {
+    expect(formatSlackMention({ name: 'Ethan Wookey', role: 'AE' })).toBe('@Ethan Wookey');
+  });
+});
+
+describe('resolveMentionTarget', () => {
+  it('prefers explicit cse field over ae', () => {
+    const target = resolveMentionTarget({
+      ...MINIMAL_CTA,
+      cse: { name: 'Kyle L', role: 'CSE' },
+      ae: { name: 'Jane Doe', role: 'AE' },
+    });
+    expect(target.owner.name).toBe('Kyle L');
+    expect(target.isDigital).toBe(false);
+  });
+
+  it('tags AE for digital accounts without CSE', () => {
+    const target = resolveMentionTarget({
+      ...MINIMAL_CTA,
+      primary_owner: { name: 'Ethan Wookey', role: 'AE' },
+      ae: { name: 'Ethan Wookey', role: 'AE' },
+      cse: null,
+    });
+    expect(target.owner.name).toBe('Ethan Wookey');
+    expect(target.isDigital).toBe(true);
+  });
+});
+
+describe('Mavenlink-style digital AE CTA', () => {
+  it('matches Ethan tagging and Current State commentary voice', () => {
+    const cta: RichCTA = {
+      ...MINIMAL_CTA,
+      account_name: 'Mavenlink',
+      primary_owner: { name: 'Ethan Wookey', role: 'AE' },
+      ae: { name: 'Ethan Wookey', role: 'AE' },
+      cse: null,
+      play_type: 'dark_account',
+      drivers: ['ARR: $100,000', 'No dedicated CSE (digital coverage)'],
+      cse_sentiment_commentary:
+        '<p>Current State and Renewal Risk: </p><p>Read only contract for one year is confirmed,</p><p>Mavenlink has communicated their decision of not to renew post the current term, they have migrated to Dealhub.</p>',
+    };
+    const msg = generateSlackMessage(cta);
+    expect(msg).toContain(':red_circle: @Ethan Wookey —');
+    expect(msg).toContain("I'm trying to get some visibility on this one on Mavenlink ($100K)");
+    expect(msg).toContain('Current State and Renewal Risk:');
+    expect(msg).toMatch(/Read only contract for one year is confirmed/i);
+    expect(msg).toContain('Can you dig in and send me a read on where things stand?');
+  });
+});
+
+describe('PropertyVista CSE mention correction', () => {
+  const PROPERTY_VISTA_COMMENTARY =
+    '<p></p><p color="" style="">State and renewal risk.</p><p color="" style="">No immediate risk. engagement has been low, indicating reduced executive alignment and potential renewal risk.</p><p color="" style="">Account Plan</p><p color="" style="">Re-establish engagement through a structured check-in and executive outreach to realign on goals and value.</p>';
+
+  it('tags @Maha instead of Mahalakshmi Krishnan for SFDC-assigned CSE', () => {
+    const cta: RichCTA = {
+      ...MINIMAL_CTA,
+      account_name: 'PropertyVista',
+      play_type: 'dark_account',
+      primary_owner: { name: 'Mahalakshmi Krishnan', role: 'CSE' },
+      cse: { name: 'Mahalakshmi Krishnan', role: 'CSE' },
+      ae: { name: 'Ethan Wookey', role: 'AE' },
+      drivers: ['ARR: $203,936'],
+      cse_sentiment_commentary: PROPERTY_VISTA_COMMENTARY,
+    };
+    const msg = generateSlackMessage(cta);
+    expect(msg).toContain(':red_circle: @Maha —');
+    expect(msg).not.toContain('@Mahalakshmi Krishnan');
+  });
+
+  it('parses State and renewal risk commentary without a stray period', () => {
+    const cta: RichCTA = {
+      ...MINIMAL_CTA,
+      account_name: 'PropertyVista',
+      play_type: 'dark_account',
+      primary_owner: { name: 'Mahalakshmi S', role: 'CSE', slack_handle: 'Maha' },
+      cse: { name: 'Mahalakshmi S', role: 'CSE', slack_handle: 'Maha' },
+      ae: { name: 'Ethan Wookey', role: 'AE' },
+      drivers: ['ARR: $203,936'],
+      cse_sentiment_commentary: PROPERTY_VISTA_COMMENTARY,
+    };
+    const msg = generateSlackMessage(cta);
+    expect(msg).toContain('Current State and Renewal Risk:');
+    expect(msg).toMatch(/No immediate risk/i);
+    expect(msg).not.toMatch(/Renewal Risk: \./);
+    expect(msg).not.toContain('Account Plan');
   });
 });
 
@@ -453,10 +533,10 @@ describe('round-trip: parse scan then generate messages', () => {
       generated.set(id, generateSlackMessage(cta));
     }
     expect(generated.size).toBe(2);
-    expect(generated.get('test-001')).toContain('@jane');
+    expect(generated.get('test-001')).toContain('@Jane Doe');
     expect(generated.get('test-001')).toContain('Acme Corp');
     expect(generated.get('test-002')).toContain('BigCo Ltd');
-    expect(generated.get('test-002')).toContain('customer winding down due to acquisition');
+    expect(generated.get('test-002')).toMatch(/customer winding down due to acquisition/i);
   });
 
   it('prefers explicit Slack message over generated', () => {

@@ -4,7 +4,12 @@
  * Next.js keeps route modules hot across requests; an unbounded Map
  * would retain every completed job forever (IDs, stderr tails, paths).
  * Prune terminal rows by age and cap total size so memory stays bounded.
+ *
+ * Child processes are registered separately and detached on close so
+ * stdout/stderr listeners do not accumulate after a job finishes.
  */
+
+import type { ChildProcess } from 'child_process';
 
 export interface CTAJob {
   id: string;
@@ -22,9 +27,13 @@ export interface CTAJob {
 }
 
 const jobs = new Map<string, CTAJob>();
+const childByJobId = new Map<string, ChildProcess>();
 
 /** Test-only: clears the store (Vitest shares one module instance). */
 export function __resetCtaJobStoreForTests(): void {
+  for (const id of [...childByJobId.keys()]) {
+    disposeCtaJobChild(id);
+  }
   jobs.clear();
 }
 
@@ -33,6 +42,51 @@ export const CTA_JOB_TERMINAL_TTL_MS = 2 * 60 * 1000;
 
 /** Hard cap on map entries; oldest finished jobs evicted first. */
 export const CTA_JOB_MAX_STORED = 100;
+
+/** Max simultaneous child processes — prevents unbounded spawns/listeners. */
+export const CTA_JOB_MAX_CONCURRENT = 2;
+
+function detachCtaJobChild(jobId: string): void {
+  const child = childByJobId.get(jobId);
+  if (!child) return;
+  childByJobId.delete(jobId);
+  child.stdout?.removeAllListeners();
+  child.stderr?.removeAllListeners();
+}
+
+/** Kill and detach a child when its job row is evicted before exit. */
+export function disposeCtaJobChild(jobId: string): void {
+  const child = childByJobId.get(jobId);
+  if (!child) return;
+  childByJobId.delete(jobId);
+  child.stdout?.removeAllListeners();
+  child.stderr?.removeAllListeners();
+  if (child.exitCode == null && child.signalCode == null) {
+    child.kill('SIGTERM');
+  }
+}
+
+/**
+ * Track the spawned process for a running job. Listeners are removed
+ * on close/error so the web process does not retain stderr buffers.
+ */
+export function registerCtaJobChild(jobId: string, child: ChildProcess): void {
+  childByJobId.set(jobId, child);
+  const onDone = (): void => {
+    detachCtaJobChild(jobId);
+  };
+  child.once('close', onDone);
+  child.once('error', onDone);
+}
+
+export function countRunningCtaJobs(): number {
+  pruneCtaJobs();
+  let running = 0;
+  for (const job of jobs.values()) {
+    if (job.status === 'running') running += 1;
+  }
+  return running;
+}
 
 function logPrune(removed: number, remaining: number): void {
   if (removed === 0) return;
@@ -59,6 +113,7 @@ export function pruneCtaJobs(now = Date.now()): { removed: number; remaining: nu
     if (!job.finishedAt) continue;
     const age = now - Date.parse(job.finishedAt);
     if (age > CTA_JOB_TERMINAL_TTL_MS) {
+      disposeCtaJobChild(id);
       jobs.delete(id);
       removed++;
     }
@@ -68,7 +123,9 @@ export function pruneCtaJobs(now = Date.now()): { removed: number; remaining: nu
     const terminals = [...jobs.entries()].filter(([, j]) => j.status !== 'running' && j.finishedAt);
     if (terminals.length === 0) break;
     terminals.sort((a, b) => Date.parse(a[1].finishedAt!) - Date.parse(b[1].finishedAt!));
-    jobs.delete(terminals[0]![0]);
+    const evictId = terminals[0]![0];
+    disposeCtaJobChild(evictId);
+    jobs.delete(evictId);
     removed++;
   }
 

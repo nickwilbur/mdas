@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'events';
+import type { ChildProcess } from 'child_process';
 import {
   __resetCtaJobStoreForTests,
+  CTA_JOB_MAX_CONCURRENT,
   CTA_JOB_MAX_STORED,
   CTA_JOB_TERMINAL_TTL_MS,
+  countRunningCtaJobs,
+  disposeCtaJobChild,
   getCtaJob,
   listCtaJobsSortedRecent,
   pruneCtaJobs,
   putCtaJob,
+  registerCtaJobChild,
   type CTAJob,
 } from './cta-generation-jobs.js';
 
@@ -65,5 +71,48 @@ describe('pruneCtaJobs', () => {
     }
     pruneCtaJobs(now);
     expect(listCtaJobsSortedRecent(500).length).toBe(CTA_JOB_MAX_STORED);
+  });
+});
+
+describe('countRunningCtaJobs', () => {
+  it('counts only running jobs', () => {
+    putCtaJob(makeJob('run-a', 'running', '2026-01-15T11:00:00.000Z', null));
+    putCtaJob(makeJob('done-a', 'done', '2026-01-15T10:00:00.000Z', '2026-01-15T10:05:00.000Z'));
+    expect(countRunningCtaJobs()).toBe(1);
+  });
+
+  it('respects concurrent cap constant', () => {
+    for (let i = 0; i < CTA_JOB_MAX_CONCURRENT; i++) {
+      putCtaJob(makeJob(`run-${i}`, 'running', '2026-01-15T11:00:00.000Z', null));
+    }
+    expect(countRunningCtaJobs()).toBe(CTA_JOB_MAX_CONCURRENT);
+  });
+});
+
+function mockChild(): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = vi.fn();
+  child.exitCode = null;
+  child.signalCode = null;
+  return child;
+}
+
+describe('registerCtaJobChild', () => {
+  it('strips stdout/stderr listeners after close', () => {
+    const child = mockChild();
+    const stdoutSpy = vi.spyOn(child.stdout!, 'removeAllListeners');
+    registerCtaJobChild('job-1', child);
+    child.stdout!.on('data', () => {});
+    child.emit('close', 0);
+    expect(stdoutSpy).toHaveBeenCalled();
+  });
+
+  it('disposeCtaJobChild kills a live process', () => {
+    const child = mockChild();
+    registerCtaJobChild('job-2', child);
+    disposeCtaJobChild('job-2');
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
   });
 });

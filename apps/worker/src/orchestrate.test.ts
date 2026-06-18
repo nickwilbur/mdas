@@ -22,9 +22,13 @@ const {
   writeSnapshotAccounts,
   writeSnapshotOpportunities,
   writeAccountViews,
+  replaceSnapshotAccounts,
+  replaceSnapshotOpportunities,
+  replaceAccountViews,
   pruneOldRuns,
   updateRefreshProgress,
   attachRefreshRunToJob,
+  updateRefreshTrajectoryKpis,
   audit,
 } = vi.hoisted(() => ({
   startRefreshRun: vi.fn(async () => 'refresh-123'),
@@ -40,9 +44,13 @@ const {
   writeSnapshotAccounts: vi.fn(async () => undefined),
   writeSnapshotOpportunities: vi.fn(async () => undefined),
   writeAccountViews: vi.fn(async () => undefined),
+  replaceSnapshotAccounts: vi.fn(async () => undefined),
+  replaceSnapshotOpportunities: vi.fn(async () => undefined),
+  replaceAccountViews: vi.fn(async () => undefined),
   pruneOldRuns: vi.fn(async () => 0),
   updateRefreshProgress: vi.fn(async () => undefined),
   attachRefreshRunToJob: vi.fn(async () => undefined),
+  updateRefreshTrajectoryKpis: vi.fn(async () => undefined),
   audit: vi.fn(async () => undefined),
 }));
 
@@ -55,9 +63,13 @@ vi.mock('@mdas/db', () => ({
   writeSnapshotAccounts,
   writeSnapshotOpportunities,
   writeAccountViews,
+  replaceSnapshotAccounts,
+  replaceSnapshotOpportunities,
+  replaceAccountViews,
   pruneOldRuns,
   updateRefreshProgress,
   attachRefreshRunToJob,
+  updateRefreshTrajectoryKpis,
   audit,
   latestSuccessfulRun: vi.fn(async () => null),
 }));
@@ -85,6 +97,14 @@ vi.mock('@mdas/adapter-gainsight', () => ({ gainsightAdapter: { name: 'gs', isRe
 vi.mock('@mdas/adapter-staircase-gmail', () => ({ staircaseGmailAdapter: { name: 'sg', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-zuora-mcp', () => ({ zuoraMcpAdapter: { name: 'zu', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-glean-mcp', () => ({ gleanMcpAdapter: { name: 'gl', isReadOnly: true, fetch: vi.fn() } }));
+
+vi.mock('@mdas/forecast-generator', () => ({
+  computeRefreshTrajectoryKpis: vi.fn(() => ({
+    asOfDate: '2026-01-01',
+    current: { fiscalQuarterKey: 'FY27Q1', fiscalQuarterLabel: 'FY27 Q1', planUSD: null, flashUSD: 0, gapUSD: null, totalRiskUSD: 0, hedgeUSD: 0, redAccountCount: 0, yellowAccountCount: 0, accountCount: 0, opportunityCount: 0 },
+    next: { fiscalQuarterKey: 'FY27Q2', fiscalQuarterLabel: 'FY27 Q2', planUSD: null, flashUSD: 0, gapUSD: null, totalRiskUSD: 0, hedgeUSD: 0, redAccountCount: 0, yellowAccountCount: 0, accountCount: 0, opportunityCount: 0 },
+  })),
+}));
 
 // Mute the logger to keep test output clean.
 vi.mock('./logger.js', () => ({

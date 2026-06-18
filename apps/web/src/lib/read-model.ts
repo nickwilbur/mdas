@@ -12,7 +12,7 @@ import {
   readSnapshotOpportunities,
   query,
 } from '@mdas/db';
-import type { AccountView, CanonicalOpportunity, ChangeEvent } from '@mdas/canonical';
+import type { AccountView, CanonicalAccount, CanonicalOpportunity, ChangeEvent } from '@mdas/canonical';
 import { diffAll, computeRiskScore } from '@mdas/scoring';
 import { summarizeCerebroSnapshotQuality } from '@/lib/cerebro-connectors';
 
@@ -73,6 +73,39 @@ export async function getDashboardData(windowDays = DEFAULT_WINDOW_DAYS): Promis
   filteredViews.sort((a, b) => a.priorityRank - b.priorityRank);
   const enriched = enrichViewsWithRiskScore(filteredViews, wow.events);
   return { views: enriched, refreshId: run.id, startedAt: run.started_at };
+}
+
+/**
+ * Union Expand 3 accounts + opportunities from recent successful refreshes
+ * (excluding the current run). Used to back-fill in-quarter churn opps SFDC
+ * dropped between refreshes before the next worker retain pass runs.
+ */
+export async function loadChurnOpportunitySupplementFromRecentRefreshes(
+  currentRefreshId: string,
+  maxRuns = 20,
+): Promise<{ accounts: CanonicalAccount[]; opportunities: CanonicalOpportunity[] }> {
+  const runs = await listRefreshRuns(maxRuns);
+  const accountsById = new Map<string, CanonicalAccount>();
+  const opportunities: CanonicalOpportunity[] = [];
+  const seenOpp = new Set<string>();
+
+  for (const run of runs) {
+    if (run.id === currentRefreshId) continue;
+    const [accounts, opps] = await Promise.all([
+      readSnapshotAccounts(run.id),
+      readSnapshotOpportunities(run.id),
+    ]);
+    for (const a of accounts) {
+      if (a.franchise === 'Expand 3') accountsById.set(a.accountId, a);
+    }
+    for (const o of opps) {
+      if (seenOpp.has(o.opportunityId)) continue;
+      seenOpp.add(o.opportunityId);
+      opportunities.push(o);
+    }
+  }
+
+  return { accounts: [...accountsById.values()], opportunities };
 }
 
 export async function getAccount(accountId: string, windowDays = DEFAULT_WINDOW_DAYS): Promise<AccountView | null> {

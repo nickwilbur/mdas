@@ -9,7 +9,6 @@
 import { useEffect, useState } from 'react';
 import {
   currentFiscalQuarter,
-  nextFiscalQuarterKey,
   rollingFiscalQuarters,
   type FiscalQuarter,
 } from '@/lib/fiscal';
@@ -40,8 +39,7 @@ export function ForecastClient() {
   const availableQuarters = rollingFiscalQuarters(0, 4);
   const today = currentFiscalQuarter();
   const [selectedKey, setSelectedKey] = useState<string>(today.key);
-  const [planCurrentUSD, setPlanCurrentUSD] = useState<string>('');
-  const [planNextUSD, setPlanNextUSD] = useState<string>('');
+  const [planUSD, setPlanUSD] = useState<string>('');
   const [clariManagerForecastCsv, setClariManagerForecastCsv] = useState<string>('');
   const [response, setResponse] = useState<ForecastResponse | null>(null);
   const [busy, setBusy] = useState(false);
@@ -51,22 +49,15 @@ export function ForecastClient() {
   const selectedQuarter =
     availableQuarters.find((q) => q.key === selectedKey) ?? today;
 
-  /** Load saved plan amounts for the selected “current” and following quarter. */
+  /** Load saved plan amount for the selected quarter. */
   useEffect(() => {
     const plans = loadChurnPlansByQuarter();
-    const nextKey = nextFiscalQuarterKey(selectedKey);
     const cur = plans[selectedKey];
-    setPlanCurrentUSD(cur !== undefined ? formatStoredPlanForInput(cur) : '');
-    const nxt = nextKey ? plans[nextKey] : undefined;
-    setPlanNextUSD(nxt !== undefined ? formatStoredPlanForInput(nxt) : '');
+    setPlanUSD(cur !== undefined ? formatStoredPlanForInput(cur) : '');
   }, [selectedKey]);
 
   function persistPlansFromInputs() {
-    const nextKey = nextFiscalQuarterKey(selectedKey);
-    const cur = parseUSD(planCurrentUSD);
-    const nxt = parseUSD(planNextUSD);
-    persistChurnPlanForQuarter(selectedKey, cur);
-    if (nextKey) persistChurnPlanForQuarter(nextKey, nxt);
+    persistChurnPlanForQuarter(selectedKey, parseUSD(planUSD));
   }
 
   async function generate() {
@@ -74,11 +65,9 @@ export function ForecastClient() {
     setProgress({ step: 'start', label: 'Starting…', pct: 0 });
     try {
       const asOfDate = quarterStartIso(selectedQuarter);
-      const plan: { currentQuarterUSD?: number; nextQuarterUSD?: number } = {};
-      const cur = parseUSD(planCurrentUSD);
-      const nxt = parseUSD(planNextUSD);
+      const plan: { currentQuarterUSD?: number } = {};
+      const cur = parseUSD(planUSD);
       if (cur != null) plan.currentQuarterUSD = cur;
-      if (nxt != null) plan.nextQuarterUSD = nxt;
 
       const payload: Record<string, unknown> = { asOfDate, plan };
       if (clariManagerForecastCsv.trim()) {
@@ -138,13 +127,13 @@ export function ForecastClient() {
     <div className="space-y-4">
       <div className="rounded-lg border border-gray-200 bg-white p-4">
         <p className="mb-3 text-sm text-gray-600">
-          Generates a plaintext churn-call script covering the selected
-          quarter and the following quarter. Paste directly into Slack
-          or email — no formatting required. Plan amounts (negative
-          dollars for churn/downsell targets, e.g.{' '}
-          <code className="rounded bg-gray-100 px-1">-2164000</code>) are
+          Generates a plaintext churn-call script for the selected fiscal
+          quarter. Paste directly into Slack or email — no formatting
+          required. Plan amount (negative dollars for churn/downsell
+          targets, e.g.{' '}
+          <code className="rounded bg-gray-100 px-1">-2164000</code>) is
           saved per fiscal quarter in this browser after you generate or
-          leave a plan field, so you only set them once per quarter.
+          leave the plan field, so you only set it once per quarter.
           Paste a Clari manager forecast export CSV so headline Flash /
           Plan / Hedge match Clari&apos;s latest populated week.
         </p>
@@ -165,28 +154,14 @@ export function ForecastClient() {
           </label>
           <label className="text-sm">
             <div className="text-xs text-gray-500">
-              Plan — Current Quarter ($, optional)
+              Churn/Downsell Plan ($, optional)
             </div>
             <input
               type="text"
               inputMode="numeric"
               placeholder="e.g. -2164000"
-              value={planCurrentUSD}
-              onChange={(e) => setPlanCurrentUSD(e.target.value)}
-              onBlur={persistPlansFromInputs}
-              className="rounded border border-gray-300 px-2 py-1"
-            />
-          </label>
-          <label className="text-sm">
-            <div className="text-xs text-gray-500">
-              Plan — Next Quarter ($, optional)
-            </div>
-            <input
-              type="text"
-              inputMode="numeric"
-              placeholder="e.g. -300000"
-              value={planNextUSD}
-              onChange={(e) => setPlanNextUSD(e.target.value)}
+              value={planUSD}
+              onChange={(e) => setPlanUSD(e.target.value)}
               onBlur={persistPlansFromInputs}
               className="rounded border border-gray-300 px-2 py-1"
             />

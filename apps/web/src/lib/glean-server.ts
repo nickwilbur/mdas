@@ -13,6 +13,8 @@ import {
   type ResolvedGleanCreds,
 } from './auth';
 
+export type { GleanClient };
+
 export interface PerRequestGlean {
   client: GleanClient;
   principal: ResolvedGleanCreds['principal'];

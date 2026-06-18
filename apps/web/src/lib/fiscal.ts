@@ -47,6 +47,16 @@ export function fiscalQuarterKey(fy: number, q: number): string {
   return `${fy}-Q${q}`;
 }
 
+/** The fiscal quarter immediately before `currentKey`. */
+export function previousFiscalQuarterKey(currentKey: string): string | null {
+  const m = currentKey.match(/^(\d+)-Q([1-4])$/);
+  if (!m) return null;
+  const fy = parseInt(m[1]!, 10);
+  const q = parseInt(m[2]!, 10);
+  if (q === 1) return fiscalQuarterKey(fy - 1, 4);
+  return fiscalQuarterKey(fy, q - 1);
+}
+
 /** The fiscal quarter immediately after `currentKey` (e.g. `2027-Q2` → `2027-Q3`, `2027-Q4` → `2028-Q1`). */
 export function nextFiscalQuarterKey(currentKey: string): string | null {
   const m = currentKey.match(/^(\d+)-Q([1-4])$/);
@@ -55,6 +65,17 @@ export function nextFiscalQuarterKey(currentKey: string): string | null {
   const q = parseInt(m[2]!, 10);
   if (q === 4) return fiscalQuarterKey(fy + 1, 1);
   return fiscalQuarterKey(fy, q + 1);
+}
+
+/** UTC ISO date of the first day of a Zuora fiscal quarter (for anchoring forecast buckets). */
+export function fiscalQuarterStartIso(key: string): string {
+  const m = key.match(/^(\d+)-Q([1-4])$/);
+  if (!m) return new Date().toISOString().slice(0, 10);
+  const fy = parseInt(m[1]!, 10);
+  const q = parseInt(m[2]!, 10) as 1 | 2 | 3 | 4;
+  const monthByQ: Record<number, number> = { 1: 1, 2: 4, 3: 7, 4: 10 };
+  const year = fy - 1;
+  return new Date(Date.UTC(year, monthByQ[q]!, 1)).toISOString().slice(0, 10);
 }
 
 export function fiscalQuarterLabel(key: string): string {

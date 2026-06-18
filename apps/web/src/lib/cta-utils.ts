@@ -3,7 +3,7 @@
  * and data merging. No I/O — all functions take data in and return data out.
  */
 
-import { safeHttpUrl } from './url-safety';
+import { resolveCseSlackOwner } from '@mdas/cta-engine';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,8 @@ export interface RichCTA {
   cse?: { name: string; role: string } | null;
   situation_read?: string | null;
   point_of_view?: string | null;
+  atr_at_risk_usd?: number | null;
+  renewal_opportunity_name?: string | null;
 }
 
 export interface ParsedScan {
@@ -65,6 +67,7 @@ const PLAY_TYPE_DISPLAY: Record<string, string> = {
   share_risk: 'Share Risk',
   legacy_tech_risk: 'Legacy Tech Risk',
   sentiment_stale: 'Sentiment Stale',
+  data_quality_gap: 'Data Quality Gap',
 };
 
 // ── Risk-color helpers ─────────────────────────────────────────────────────
@@ -119,40 +122,89 @@ export function parseScanMarkdown(content: string): ParsedScan {
   return { richCTAs, slackMessages };
 }
 
-// ── Generate Slack message from CTA data (v2 voice) ────────────────────────
+// ── Generate Slack message from CTA data (v3 voice) ────────────────────────
 //
-// v2 reasoning-first, CSE-manager perspective. The LLM writes Layer 3
-// messages during scans; this function is the programmatic fallback for
-// rendering stored CTAs.
+// Calibrated to Nick's customer-channel posts (#cust-*): intent-first,
+// conversational, one specific fact, a human ask — not a dashboard dump.
 //
-// Calibration examples:
+// Reference patterns from live Slack:
+//   "I'd like to get ahead of NorthStar for the renewal on 9/30/26..."
+//   "I want to make sure we don't have a quiet customer carrying frustration..."
+//   "Do you mind touching base? I want to know if this is actually healthy or just quiet."
 //
-//   🔴 @kyle — D&B renews 5/28/26, $1.1M, and sentiment flagged red.
-//   can you take a look at this account today and send me your readout
-//   on the usage situation, risk level, and what you think we should do
-//   next by 5/21/26?
-//
-//   🟢 @ethan — RTO Insider renews 7/1/26, $37K. we have zero visibility
-//   here — can you dig in and send me a read on where things stand
-//   by 6/1/26?
-//
-// v2 rules:
-//  - Primary audience: CSEs (AE only for digital-first, no CSE)
-//  - @firstname lowercase (Slack resolves the mention)
-//  - Dates as m/d/yy — always include 2-digit year
-//  - Two facts max in the body — pick evidence that justifies the ask
-//  - Manager-style asks: outcome-oriented, not mechanical
-//  - Cc integrated into ask ("can you and @jeanie") only if AE must act
-//  - Deadline concrete: "by EOW" or "by m/d/yy"
-//  - Renewal opp link at end when URL exists
-//  - No bold, no bullet points, no headers, no data_gaps in message
-//  - 2–4 sentences target
+// Rules:
+//  - @mention CSE when assigned, else AE (digital) — full display name for Slack
+//  - Risk shortcode at start (:red_circle: etc.)
+//  - 2–3 sentences, single paragraph
+//  - One concrete fact max — skip signal laundry lists
+//  - No card due dates in the Slack text (deadlines stay on the board card)
 
-/** First name only from any owner format. */
-function firstName(owner: { name: string } | string | null | undefined): string {
-  if (!owner) return '';
-  const full = typeof owner === 'object' ? owner.name : owner;
-  return full.split(' ')[0] ?? full;
+/** Slack shortcode for risk dot at message start. */
+export function slackRiskEmoji(color: string): string {
+  if (color === '🔴' || color === 'Red') return ':red_circle:';
+  if (color === '🟡' || color === 'Yellow') return ':large_yellow_circle:';
+  return ':large_green_circle:';
+}
+
+/** Format @mention for Slack — prefers slack_handle, else full display name. */
+export function formatSlackMention(
+  owner: { name: string; slack_handle?: string } | string | null | undefined,
+): string {
+  if (!owner) return '@team';
+  if (typeof owner === 'string') return `@${owner}`;
+  const handle = owner.slack_handle?.replace(/^@/, '').trim();
+  if (handle) return `@${handle}`;
+  return `@${owner.name}`;
+}
+
+/** Apply known SFDC→Slack CSE corrections (e.g. Maha vs wrong Mahalakshmi record). */
+export function correctCseOwner(
+  owner: { name: string; role: string; slack_handle?: string } | null | undefined,
+): { name: string; role: string; slack_handle?: string } | null {
+  if (!owner?.name || owner.role !== 'CSE') return owner ?? null;
+  const corrected = resolveCseSlackOwner(null, owner.name);
+  if (!corrected) return owner;
+  return {
+    ...owner,
+    name: corrected.name,
+    slack_handle: corrected.slack_handle ?? owner.slack_handle,
+  };
+}
+
+/** Who gets @mentioned in Slack — CSE when assigned, otherwise AE (digital). */
+export function resolveMentionTarget(cta: RichCTA): {
+  owner: { name: string; role: string; slack_handle?: string };
+  isDigital: boolean;
+} {
+  const primary =
+    typeof cta.primary_owner === 'object' && cta.primary_owner
+      ? cta.primary_owner
+      : null;
+
+  const cse = correctCseOwner(
+    cta.cse ??
+      (primary?.role === 'CSE' ? primary : null) ??
+      cta.cc_owners?.find((o) => o.role === 'CSE') ??
+      null,
+  );
+  if (cse?.name) {
+    return { owner: cse, isDigital: false };
+  }
+
+  const ae =
+    cta.ae ??
+    (primary?.role === 'AE' ? primary : null) ??
+    cta.cc_owners?.find((o) => o.role === 'AE') ??
+    null;
+  if (ae?.name) {
+    return { owner: ae, isDigital: true };
+  }
+
+  const fallbackName =
+    typeof cta.primary_owner === 'string'
+      ? cta.primary_owner
+      : (primary?.name ?? 'team');
+  return { owner: { name: fallbackName, role: 'AE' }, isDigital: true };
 }
 
 /** Format ISO date as m/d/yy (v2 voice: always include 2-digit year). */
@@ -161,15 +213,6 @@ function shortDate(iso: string): string {
   if (!m) return iso;
   const yy = m[1]!.slice(2);
   return `${parseInt(m[2]!, 10)}/${parseInt(m[3]!, 10)}/${yy}`;
-}
-
-/** Format deadline as "by EOW" if ≤5 days, otherwise "by M/D". */
-function deadlinePhrase(iso: string): string {
-  const diff = Math.ceil(
-    (new Date(iso).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
-  );
-  if (diff <= 5 && diff >= 0) return 'by EOW';
-  return `by ${shortDate(iso)}`;
 }
 
 /** Extract specific metric from drivers (e.g. ARR, utilization %). */
@@ -221,192 +264,277 @@ function extractARR(drivers: string[] | undefined): string | null {
   return null;
 }
 
-/** Build the cc line — first names only, exclude Manager role. */
-function ccLine(
-  ccOwners: { name: string; role: string }[] | undefined,
-  primaryName: string,
-): string {
-  if (!ccOwners || ccOwners.length === 0) return '';
-  const names = ccOwners
-    .filter((o) => o.role !== 'Manager' && o.name !== primaryName)
-    .map((o) => firstName(o).toLowerCase());
-  if (names.length === 0) return '';
-  return ` cc ${names.join(' ')}`;
-}
+/** Commentary for Slack — keeps Current State and Renewal Risk label when present. */
+function commentaryForMessage(text: string | null | undefined): string | null {
+  if (!text?.trim()) return null;
+  const cleaned = text
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
 
-/** Pick the 2-3 most meaningful signal phrases from drivers. */
-function pickSignals(drivers: string[] | undefined): string[] {
-  if (!drivers) return [];
-  return drivers
-    .filter((d) => {
-      const dl = d.toLowerCase();
-      // Skip meta lines — ARR, Products, renewal date (those go in the opener)
-      if (dl.startsWith('arr:') || dl.startsWith('products:')) return false;
-      if (/^renewal\s*(date)?:/i.test(d)) return false;
-      return true;
-    })
-    .slice(0, 3);
-}
-
-/** Manager-style ask based on play type and context.
- *  Written from Nick's perspective as CSE manager — direct, human,
- *  outcome-oriented. AE-directed only for digital-first accounts. */
-function managerAsk(cta: RichCTA): string {
-  const isDigital = (typeof cta.primary_owner === 'object'
-    ? cta.primary_owner?.role
-    : null) === 'AE';
-
-  switch (cta.play_type) {
-    case 'utilization_risk':
-      return 'can you take a look at this account today and send me your readout on the usage situation, risk level, and what you think we should do next?';
-    case 'dark_account':
-      return isDigital
-        ? 'we have zero visibility here — can you dig in and send me a read on where things stand?'
-        : 'we haven\'t had eyes on this one in a while — can you dig in and send me your read on where things stand?';
-    case 'dark_renewal':
-      return 'can you connect with the AE on this one and make sure we have a clear game plan before renewal?';
-    case 'surprise_churn_watch':
-      return 'I need a quick gut check from you here — do you see anything that could create noise for renewal?';
-    case 'engagement_risk':
-      return 'we haven\'t reached out in a while — can you do a quick connect and let me know what you find?';
-    case 'managed_wind_down':
-      return 'can you make sure the wind-down timeline is documented and we have a clean exit plan?';
-    case 'no_strategic_engagement':
-      return 'can you prioritize getting a strategic touchpoint on the calendar this week?';
-    case 'sentiment_stale':
-      return 'can you get the sentiment updated so we have a clean view going into forecast?';
-    case 'confirmed_churn_retro':
-      return 'can you pull together a quick retro — what happened and what should we have caught earlier?';
-    default:
-      return 'can you take a look and send me your recommendation on next best action?';
+  const prefixMatch = cleaned.match(
+    /^(?:(?:Current\s+)?State and [Rr]enewal [Rr]isk|STATE AND RENEWAL RISK|ACTION PLAN):?\s*\.?\s*/i,
+  );
+  let label = '';
+  let body = cleaned;
+  if (prefixMatch) {
+    label =
+      prefixMatch[0]!.toLowerCase().includes('action')
+        ? 'ACTION PLAN'
+        : 'Current State and Renewal Risk';
+    body = cleaned.slice(prefixMatch[0].length).trim();
   }
+
+  body = body.replace(/^[\s.:]+/, '').trim();
+  const accountPlanIdx = body.search(/\bAccount Plan\b/i);
+  if (accountPlanIdx > 0) body = body.slice(0, accountPlanIdx).trim();
+
+  if (!body || body.length < 12) return null;
+  if (/^cse sentiment\s*(is\s*)?(red|yellow|green)/i.test(body)) return null;
+
+  const sentences = body.split(/\.\s+/).filter((s) => s.trim().length > 5);
+  let excerpt =
+    sentences.length >= 2
+      ? `${sentences[0]!.trim()}. ${sentences[1]!.trim()}.`
+      : sentences[0]
+        ? `${sentences[0]!.trim()}.`
+        : body;
+  excerpt = excerpt.replace(/\.$/, '').trim();
+  if (excerpt.length > 200) excerpt = `${excerpt.slice(0, 197)}…`;
+  else excerpt += '…';
+
+  const bodyText = excerpt.charAt(0).toUpperCase() + excerpt.slice(1);
+  if (label) return `${label}: ${bodyText}`;
+  return bodyText;
 }
 
-/** Narrativize raw driver strings into a human-readable supporting sentence.
- *  Instead of "CSE Sentiment: Red. Engagement: Red. Low Usage." →
- *  "seeing red across sentiment, engagement, and usage." */
-function narrativizeSignals(drivers: string[]): string {
-  // Collect color-flag signals by actual color and specific-data signals
-  const flagsByColor: Record<string, string[]> = { red: [], yellow: [] };
-  const specifics: string[] = [];
+/** Pick one human-readable fact from drivers — skip meta/ops noise. */
+function pickHumanFact(drivers: string[] | undefined): string | null {
+  if (!drivers?.length) return null;
+
+  const skip = (d: string) => {
+    const dl = d.toLowerCase();
+    return (
+      dl.startsWith('arr:') ||
+      dl.startsWith('atr:') ||
+      dl.startsWith('products:') ||
+      /^renewal\s*(date)?:/i.test(d) ||
+      /commentary last updated/i.test(d) ||
+      /no dedicated cse/i.test(d) ||
+      /no slack channel/i.test(d) ||
+      /^cse sentiment:\s*(red|yellow|green)/i.test(d)
+    );
+  };
+
+  const patterns: Array<{ re: RegExp; phrase: (m: RegExpMatchArray) => string }> = [
+    {
+      re: /no workshop logged in the last (\d+) days/i,
+      phrase: () => "doesn't look like we've reached out much lately",
+    },
+    {
+      re: /engagio engagement (\d+)\s*min/i,
+      phrase: (m) => `engagement has been pretty light (${m[1]} min in the last 30d)`,
+    },
+    {
+      re: /utilization[^.]{0,40}(\d+)%/i,
+      phrase: (m) => `utilization looks low (~${m[1]}%)`,
+    },
+    {
+      re: /low usage/i,
+      phrase: () => 'usage looks soft',
+    },
+    {
+      re: /cerebro engagement risk/i,
+      phrase: () => 'engagement risk is flagged in Cerebro',
+    },
+    {
+      re: /cerebro utilization risk/i,
+      phrase: () => 'utilization is tracking below where we want it',
+    },
+    {
+      re: /share[^.]{0,30}(\d+)%/i,
+      phrase: (m) => `share is only around ${m[1]}%`,
+    },
+    {
+      re: /no vp\+ meetings/i,
+      phrase: () => "we haven't had exec engagement recently",
+    },
+    {
+      re: /sentiment commentary last updated (\d+)d ago/i,
+      phrase: (m) => `sentiment notes are ${m[1]} days stale`,
+    },
+  ];
 
   for (const d of drivers) {
-    const dl = d.toLowerCase();
-    // Skip ARR, Products, and renewal date — those are in the opener
-    if (dl.startsWith('arr:') || dl.startsWith('products:')) continue;
-    if (/^renewal\s*(date)?:/i.test(d)) continue;
+    if (skip(d)) continue;
+    for (const { re, phrase } of patterns) {
+      const m = d.match(re);
+      if (m) return phrase(m);
+    }
+  }
 
-    // Detect "X: Red" / "X: Yellow" / "X: Green" pattern
-    const colorMatch = d.match(/^(.+?):\s*(Red|Yellow|Green)(?:\s*[,—]|$)/i);
+  for (const d of drivers) {
+    if (skip(d)) continue;
+    const colorMatch = d.match(/^(.+?):\s*(Red|Yellow)/i);
     if (colorMatch) {
-      const label = colorMatch[1]!.trim().toLowerCase()
+      const label = colorMatch[1]!
+        .trim()
+        .toLowerCase()
         .replace(/^cse\s+/, '')
         .replace(/\s+score$/, '');
-      const color = colorMatch[2]!.toLowerCase();
-      // Green signals are not risk flags — skip them
-      if (color === 'green') continue;
-      (flagsByColor[color] ??= []).push(label);
-      continue;
-    }
-
-    // "Low Usage" / "Engagement Red" shorthand
-    if (dl === 'low usage') { (flagsByColor.red ??= []).push('usage'); continue; }
-    if (/engagement\s*(is\s*)?(red|yellow)/i.test(dl)) {
-      const ey = dl.includes('yellow') ? 'yellow' : 'red';
-      (flagsByColor[ey] ??= []).push('engagement');
-      continue;
-    }
-
-    // Everything else is a specific data point
-    specifics.push(d.replace(/\.$/, ''));
-  }
-
-  const out: string[] = [];
-
-  // Collapse flags into natural phrases per color
-  for (const [color, flags] of Object.entries(flagsByColor)) {
-    if (flags.length === 0) continue;
-    if (flags.length >= 3) {
-      out.push(`seeing ${color} across ${flags.slice(0, -1).join(', ')}, and ${flags[flags.length - 1]}`);
-    } else {
-      out.push(`${flags.join(' and ')} flagged ${color}`);
+      if (label === 'sentiment') continue;
+      return `${label} is flagged ${colorMatch[2]!.toLowerCase()}`;
     }
   }
 
-  // Add up to 2 specific data points — lowercase start unless it's an acronym
-  for (const s of specifics.slice(0, 2)) {
-    const firstWord = s.split(/\s/)[0] ?? '';
-    // Don't lowercase acronyms (NA, NPS, ARR, CEO) or proper nouns
-    if (firstWord === firstWord.toUpperCase() && firstWord.length <= 4) {
-      out.push(s);
-    } else {
-      out.push(s.charAt(0).toLowerCase() + s.slice(1));
-    }
+  const fallback = drivers.find((d) => !skip(d));
+  if (!fallback) return null;
+  const trimmed = fallback.replace(/\.$/, '');
+  if (trimmed.length > 90) return null;
+  const firstWord = trimmed.split(/\s/)[0] ?? '';
+  if (firstWord === firstWord.toUpperCase() && firstWord.length <= 4) return trimmed;
+  return trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
+}
+
+function renewalPhrase(
+  accountName: string,
+  renewalDate: string | null,
+  arr: string | null,
+  style: 'ahead' | 'inline',
+): string {
+  if (!renewalDate) {
+    return arr ? `${accountName} is at ${arr}` : '';
+  }
+  const when = shortDate(renewalDate);
+  if (style === 'ahead') {
+    return arr
+      ? `I'd like to get ahead of ${accountName} for renewal on ${when} (${arr})`
+      : `I'd like to get ahead of ${accountName} for renewal on ${when}`;
+  }
+  return arr ? `Renewal is ${when} (${arr})` : `Renewal is ${when}`;
+}
+
+function intentLead(playType: string, isDigital: boolean): string {
+  switch (playType) {
+    case 'dark_account':
+      return isDigital
+        ? "I'm trying to get some visibility on this one"
+        : "I want to make sure we don't have a quiet account carrying risk into the next cycle";
+    case 'dark_renewal':
+      return "I'd like to get ahead of this renewal before we're in crunch mode";
+    case 'utilization_risk':
+      return "Wanted to flag usage on this one ahead of renewal";
+    case 'engagement_risk':
+    case 'no_strategic_engagement':
+      return "I'm trying to get some engagement going here";
+    case 'surprise_churn_watch':
+      return 'I want a quick read on this one before forecast';
+    case 'managed_wind_down':
+      return 'Want to make sure we have a clean plan on the wind-down';
+    case 'sentiment_stale':
+      return "I'd like a fresher read on sentiment before we go into forecast";
+    case 'data_quality_gap':
+      return "We're missing some signal on this account and I want to close the gap";
+    default:
+      return "I'd like to get ahead of this one";
+  }
+}
+
+function aeSlackMention(cta: RichCTA): string | null {
+  if (!cta.ae?.name) return null;
+  const { owner } = resolveMentionTarget(cta);
+  if (owner.role === 'AE') return null;
+  return formatSlackMention(cta.ae);
+}
+
+/** Conversational ask — play-aware; card deadline is shown on the board only. */
+function naturalAsk(cta: RichCTA): string {
+  const { isDigital } = resolveMentionTarget(cta);
+  const ae = aeSlackMention(cta);
+
+  let ask: string;
+  switch (cta.play_type) {
+    case 'utilization_risk':
+      ask = 'Can you dig into usage and let me know what you think we should do';
+      break;
+    case 'dark_account':
+      ask = isDigital
+        ? 'Can you dig in and send me a read on where things stand'
+        : 'Do you mind touching base? I want to know if this is healthy or just quiet';
+      break;
+    case 'dark_renewal':
+      ask = ae
+        ? `Can you sync with ${ae} and make sure we have a clear game plan before renewal`
+        : 'Can you connect with the AE and make sure we have a clear game plan before renewal';
+      break;
+    case 'surprise_churn_watch':
+      ask = 'Quick gut check — do you see anything that could create noise for renewal';
+      break;
+    case 'engagement_risk':
+      ask = ae
+        ? `Can you reach out and re-introduce yourself as the CSE? Get ${ae} involved if they've been in the thread — I'd like to understand live sentiment`
+        : "Can you reach out and let me know what you're hearing";
+      break;
+    case 'no_strategic_engagement':
+      ask = 'Can you get a strategic touchpoint on the calendar this week';
+      break;
+    case 'managed_wind_down':
+      ask = 'Can you make sure the wind-down timeline is documented and we have a clean exit plan';
+      break;
+    case 'sentiment_stale':
+      ask = 'Can you get sentiment updated so we have a clean view going into forecast';
+      break;
+    case 'confirmed_churn_retro':
+    case 'churn_retro':
+      ask = 'Can you pull together a quick retro on what happened and what we should have caught earlier';
+      break;
+    case 'data_quality_gap':
+      ask = 'Can you validate the account mapping and get me a read on actual usage and engagement';
+      break;
+    default:
+      ask = 'Can you take a look and let me know your recommendation on next best action';
   }
 
-  return out.join('. ');
+  return `${ask}?`;
+}
+
+/** @deprecated kept for tests that import narrativize behavior indirectly */
+function narrativizeSignals(drivers: string[]): string {
+  return pickHumanFact(drivers) ?? '';
 }
 
 export function generateSlackMessage(cta: RichCTA): string {
-  const emoji = riskEmoji(cta.risk_color);
-  const primaryObj =
-    typeof cta.primary_owner === 'object' && cta.primary_owner
-      ? cta.primary_owner
-      : null;
-  const primaryName = primaryObj?.name ?? (cta.primary_owner as string);
-  const ownerFirst = firstName(cta.primary_owner).toLowerCase();
+  const emoji = slackRiskEmoji(cta.risk_color);
+  const { owner: mentionTarget, isDigital } = resolveMentionTarget(cta);
+  const mention = formatSlackMention(mentionTarget);
 
-  // Extract structured data from drivers
   const renewalDate = extractRenewalDate(cta.drivers);
   const arr = extractARR(cta.drivers);
-  const signals = cta.drivers ? narrativizeSignals(cta.drivers) : '';
+  const fact = commentaryForMessage(cta.cse_sentiment_commentary) ?? pickHumanFact(cta.drivers);
 
   const parts: string[] = [];
 
-  // ── 1. Opener: @owner — account + renewal/ARR + top signal
-  let opener = `${emoji} @${ownerFirst} — ${cta.account_name}`;
-  if (renewalDate) {
-    opener += ` renews ${shortDate(renewalDate)}`;
-    if (arr) opener += `, ${arr},`;
-  } else if (arr) {
-    opener += `, ${arr},`;
-  }
-  if (signals) {
-    opener += (renewalDate || arr ? ' and ' : ' — ') + signals;
-  }
-  opener += '.';
-  parts.push(opener);
+  const lead = intentLead(cta.play_type, isDigital);
+  const renewalCtx = renewalPhrase(cta.account_name, renewalDate, arr, 'ahead');
 
-  // ── 2. Supporting fact: commentary first sentence (1 sentence max)
-  if (cta.cse_sentiment_commentary) {
-    const commentary = cta.cse_sentiment_commentary
-      .replace(/^STATE AND RENEWAL RISK:\s*/i, '')
-      .replace(/^ACTION PLAN:\s*/i, '')
-      .trim();
-    const firstSentence = commentary.split(/\.\s/)[0]?.trim();
-    if (firstSentence && firstSentence.length < 180 && firstSentence.length > 20) {
-      const trimmed = firstSentence.replace(/\.$/, '');
-      if (!trimmed.toLowerCase().match(/^cse sentiment\s*(is\s*)?(red|yellow|green)/)) {
-        parts.push(
-          trimmed.charAt(0).toLowerCase() + trimmed.slice(1) + '.',
-        );
-      }
-    }
+  let body = `${emoji} ${mention} — `;
+  if (renewalCtx && ['dark_renewal', 'utilization_risk', 'sentiment_stale', 'surprise_churn_watch'].includes(cta.play_type)) {
+    body += `${renewalCtx}.`;
+  } else if (renewalDate) {
+    body += `${lead}. ${renewalPhrase(cta.account_name, renewalDate, arr, 'inline')}.`;
+  } else {
+    body += `${lead} on ${cta.account_name}`;
+    if (arr) body += ` (${arr})`;
+    body += '.';
+  }
+  parts.push(body);
+
+  if (fact) {
+    parts.push(fact.endsWith('…') || fact.endsWith('.') ? fact : `${fact}.`);
   }
 
-  // ── 3. Ask + deadline (manager-style, play_type-aware)
-  const dl = deadlinePhrase(cta.deadline);
-  const ask = managerAsk(cta);
-  parts.push(ask.replace(/\?$/, '') + ` ${dl}?`);
-
-  // ── 4. Renewal opp link in Slack mrkdwn (<url|label>).
-  //      Skipped when the URL is missing or not a safe http(s) URL —
-  //      a tampered scan file must not be able to inject a javascript:
-  //      link that fires when a teammate clicks the Slack message.
-  const safeRenewalUrl = safeHttpUrl(cta.renewal_opportunity_url);
-  if (safeRenewalUrl) {
-    parts.push(`<${safeRenewalUrl}|Renewal opp>`);
-  }
+  parts.push(naturalAsk(cta));
 
   return parts.join(' ');
 }

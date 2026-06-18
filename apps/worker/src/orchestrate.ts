@@ -10,6 +10,7 @@ import type {
   RefreshContext,
   SourceLink,
 } from '@mdas/canonical';
+import { filterExpand3Snapshot, dedupeSourceLinksByUrl } from '@mdas/canonical';
 import {
   attachRefreshRunToJob,
   audit,
@@ -23,7 +24,12 @@ import {
   writeAccountViews,
   writeSnapshotAccounts,
   writeSnapshotOpportunities,
+  replaceSnapshotAccounts,
+  replaceSnapshotOpportunities,
+  replaceAccountViews,
+  updateRefreshTrajectoryKpis,
 } from '@mdas/db';
+import { computeRefreshTrajectoryKpis } from '@mdas/forecast-generator';
 import {
   // SCORING_VERSION, // TODO: Fix module resolution issue
   buildAccountView,
@@ -218,14 +224,7 @@ export function mergeSourceLinks(
   existing: SourceLink[] | undefined,
   next: SourceLink[] | undefined,
 ): SourceLink[] {
-  const byUrl = new Map<string, SourceLink>();
-  for (const link of existing ?? []) {
-    if (link.url) byUrl.set(link.url, link);
-  }
-  for (const link of next ?? []) {
-    if (link.url) byUrl.set(link.url, link);
-  }
-  return [...byUrl.values()];
+  return dedupeSourceLinksByUrl(existing, next);
 }
 
 /** Observability helper: surface snapshot citation bloat after merge. */
@@ -594,7 +593,9 @@ export async function runRefresh(
         accounts: merged.accounts.length,
         opportunities: merged.opportunities.length,
       };
-      merged = applySalesforceAuthoritativeSnapshot(merged, sfResult);
+      merged = applySalesforceAuthoritativeSnapshot(merged, sfResult, {
+        asOfDate: startedAt.toISOString().slice(0, 10),
+      });
       ctx.logger.info('refresh.salesforce.authoritative', {
         before,
         after: {
@@ -604,6 +605,19 @@ export async function runRefresh(
       });
     }
   }
+
+  const beforeExpand3 = {
+    accounts: merged.accounts.length,
+    opportunities: merged.opportunities.length,
+  };
+  merged = filterExpand3Snapshot(merged);
+  ctx.logger.info('refresh.expand3.scope', {
+    before: beforeExpand3,
+    after: {
+      accounts: merged.accounts.length,
+      opportunities: merged.opportunities.length,
+    },
+  });
   const sourceLinkStats = summarizeSourceLinkCounts(merged);
   ctx.logger.info('refresh.merge.sourceLinks', sourceLinkStats);
 
@@ -624,8 +638,8 @@ export async function runRefresh(
   const diffWindowDays = Number(process.env.DIFF_WINDOW_DAYS) || 7;
   const persistStart = Date.now();
   const [, , prevRun] = await Promise.all([
-    writeSnapshotAccounts(refreshId, merged.accounts),
-    writeSnapshotOpportunities(refreshId, merged.opportunities),
+    replaceSnapshotAccounts(refreshId, merged.accounts),
+    replaceSnapshotOpportunities(refreshId, merged.opportunities),
     baselineRunForWindow(refreshId, diffWindowDays),
   ]);
   let prevAccounts: CanonicalAccount[] = [];
@@ -674,10 +688,25 @@ export async function runRefresh(
   const ranked = rankAccountViews(views);
 
   // Phase 6: Publish.
-  await writeAccountViews(refreshId, ranked);
+  await replaceAccountViews(refreshId, ranked);
 
   const status: 'success' | 'partial' | 'failed' =
     succeeded.length === 0 ? 'failed' : succeeded.length === adapters.length ? 'success' : 'partial';
+
+  if (status !== 'failed') {
+    try {
+      const asOfDate = startedAt.toISOString().slice(0, 10);
+      await updateRefreshTrajectoryKpis(
+        refreshId,
+        computeRefreshTrajectoryKpis(ranked, asOfDate),
+      );
+    } catch (err) {
+      ctx.logger.warn('refresh.trajectoryKpis.failed', {
+        refreshId,
+        error: (err as Error).message,
+      });
+    }
+  }
 
   await completeRefreshRun(refreshId, status, {
     sourcesSucceeded: succeeded,

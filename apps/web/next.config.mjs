@@ -27,6 +27,7 @@ const nextConfig = {
   transpilePackages: [
     '@mdas/adapter-shared',
     '@mdas/canonical',
+    '@mdas/cta-engine',
     '@mdas/db',
     '@mdas/scoring',
     '@mdas/forecast-generator',

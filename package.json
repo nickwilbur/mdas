@@ -25,6 +25,9 @@
     "sf:validate": "tsx scripts/validate-salesforce-schema.ts",
     "cta:generate": "tsx scripts/generate-ctas.ts",
     "cta:dry-run": "tsx scripts/generate-ctas.ts --dry-run",
+    "snapshot:prune-expand3": "tsx scripts/prune-expand3-snapshot.ts",
+    "snapshot:compact-source-links": "tsx scripts/compact-snapshot-source-links.ts",
+    "snapshot:backfill-trajectory-kpis": "tsx scripts/backfill-trajectory-kpis.ts",
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium",
     "sweep:slack": "tsx scripts/sweep-slack-channels.mts"

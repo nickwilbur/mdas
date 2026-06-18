@@ -18,7 +18,7 @@ type StreamEvent =
 export async function POST(req: Request): Promise<Response> {
   const body = (await req.json().catch(() => ({}))) as {
     asOfDate?: string;
-    plan?: { currentQuarterUSD?: number; nextQuarterUSD?: number };
+    plan?: { currentQuarterUSD?: number };
     clariManagerForecastCsv?: string;
   };
   const asOfDate = body.asOfDate ?? new Date().toISOString().slice(0, 10);

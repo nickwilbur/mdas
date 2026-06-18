@@ -87,69 +87,9 @@ export function generateClariCsv(
 }
 
 // ----- Dark accounts (§4.7) -----
-//
-// "Dark" = no signal of customer-facing activity in the last
-// `windowDays` (default 7). Specifically:
-//   - no recentMeetings within the window,
-//   - no workshops with workshopDate within the window,
-//   - sentiment commentary not updated within the window.
-//
-// Dark accounts are surfaced as a headline counter in the markdown
-// generator and as a separate "Dark Accounts" section so a manager
-// notices when an account in their book has gone silent before the
-// renewal window opens.
+// Shared detector lives in @mdas/cta-engine; re-export for forecast consumers.
 
-const DAY = 86_400_000;
-
-export interface DarkAccount {
-  accountId: string;
-  accountName: string;
-  daysSinceLastSignal: number;
-  reason: string;
-  arr: number;
-}
-
-export function findDarkAccounts(
-  views: AccountView[],
-  options: { windowDays?: number; now?: number } = {},
-): DarkAccount[] {
-  const { windowDays = 7, now = Date.now() } = options;
-  const cutoff = now - windowDays * DAY;
-  const out: DarkAccount[] = [];
-  for (const v of views) {
-    // Skip Confirmed Churn — they are by definition "done", not dark.
-    if (v.bucket === 'Confirmed Churn') continue;
-
-    const meetingTimes = v.account.recentMeetings
-      .map((m) => Date.parse(m.startTime ?? ''))
-      .filter((t) => Number.isFinite(t));
-    const workshopTimes = v.account.workshops
-      .map((w) => Date.parse(w.workshopDate ?? ''))
-      .filter((t) => Number.isFinite(t));
-    const sentimentT = v.account.cseSentimentCommentaryLastUpdated
-      ? Date.parse(v.account.cseSentimentCommentaryLastUpdated)
-      : Number.NEGATIVE_INFINITY;
-    const lastSignal = Math.max(
-      sentimentT,
-      ...(meetingTimes.length ? meetingTimes : [Number.NEGATIVE_INFINITY]),
-      ...(workshopTimes.length ? workshopTimes : [Number.NEGATIVE_INFINITY]),
-    );
-    if (lastSignal >= cutoff) continue;
-    const days = Number.isFinite(lastSignal)
-      ? Math.floor((now - lastSignal) / DAY)
-      : Number.POSITIVE_INFINITY;
-    const reason = !Number.isFinite(lastSignal)
-      ? 'no recorded customer signal'
-      : `${days}d since last signal`;
-    out.push({
-      accountId: v.account.accountId,
-      accountName: v.account.accountName,
-      daysSinceLastSignal: Number.isFinite(days) ? days : -1,
-      reason,
-      arr: v.account.allTimeARR ?? 0,
-    });
-  }
-  // ARR-exposed first so the manager's eye lands on the largest book.
-  out.sort((a, b) => b.arr - a.arr);
-  return out;
-}
+export {
+  findSimpleDarkAccounts as findDarkAccounts,
+  type SimpleDarkAccount as DarkAccount,
+} from '@mdas/cta-engine';

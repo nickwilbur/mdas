@@ -136,6 +136,8 @@ export interface CanonicalAccount {
   churnReason: string | null;
   churnReasonSummary: string | null;
   churnDate: string | null;
+  /** Salesforce Customer_Status__c — used to exclude churned customers from Expand 3 scope. */
+  customerStatus?: string | null;
 
   gainsightTasks: GainsightTask[];
   workshops: Workshop[];
@@ -194,6 +196,12 @@ export interface CanonicalOpportunity {
   forecastHedgeUSD: number | null;
   acvDelta: number | null;
   knownChurnUSD: number | null;
+  /**
+   * SFDC `Churn_Risk__c` picklist on the renewal opportunity (e.g.
+   * `Confirmed Full Churn`, `At Risk`). Optional for snapshots written
+   * before 2026-06-16.
+   */
+  churnRisk?: string | null;
   productLine: string | null;
 
   /**
@@ -226,6 +234,15 @@ export interface CanonicalOpportunity {
   sourceErrors?: SourceErrorMap;
 }
 
+/** SFDC Churn_Risk__c value for renewal opps excluded from saveable renewal metrics. */
+export const CONFIRMED_FULL_CHURN_RISK = 'Confirmed Full Churn';
+
+export function isConfirmedFullChurnRisk(churnRisk: string | null | undefined): boolean {
+  return (
+    String(churnRisk ?? '').trim().toLowerCase() === CONFIRMED_FULL_CHURN_RISK.toLowerCase()
+  );
+}
+
 export const isConfirmedChurn = (
   a: CanonicalAccount,
   opps: CanonicalOpportunity[],
@@ -234,8 +251,7 @@ export const isConfirmedChurn = (
   opps.some(
     (o) =>
       !!o.fullChurnNotificationToOwnerDate ||
-      !!o.fullChurnFinalEmailSentDate ||
-      (o.knownChurnUSD !== null && o.knownChurnUSD > 0),
+      !!o.fullChurnFinalEmailSentDate,
   );
 
 // ---------- Adapter contract ----------
@@ -402,3 +418,12 @@ export interface AccountView {
   acvAtRiskUSD: number;
   changeEvents: ChangeEvent[];
 }
+
+export {
+  EXPAND3_FRANCHISE,
+  EXPAND3_ACTIVE_CUSTOMER_STATUSES,
+  filterExpand3Snapshot,
+  isActiveExpand3Account,
+  type Expand3SnapshotData,
+} from './expand3.js';
+export { dedupeSourceLinksByUrl } from './source-links.js';

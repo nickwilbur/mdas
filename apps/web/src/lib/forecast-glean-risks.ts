@@ -23,7 +23,7 @@
 // write the section themselves before the call. Same convention as
 // `forecast-narrative.ts` / `forecast-account-context.ts`.
 import 'server-only';
-import { gleanForRequest } from './glean-server';
+import { gleanForRequest, type GleanClient } from './glean-server';
 import type { GleanChatRequestMessage } from '@mdas/adapter-shared/glean';
 import type { GleanFlaggedRisk } from '@mdas/forecast-generator';
 import { cleanGleanChatReply } from './clean-glean-chat-reply';
@@ -68,12 +68,13 @@ export async function generateGleanFlaggedRisks(
   req: Request,
   universes: QuarterAccountUniverse[],
   asOfDate: string,
+  sharedClient?: GleanClient,
 ): Promise<GleanFlaggedRisk[]> {
   if (universes.length === 0) return [];
 
-  let glean: Awaited<ReturnType<typeof gleanForRequest>>;
+  let client: GleanClient;
   try {
-    glean = await gleanForRequest(req);
+    client = sharedClient ?? (await gleanForRequest(req)).client;
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('forecast.gleanFlaggedRisks.client_failed', {
@@ -84,7 +85,7 @@ export async function generateGleanFlaggedRisks(
   }
 
   const settled = await Promise.allSettled(
-    universes.map((u) => runOneQuarter(glean.client, u, asOfDate)),
+    universes.map((u) => runOneQuarter(client, u, asOfDate)),
   );
   const out: GleanFlaggedRisk[] = [];
   for (let i = 0; i < settled.length; i += 1) {
@@ -104,7 +105,7 @@ export async function generateGleanFlaggedRisks(
 }
 
 async function runOneQuarter(
-  client: Awaited<ReturnType<typeof gleanForRequest>>['client'],
+  client: GleanClient,
   universe: QuarterAccountUniverse,
   asOfDate: string,
 ): Promise<GleanFlaggedRisk[]> {

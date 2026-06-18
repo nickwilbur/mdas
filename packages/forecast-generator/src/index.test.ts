@@ -2,7 +2,7 @@
 //
 // The output is a plaintext script the CSE manager pastes into their
 // quarterly churn-call doc. These tests pin:
-//   1. Section ordering (Current Quarter then Next Quarter, with the
+//   1. Section ordering (single selected quarter, with the
 //      template fields in the documented order).
 //   2. Plaintext-only invariants (no markdown links, no bold).
 //   3. Color band semantics (red / yellow / green).
@@ -136,14 +136,14 @@ function mkView(
 }
 
 describe('generateWeeklyForecast (churn-call script)', () => {
-  it('renders Current Quarter then Next Quarter with all template fields', () => {
+  it('renders the selected quarter with all template fields', () => {
     const md = generateWeeklyForecast({
       views: [],
       changeEvents: [],
       asOfDate: AS_OF,
     });
     const expectedFields = [
-      'Current Quarter:',
+      'Quarter:',
       'Churn/Downsell Plan:',
       'Churn/Downsell Flash / Most Likely:',
       'Gap to Plan:',
@@ -156,9 +156,9 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       'Accounts to Close Gap (churn-save renewals):',
       'Week-over-week Changes - Improvements and increased risk:',
       'Key Saves/Improvements to close the gap from Total Churn/Downsell risk to Flash:',
+      'Accounts in red - risk trending:',
       'Accounts in yellow - path to add hedge to the line:',
       'Accounts in green - path to capture the existing hedge already in the line:',
-      'Next Quarter:',
     ];
     let cursor = 0;
     for (const field of expectedFields) {
@@ -198,14 +198,14 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).toContain('Stenograph LLC');
   });
 
-  it('labels the current quarter using fiscal-quarter math', () => {
+  it('labels the selected quarter using fiscal-quarter math', () => {
     const md = generateWeeklyForecast({
       views: [],
       changeEvents: [],
       asOfDate: '2026-04-28', // FY27 Q1
     });
-    expect(md).toContain('Current Quarter: FY27 Q1');
-    expect(md).toContain('Next Quarter: FY27 Q2');
+    expect(md).toContain('Quarter: FY27 Q1');
+    expect(md).not.toContain('Quarter: FY27 Q2');
   });
 
   it('rolls year boundary — Jan asOfDate sits in Q4 of prior FY', () => {
@@ -214,8 +214,8 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: '2027-01-10', // FY27 Q4
     });
-    expect(md).toContain('Current Quarter: FY27 Q4');
-    expect(md).toContain('Next Quarter: FY28 Q1');
+    expect(md).toContain('Quarter: FY27 Q4');
+    expect(md).not.toContain('Quarter: FY28 Q1');
   });
 
   it('computes Flash from knownChurnUSD when provided', () => {
@@ -314,12 +314,15 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    const currSection = md.slice(0, md.indexOf('Next Quarter'));
-    const headerLine = currSection
+    const section = md;
+    const headerLine = section
       .split('\n')
       .find((l) => l.startsWith('Renewal Downsell / Churn Opps:'));
     expect(headerLine).toBe(
       'Renewal Downsell / Churn Opps: 3 opps (1 open, 2 closed), -$20,000 open churn, -$110,000 closed churn (1 won, 1 lost)',
+    );
+    expect(section).toMatch(
+      /Churn\/Downsell Flash \/ Most Likely: -\$130,000/,
     );
   });
 
@@ -1154,7 +1157,7 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).not.toMatch(/Churn\/Downsell Flash \/ Most Likely: \$1,924,973/);
   });
 
-  it('buckets August close dates into next fiscal quarter, not current, when current is FY27 Q2', () => {
+  it('only includes opps in the quarter containing asOfDate (FY27 Q2)', () => {
     const accQ2 = mkAccount({ accountId: 'C2', accountName: 'June Co' });
     const oppQ2 = mkOpportunity({
       accountId: 'C2',
@@ -1175,25 +1178,21 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: '2026-05-01',
     });
-    const currIdx = md.indexOf('Current Quarter');
-    const nextIdx = md.indexOf('Next Quarter');
-    const currSection = md.slice(currIdx, nextIdx);
-    const nextSection = md.slice(nextIdx);
-    expect(currSection).toMatch(/Flash \/ Most Likely: -\$100,000/);
-    expect(currSection).not.toContain('777');
-    expect(nextSection).toMatch(/August Co/);
-    expect(nextSection).toMatch(/Flash \/ Most Likely: -\$777,000/);
+    expect(md).toMatch(/Quarter: FY27 Q2/);
+    expect(md).toMatch(/Flash \/ Most Likely: -\$100,000/);
+    expect(md).not.toContain('777');
+    expect(md).not.toContain('August Co');
   });
 
-  it('partitions opportunities into the correct quarter by closeDate', () => {
+  it('only includes opps in the selected quarter by closeDate', () => {
     const accCurrent = mkAccount({ accountId: 'AC', accountName: 'Current Co' });
     const oppCurrent = mkOpportunity({
       accountId: 'AC',
       knownChurnUSD: 100_000,
       closeDate: '2026-04-15', // FY27 Q1
     });
-    const accNext = mkAccount({ accountId: 'AN', accountName: 'Next Co' });
-    const oppNext = mkOpportunity({
+    const accOther = mkAccount({ accountId: 'AN', accountName: 'Other Co' });
+    const oppOther = mkOpportunity({
       accountId: 'AN',
       knownChurnUSD: 200_000,
       closeDate: '2026-06-15', // FY27 Q2
@@ -1201,17 +1200,15 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     const md = generateWeeklyForecast({
       views: [
         mkView(accCurrent, [oppCurrent], { bucket: 'Confirmed Churn' }),
-        mkView(accNext, [oppNext], { bucket: 'Confirmed Churn' }),
+        mkView(accOther, [oppOther], { bucket: 'Confirmed Churn' }),
       ],
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    const currIdx = md.indexOf('Current Quarter');
-    const nextIdx = md.indexOf('Next Quarter');
-    const currSection = md.slice(currIdx, nextIdx);
-    const nextSection = md.slice(nextIdx);
-    expect(currSection).toMatch(/Flash \/ Most Likely: -\$100,000/);
-    expect(nextSection).toMatch(/Flash \/ Most Likely: -\$200,000/);
+    expect(md).toMatch(/Quarter: FY27 Q1/);
+    expect(md).toMatch(/Flash \/ Most Likely: -\$100,000/);
+    expect(md).not.toContain('Other Co');
+    expect(md).not.toMatch(/Flash \/ Most Likely: -\$200,000/);
   });
 
   // 2026-05-20 manager feedback: Hedge / Close-Gap sections must only
@@ -1232,10 +1229,10 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    const currSection = md.slice(0, md.indexOf('Next Quarter'));
-    const hedgeBlock = currSection.slice(
-      currSection.indexOf('Accounts with Hedge'),
-      currSection.indexOf('Key Saves'),
+    const section = md;
+    const hedgeBlock = section.slice(
+      section.indexOf('Accounts with Hedge'),
+      section.indexOf('Key Saves'),
     );
     expect(hedgeBlock).not.toContain('Pipedrive');
     expect(hedgeBlock).toMatch(/Accounts with Hedge \(churn-save renewals\): \$0/);
@@ -1265,15 +1262,15 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       asOfDate: AS_OF,
     });
     // Account should not appear in the Hedge or Close-Gap totals/rows.
-    const currSection = md.slice(0, md.indexOf('Next Quarter'));
-    const hedgeBlock = currSection.slice(
-      currSection.indexOf('Accounts with Hedge'),
-      currSection.indexOf('Accounts to Close Gap'),
+    const section = md;
+    const hedgeBlock = section.slice(
+      section.indexOf('Accounts with Hedge'),
+      section.indexOf('Accounts to Close Gap'),
     );
     expect(hedgeBlock).not.toContain('Omitted Co');
-    const gapBlock = currSection.slice(
-      currSection.indexOf('Accounts to Close Gap'),
-      currSection.indexOf('Key Saves'),
+    const gapBlock = section.slice(
+      section.indexOf('Accounts to Close Gap'),
+      section.indexOf('Key Saves'),
     );
     expect(gapBlock).not.toContain('Omitted Co');
   });
@@ -1313,10 +1310,10 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    const currSection = md.slice(0, md.indexOf('Next Quarter'));
-    const hedgeBlock = currSection.slice(
-      currSection.indexOf('Accounts with Hedge'),
-      currSection.indexOf('Key Saves'),
+    const section = md;
+    const hedgeBlock = section.slice(
+      section.indexOf('Accounts with Hedge'),
+      section.indexOf('Key Saves'),
     );
     expect(hedgeBlock).not.toContain('Pipedrive');
     expect(hedgeBlock).toMatch(/Accounts with Hedge \(churn-save renewals\): \$0/);
@@ -1354,10 +1351,10 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    const currSection = md.slice(0, md.indexOf('Next Quarter'));
-    const hedgeBlock = currSection.slice(
-      currSection.indexOf('Accounts with Hedge'),
-      currSection.indexOf('Key Saves'),
+    const section = md;
+    const hedgeBlock = section.slice(
+      section.indexOf('Accounts with Hedge'),
+      section.indexOf('Key Saves'),
     );
     expect(hedgeBlock).toContain('Finale Inventory');
     expect(hedgeBlock).toMatch(/Accounts with Hedge \(churn-save renewals\): \$50,000/);
@@ -1392,10 +1389,10 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    const currSection = md.slice(0, md.indexOf('Next Quarter'));
-    const hedgeBlock = currSection.slice(
-      currSection.indexOf('Accounts with Hedge'),
-      currSection.indexOf('Key Saves'),
+    const section = md;
+    const hedgeBlock = section.slice(
+      section.indexOf('Accounts with Hedge'),
+      section.indexOf('Key Saves'),
     );
     expect(hedgeBlock).toContain('Kustomer, LLC.');
   });
@@ -1420,10 +1417,10 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       changeEvents: [],
       asOfDate: AS_OF,
     });
-    const currSection = md.slice(0, md.indexOf('Next Quarter'));
-    const hedgeBlock = currSection.slice(
-      currSection.indexOf('Accounts with Hedge'),
-      currSection.indexOf('Key Saves'),
+    const section = md;
+    const hedgeBlock = section.slice(
+      section.indexOf('Accounts with Hedge'),
+      section.indexOf('Key Saves'),
     );
     expect(hedgeBlock).not.toContain('No Category Co');
   });
@@ -1515,9 +1512,10 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       expect(notHedgedIdx).toBeGreaterThan(mismatchIdx);
       expect(md).toContain('Headlines:');
       expect(md).toContain(
-        '  - Mismatch Co is a NetSuite / pricing pressure problem',
+        '  - Mismatch Co is a NetSuite / pricing pressure problem ($71,000 gap)',
       );
-      expect(md).toContain('Mismatch Co');
+      expect(md).toContain('Renewals where ML Override ≠ Best Case: $71,000 total gap');
+      expect(md).toContain('Mismatch Co ($71,000 gap)');
       expect(md).toContain('Renewal: 2026-04-15');
       expect(md).toContain('Commentary: The AE best-case line is more optimistic');
       expect(md).toContain('Customer context: Procurement is evaluating NetSuite');
@@ -1536,6 +1534,55 @@ describe('generateWeeklyForecast (churn-call script)', () => {
         assignedCseName: 'Pat CSE',
         forecastMostLikelyUSD: -43_000,
       });
+    });
+
+    it('totals per-account gap labels to the section header', () => {
+      const acc1 = mkAccount({
+        accountId: 'ML1',
+        accountName: 'Alpha Co',
+        assignedCSE: { id: 'U1', name: 'CSE One' },
+      });
+      const acc2 = mkAccount({
+        accountId: 'ML2',
+        accountName: 'Beta Co',
+        assignedCSE: { id: 'U2', name: 'CSE Two' },
+      });
+      const opp1 = mkOpportunity({
+        accountId: 'ML1',
+        opportunityId: 'O-ML1',
+        closeDate: '2026-04-15',
+        forecastCategory: 'Best Case',
+        forecastMostLikelyOverride: -50_000,
+        bestCaseUSD: 10_000,
+      });
+      const opp2 = mkOpportunity({
+        accountId: 'ML2',
+        opportunityId: 'O-ML2',
+        closeDate: '2026-04-20',
+        forecastCategory: 'Commit',
+        forecastMostLikelyOverride: -30_000,
+        bestCaseUSD: 5_000,
+      });
+      const md = generateWeeklyForecast({
+        views: [mkView(acc1, [opp1]), mkView(acc2, [opp2])],
+        changeEvents: [],
+        asOfDate: AS_OF,
+        mlOverrideMismatchContext: {
+          'O-ML1': {
+            headline: 'Alpha is a pricing problem',
+            customerContext: 'Alpha procurement is pushing back on renewal pricing.',
+          },
+          'O-ML2': {
+            headline: 'Beta is an engagement problem',
+            customerContext: 'Beta engagement has been light ahead of renewal.',
+          },
+        },
+      });
+      expect(md).toContain(
+        'Renewals where ML Override ≠ Best Case: $95,000 total gap',
+      );
+      expect(md).toContain('Alpha Co ($60,000 gap)');
+      expect(md).toContain('Beta Co ($35,000 gap)');
     });
 
   });
@@ -1681,10 +1728,8 @@ describe('generateWeeklyForecast (churn-call script)', () => {
         views: [mkView(acc, [opp])],
         changeEvents: [],
         asOfDate: AS_OF,
-        healthSnapshot: {
-          currentQuarter:
-            'Q2 is flashing 14% over Plan and has widened by $150K over the last three weeks. Risk remains concentrated in Swing Education and Kustomer. No saves likely to close before EOQ without a leadership escalation.',
-        },
+        healthSnapshot:
+          'Q2 is flashing 14% over Plan and has widened by $150K over the last three weeks. Risk remains concentrated in Swing Education and Kustomer. No saves likely to close before EOQ without a leadership escalation.',
       });
       // Ordering: Hedge: line ⟶ blank ⟶ Health Snapshot: ⟶ narrative
       // ⟶ blank ⟶ Accounts with Hedge.
@@ -1732,39 +1777,25 @@ describe('generateWeeklyForecast (churn-call script)', () => {
         views: [mkView(acc, [opp])],
         changeEvents: [],
         asOfDate: AS_OF,
-        healthSnapshot: { currentQuarter: '   ' },
+        healthSnapshot: '   ',
       });
       expect(md).not.toContain('Health Snapshot:');
     });
 
-    it('renders independent narratives per quarter', () => {
+    it('renders the health snapshot narrative for the selected quarter', () => {
       const acc = mkAccount({ accountId: 'A1', accountName: 'Account A' });
-      // One opp in current quarter (FY27 Q1) and one in next (FY27 Q2).
-      const oppCurrent = mkOpportunity({
+      const opp = mkOpportunity({
         opportunityId: 'O-CUR',
         accountId: 'A1',
         closeDate: '2026-04-15',
       });
-      const oppNext = mkOpportunity({
-        opportunityId: 'O-NEXT',
-        accountId: 'A1',
-        closeDate: '2026-06-15',
-      });
       const md = generateWeeklyForecast({
-        views: [mkView(acc, [oppCurrent, oppNext])],
+        views: [mkView(acc, [opp])],
         changeEvents: [],
         asOfDate: AS_OF,
-        healthSnapshot: {
-          currentQuarter: 'CURRENT-NARRATIVE-MARKER text for Q1.',
-          nextQuarter: 'NEXT-NARRATIVE-MARKER text for Q2.',
-        },
+        healthSnapshot: 'CURRENT-NARRATIVE-MARKER text for Q1.',
       });
-      const currentIdx = md.indexOf('CURRENT-NARRATIVE-MARKER');
-      const nextQuarterHeader = md.indexOf('Next Quarter:');
-      const nextNarrativeIdx = md.indexOf('NEXT-NARRATIVE-MARKER');
-      expect(currentIdx).toBeGreaterThan(-1);
-      expect(currentIdx).toBeLessThan(nextQuarterHeader);
-      expect(nextNarrativeIdx).toBeGreaterThan(nextQuarterHeader);
+      expect(md).toContain('CURRENT-NARRATIVE-MARKER text for Q1.');
     });
 
     it('renders the stale-marker narrative verbatim (caller signals LLM failure here)', () => {
@@ -1778,9 +1809,7 @@ describe('generateWeeklyForecast (churn-call script)', () => {
         views: [mkView(acc, [opp])],
         changeEvents: [],
         asOfDate: AS_OF,
-        healthSnapshot: {
-          currentQuarter: '[Narrative unavailable — Glean call failed]',
-        },
+        healthSnapshot: '[Narrative unavailable — Glean call failed]',
       });
       expect(md).toContain(
         'Health Snapshot:\n  [Narrative unavailable — Glean call failed]',
@@ -2642,7 +2671,7 @@ describe('gleanFlaggedRisks (emerging-risk sibling block)', () => {
     expect(md).not.toContain('Glean-flagged emerging risks');
   });
 
-  it('separates current-quarter and next-quarter entries into their own blocks', () => {
+  it('only renders current-quarter Glean-flagged risks in the script', () => {
     const acc = mkAccount({ accountId: 'CA', accountName: 'Current Anchor' });
     const oppCurr = mkOpportunity({
       opportunityId: 'O-CURR',
@@ -2653,16 +2682,7 @@ describe('gleanFlaggedRisks (emerging-risk sibling block)', () => {
       forecastMostLikely: 100_000,
       forecastCategory: 'Best Case',
     });
-    const oppNext = mkOpportunity({
-      opportunityId: 'O-NEXT',
-      accountId: 'CA',
-      type: 'Renewal',
-      closeDate: '2026-06-15',
-      acv: 100_000,
-      forecastMostLikely: 100_000,
-      forecastCategory: 'Best Case',
-    });
-    const view = mkView(acc, [oppCurr, oppNext]);
+    const view = mkView(acc, [oppCurr]);
     const md = generateWeeklyForecast({
       views: [view],
       changeEvents: [],
@@ -2682,12 +2702,8 @@ describe('gleanFlaggedRisks (emerging-risk sibling block)', () => {
         },
       ],
     });
-    const currentSection = md.slice(0, md.indexOf('Next Quarter'));
-    const nextSection = md.slice(md.indexOf('Next Quarter'));
-    expect(currentSection).toContain('Current Only Co');
-    expect(currentSection).not.toContain('Next Only Co');
-    expect(nextSection).toContain('Next Only Co');
-    expect(nextSection).not.toContain('Current Only Co');
+    expect(md).toContain('Current Only Co');
+    expect(md).not.toContain('Next Only Co');
   });
 });
 

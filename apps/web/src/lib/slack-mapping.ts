@@ -232,6 +232,112 @@ export async function listMappings(
   };
 }
 
+const EXPORT_COLUMNS = [
+  'account_id',
+  'account_name',
+  'franchise',
+  'assigned_cse',
+  'account_owner',
+  'sfdc_slack_field_filled',
+  'salesforce_slack_channel_url',
+  'slack_url',
+  'slack_channel_id',
+  'channel_name',
+  'derived_channel_name',
+  'status',
+  'source',
+  'is_archived',
+  'status_reason',
+  'last_refreshed_at',
+] as const;
+
+function csvEscape(v: unknown): string {
+  if (v == null) return '""';
+  const s = String(v);
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
+export type ExportMappingsOptions = MappingFilters & MappingSort;
+
+export interface ExportMappingsResult {
+  csv: string;
+  rowCount: number;
+  filename: string;
+}
+
+/** All matching rows (no pagination) as a CSV string for download. */
+export async function exportMappingsCsv(
+  opts: ExportMappingsOptions = {},
+): Promise<ExportMappingsResult> {
+  const { whereSql, orderBySql, params } = buildMappingQuery(
+    {
+      status: opts.status,
+      source: opts.source,
+      q: opts.q,
+      channelIdQ: opts.channelIdQ,
+      channelNameQ: opts.channelNameQ,
+      refreshedAfter: opts.refreshedAfter,
+      refreshedBefore: opts.refreshedBefore,
+    },
+    { sort: opts.sort, dir: opts.dir },
+  );
+
+  const mappings = await query<MappingDbRow>(
+    `SELECT * FROM customer_slack_mapping ${whereSql} ${orderBySql}`,
+    params,
+  );
+
+  const run = await latestSuccessfulRun();
+  const snapshotById = new Map<string, CanonicalAccount>();
+  if (run) {
+    const snap = await query<{ payload: CanonicalAccount }>(
+      `SELECT payload FROM snapshot_account WHERE refresh_id = $1`,
+      [run.id],
+    );
+    for (const row of snap.rows) {
+      snapshotById.set(row.payload.accountId, row.payload);
+    }
+  }
+
+  const lines: string[] = [];
+  lines.push(EXPORT_COLUMNS.map((c) => csvEscape(c)).join(','));
+
+  for (const r of mappings.rows) {
+    const m = rowToMapping(r);
+    const snap = snapshotById.get(m.accountId);
+    const sfdcUrl = snap?.salesforceSlackChannelUrl ?? null;
+    lines.push(
+      [
+        m.accountId,
+        m.accountName ?? '',
+        snap?.franchise ?? '',
+        snap?.assignedCSE?.name ?? '',
+        snap?.accountOwner?.name ?? '',
+        sfdcUrl ? 'yes' : 'no',
+        sfdcUrl ?? '',
+        m.slackUrl ?? '',
+        m.slackChannelId ?? '',
+        m.channelName ?? '',
+        m.derivedChannelName ?? '',
+        m.status,
+        m.source,
+        m.isArchived == null ? '' : m.isArchived ? 'true' : 'false',
+        m.statusReason ?? '',
+        m.lastRefreshedAt,
+      ]
+        .map(csvEscape)
+        .join(','),
+    );
+  }
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  return {
+    csv: lines.join('\r\n') + '\r\n',
+    rowCount: mappings.rows.length,
+    filename: `slack-mappings-${stamp}.csv`,
+  };
+}
+
 export async function getMapping(accountId: string): Promise<SlackMappingRow | null> {
   const r = await query<MappingDbRow>(
     `SELECT * FROM customer_slack_mapping WHERE account_id = $1`,

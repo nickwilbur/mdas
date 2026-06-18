@@ -37,10 +37,19 @@ export function parseClariNumericDataValue(raw: string | null | undefined): numb
   if (raw == null) return null;
   const t = String(raw).trim();
   if (t === '') return null;
-  if (/^(yes|no)$/i.test(t)) return null;
-  const normalized = t.replace(/,/g, '');
+  if (/^(yes|no|n\/a)$/i.test(t)) return null;
+  const normalized = t.replace(/[$,]/g, '');
   const n = Number(normalized);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Clari exports alternate spellings for the same forecast field — e.g.
+ * `Churn & Downsell Flash` in manager exports vs `Churn/Downsell Flash`
+ * in older fixtures. Normalize before matching.
+ */
+export function normalizeClariFieldName(field: string): string {
+  return field.trim().replace(/\s*&\s*/g, '/');
 }
 
 function normalizeHeaderCell(s: string): string {
@@ -202,14 +211,14 @@ export function selectLatestClariForecastValue(
   opts: SelectClariForecastValueOpts,
 ): ClariForecastSelection | null {
   const roleWant = opts.role.trim();
-  const fieldWant = opts.field.trim();
+  const fieldWant = normalizeClariFieldName(opts.field);
   const dataTypeWant = opts.dataType.trim();
 
   const candidates = rows.filter(
     (r) =>
       r.role.trim() === roleWant &&
       opts.timeframeMatches(r.timeframe.trim()) &&
-      r.field.trim() === fieldWant &&
+      normalizeClariFieldName(r.field) === fieldWant &&
       r.dataType.trim() === dataTypeWant,
   );
 

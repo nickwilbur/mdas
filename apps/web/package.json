@@ -8,18 +8,21 @@
     "start": "next start -p 3000"
   },
   "dependencies": {
+    "@mdas/adapter-cerebro-glean": "*",
+    "@mdas/adapter-cerebro-rest": "*",
+    "@mdas/adapter-shared": "*",
+    "@mdas/canonical": "*",
+    "@mdas/cta-engine": "*",
+    "@mdas/db": "*",
+    "@mdas/forecast-generator": "*",
+    "@mdas/renewal-metrics": "*",
+    "@mdas/scoring": "*",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.414.0",
     "next": "^14.2.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "lucide-react": "^0.414.0",
-    "clsx": "^2.1.1",
-    "@mdas/adapter-shared": "*",
-    "@mdas/adapter-cerebro-rest": "*",
-    "@mdas/adapter-cerebro-glean": "*",
-    "@mdas/canonical": "*",
-    "@mdas/db": "*",
-    "@mdas/scoring": "*",
-    "@mdas/forecast-generator": "*"
+    "recharts": "^3.8.1"
   },
   "devDependencies": {
     "@next/bundle-analyzer": "^14.2.5",

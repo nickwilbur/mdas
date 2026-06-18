@@ -1,6 +1,6 @@
 // Server-only Glean briefs for "ML Override ≠ Best Case" renewals.
 import 'server-only';
-import { gleanForRequest } from './glean-server';
+import { gleanForRequest, type GleanClient } from './glean-server';
 import type { GleanChatRequestMessage } from '@mdas/adapter-shared/glean';
 import type {
   MlOverrideMismatchContext,
@@ -28,12 +28,13 @@ export async function generateMlOverrideMismatchContext(
   contexts: MlOverrideMismatchContext[],
   asOfDate: string,
   quarterLabel: string,
+  sharedClient?: GleanClient,
 ): Promise<Record<string, MlOverrideMismatchEnrichment>> {
   if (contexts.length === 0) return {};
 
-  let glean: Awaited<ReturnType<typeof gleanForRequest>>;
+  let client: GleanClient;
   try {
-    glean = await gleanForRequest(req);
+    client = sharedClient ?? (await gleanForRequest(req)).client;
   } catch (err) {
     const message = (err as Error)?.message ?? String(err);
     const fail = unavailable(message);
@@ -50,7 +51,7 @@ export async function generateMlOverrideMismatchContext(
           const ctx = queue.shift();
           if (!ctx) return;
           out[ctx.opportunityId] = await runOne(
-            glean.client,
+            client,
             ctx,
             asOfDate,
             quarterLabel,
@@ -71,7 +72,7 @@ export async function generateMlOverrideMismatchContext(
 }
 
 async function runOne(
-  client: Awaited<ReturnType<typeof gleanForRequest>>['client'],
+  client: GleanClient,
   ctx: MlOverrideMismatchContext,
   asOfDate: string,
   quarterLabel: string,

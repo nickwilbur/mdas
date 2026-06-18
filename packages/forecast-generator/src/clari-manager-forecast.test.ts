@@ -181,7 +181,20 @@ describe('generateWeeklyForecast + Clari', () => {
     };
   }
 
-  it('uses Clari Flash for the headline even when account roll-ups disagree', () => {
+  it('matches Clari export field spelling with ampersand (Churn & Downsell Flash)', () => {
+    const csv = `User,Email,CRM User ID,Role,Parent Role,Timeframe,Field,Week,Start Day,End Day,Data Type,Data Value
+Michael Katzman,mk@example.com,U1,FLM Expand 3,GM North America,Q2,Churn & Downsell Flash,8,06/16/2026,06/22/2026,Forecast Value,-2267035.0`;
+    const rows = parseClariManagerForecastExportCsv(csv);
+    const sel = selectLatestClariForecastValue(rows, {
+      role: 'FLM Expand 3',
+      timeframeMatches: (tf) => timeframeMatchesFiscalQuarter(tf, '2027-Q2'),
+      field: 'Churn/Downsell Flash',
+      dataType: 'Forecast Value',
+    });
+    expect(sel?.clariForecastValue).toBe(-2_267_035);
+  });
+
+  it('uses MDAS opp roll-up for Flash even when Clari manager CSV disagrees', () => {
     const view = mkView(mkAccount(), [mkOpp()]);
     const md = generateWeeklyForecast({
       views: [view],
@@ -189,8 +202,8 @@ describe('generateWeeklyForecast + Clari', () => {
       asOfDate: '2026-05-13',
       clariManagerForecastCsv: FY27_Q2_CLARI_FIXTURE,
     });
-    expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: -\$2,473,435/);
-    expect(md).not.toMatch(/Churn\/Downsell Flash \/ Most Likely: -\$50,000/);
+    expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: -\$50,000/);
+    expect(md).not.toMatch(/Churn\/Downsell Flash \/ Most Likely: -\$2,473,435/);
   });
 
   it('fills Plan / Gap / Hedge from Clari Forecast Value rows when present', () => {
@@ -201,8 +214,8 @@ describe('generateWeeklyForecast + Clari', () => {
       clariManagerForecastCsv: FY27_Q2_CLARI_FIXTURE,
     });
     expect(md).toMatch(/Churn\/Downsell Plan: -\$2,164,000/);
-    expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: -\$2,473,435/);
-    expect(md).toMatch(/Gap to Plan: -\$309,435/);
+    expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: \$0/);
+    expect(md).toMatch(/Gap to Plan: \+\$2,164,000/);
     expect(md).toMatch(/Hedge: \$95,000/);
   });
 });

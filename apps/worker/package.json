@@ -20,6 +20,7 @@
     "@mdas/adapter-zuora-mcp": "*",
     "@mdas/adapter-glean-mcp": "*",
     "@mdas/adapter-local-snapshots": "*",
+    "@mdas/forecast-generator": "*",
     "pg": "^8.11.5",
     "tsx": "^4.7.2"
   }

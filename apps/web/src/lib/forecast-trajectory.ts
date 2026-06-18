@@ -31,10 +31,11 @@ import {
   fiscalQuarterStart,
   parseClariManagerForecastExportCsv,
   selectLatestClariForecastValue,
+  supplementViewsWithDroppedQuarterChurnOpps,
   timeframeMatchesFiscalQuarter,
-  type QuarterKpiSnapshot,
 } from '@mdas/forecast-generator';
 import type { AccountView, CanonicalAccount, CanonicalOpportunity } from '@mdas/canonical';
+import { loadChurnOpportunitySupplementFromRecentRefreshes } from '@/lib/read-model';
 
 /**
  * One trajectory point — KPI snapshot for a single quarter at a
@@ -73,7 +74,6 @@ export interface ForecastTrajectory {
  */
 export interface TrajectoryPlanInput {
   currentQuarterUSD?: number;
-  nextQuarterUSD?: number;
 }
 
 /**
@@ -127,30 +127,26 @@ export async function loadForecastTrajectory(
     ? parseClariManagerForecastExportCsv(clariManagerForecastCsv)
     : [];
   const clariCurrentPlan = clariSelectionPlan(clariRows, currentFq.key);
-  // For "next quarter" Plan we look up by the next-quarter key when
-  // we can derive it from any snapshot below.
 
   const currentPoints: TrajectoryPoint[] = [];
-  const nextPoints: TrajectoryPoint[] = [];
-
-  // Cache the next-quarter Plan lookup outside the loop — asOfDate is
-  // fixed for the request, so nextKeyFrom(asOfDate) is the same on
-  // every iteration.
-  const nextQuarterKey = nextKeyFrom(asOfDate);
-  const clariNextPlan = clariSelectionPlan(clariRows, nextQuarterKey);
+  const latestDay = orderedDays[orderedDays.length - 1];
 
   for (const day of orderedDays) {
     const entry = lastPerDay.get(day)!;
     const { run, startedAtIso } = entry;
-    // Per-snapshot build / KPI failures must not kill the whole
-    // trajectory series. The canonical model evolves over time
-    // (e.g., the 2026-05-20 forecastCategory field was added) and
-    // an older snapshot can have a payload that confuses
-    // buildAccountView or one of the scoring helpers. Skip those
-    // points; the LLM prompt is honest about gaps.
+
     let views: AccountView[];
     try {
       views = await buildViewsForRun(run.id);
+      if (day === latestDay) {
+        const prior = await loadChurnOpportunitySupplementFromRecentRefreshes(run.id);
+        views = supplementViewsWithDroppedQuarterChurnOpps(
+          views,
+          prior,
+          asOfDate,
+          buildAccountView,
+        );
+      }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('forecast.trajectory.buildViews.failed', {
@@ -185,33 +181,9 @@ export async function loadForecastTrajectory(
         message: (err as Error)?.message,
       });
     }
-
-    try {
-      const nextKpis = computeQuarterKpis(
-        views,
-        asOfDate,
-        'next',
-        plan?.nextQuarterUSD ?? clariNextPlan ?? null,
-      );
-      if (nextKpis.fiscalQuarterKey) {
-        nextPoints.push({
-          date: day,
-          refreshId: run.id,
-          refreshStartedAt: startedAtIso,
-          kpis: nextKpis,
-        });
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('forecast.trajectory.nextKpis.failed', {
-        refreshId: run.id,
-        day,
-        message: (err as Error)?.message,
-      });
-    }
   }
 
-  return { asOfDate, currentQuarter: currentPoints, nextQuarter: nextPoints };
+  return { asOfDate, currentQuarter: currentPoints, nextQuarter: [] };
 }
 
 // Build AccountView[] for a historical refresh from its raw

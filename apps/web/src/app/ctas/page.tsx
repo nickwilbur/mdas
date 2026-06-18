@@ -2,6 +2,8 @@ import { readFileSync, readdirSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
 import { CTABoard, type CTAEntry, GenerateCTAsButton } from '@/components/CTABoard';
 import { parseScanMarkdown, generateSlackMessage, type RichCTA } from '@/lib/cta-utils';
+import { getDashboardData } from '@/lib/read-model';
+import { buildAccountHoverContextMap } from '@/lib/cta-account-context';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,12 +17,14 @@ function loadCTAData(): { ctas: CTAEntry[]; slackMessages: Record<string, string
   const richMap = new Map<string, RichCTA>();
   const slackMap = new Map<string, string>();
 
-  // 1. Parse all scan markdown files for rich CTA data + Slack messages
-  const scanFiles = readdirSync(PROJECT_ROOT).filter(
-    (f) => f.startsWith('expand3_cta_scan_') && f.endsWith('.md'),
-  );
-  for (const file of scanFiles) {
-    const content = readFileSync(join(PROJECT_ROOT, file), 'utf-8');
+  // 1. Parse the latest scan markdown only (one generation at a time)
+  const scanFiles = readdirSync(PROJECT_ROOT)
+    .filter((f) => f.startsWith('expand3_cta_scan_') && f.endsWith('.md'))
+    .sort()
+    .reverse();
+  const latestScan = scanFiles[0];
+  if (latestScan) {
+    const content = readFileSync(join(PROJECT_ROOT, latestScan), 'utf-8');
     const { richCTAs, slackMessages: msgs } = parseScanMarkdown(content);
     for (const [id, cta] of richCTAs) richMap.set(id, cta);
     for (const [id, msg] of msgs) slackMap.set(id, msg);
@@ -72,8 +76,14 @@ function loadCTAData(): { ctas: CTAEntry[]; slackMessages: Record<string, string
       ...(rich?.cc_owners ?? []),
     ];
 
-    const ae = allOwners.find((o) => o.role === 'AE') ?? null;
-    const cse = allOwners.find((o) => o.role === 'CSE') ?? null;
+    const ae =
+      (rich?.ae as CTAEntry['ae']) ??
+      allOwners.find((o) => o.role === 'AE') ??
+      null;
+    const cse =
+      (rich?.cse as CTAEntry['cse']) ??
+      allOwners.find((o) => o.role === 'CSE') ??
+      null;
     const tam = allOwners.find((o) => o.role === 'TAM') ?? null;
     const esa = allOwners.find((o) => o.role === 'ESA') ?? null;
 
@@ -128,6 +138,8 @@ function loadCTAData(): { ctas: CTAEntry[]; slackMessages: Record<string, string
       team_aware: Boolean(rich?.team_aware),
       situation_read: rich?.situation_read ?? null,
       point_of_view: rich?.point_of_view ?? null,
+      atr_at_risk_usd: rich?.atr_at_risk_usd ?? null,
+      renewal_opportunity_name: rich?.renewal_opportunity_name ?? null,
     };
     ctas.push(entry);
     if (slackMap.has(id)) {
@@ -156,8 +168,10 @@ function loadCTAData(): { ctas: CTAEntry[]; slackMessages: Record<string, string
 
 // ── Page ───────────────────────────────────────────────────────────────────
 
-export default function CTAsPage() {
+export default async function CTAsPage() {
   const { ctas, slackMessages } = loadCTAData();
+  const { views } = await getDashboardData();
+  const accountContexts = buildAccountHoverContextMap(views);
 
   if (ctas.length === 0) {
     return (
@@ -194,7 +208,7 @@ export default function CTAsPage() {
         </div>
         <GenerateCTAsButton />
       </div>
-      <CTABoard ctas={ctas} slackMessages={slackMessages} />
+      <CTABoard ctas={ctas} slackMessages={slackMessages} accountContexts={accountContexts} />
     </div>
   );
 }
