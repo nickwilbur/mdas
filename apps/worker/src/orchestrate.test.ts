@@ -79,10 +79,22 @@ vi.mock('@mdas/db', () => ({
 // play. `vi.hoisted` makes the stub accessible inside the hoisted
 // `vi.mock` factory below — without it the factory would run before
 // the local `const` declaration and crash.
-const { fakeLocal } = vi.hoisted(() => ({
+const { fakeLocal, fakeCerebroRest, fakeCerebroGlean } = vi.hoisted(() => ({
   fakeLocal: {
     name: 'local-snapshots',
     source: 'local-snapshots',
+    isReadOnly: true as const,
+    fetch: vi.fn(async () => ({ accounts: [], opportunities: [] })),
+  } as ReadAdapter,
+  fakeCerebroRest: {
+    name: 'cerebro-rest',
+    source: 'cerebro',
+    isReadOnly: true as const,
+    fetch: vi.fn(async () => ({ accounts: [], opportunities: [] })),
+  } as ReadAdapter,
+  fakeCerebroGlean: {
+    name: 'cerebro-glean',
+    source: 'cerebro',
     isReadOnly: true as const,
     fetch: vi.fn(async () => ({ accounts: [], opportunities: [] })),
   } as ReadAdapter,
@@ -92,7 +104,12 @@ vi.mock('@mdas/adapter-local-snapshots', () => ({
   localSnapshotsAdapter: fakeLocal,
 }));
 vi.mock('@mdas/adapter-salesforce', () => ({ salesforceAdapter: { name: 'sf', isReadOnly: true, fetch: vi.fn() } }));
-vi.mock('@mdas/adapter-cerebro-glean', () => ({ cerebroGleanAdapter: { name: 'cer', isReadOnly: true, fetch: vi.fn() } }));
+vi.mock('@mdas/adapter-cerebro-rest', () => ({
+  cerebroRestAdapter: fakeCerebroRest,
+}));
+vi.mock('@mdas/adapter-cerebro-glean', () => ({
+  cerebroGleanAdapter: fakeCerebroGlean,
+}));
 vi.mock('@mdas/adapter-gainsight', () => ({ gainsightAdapter: { name: 'gs', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-staircase-gmail', () => ({ staircaseGmailAdapter: { name: 'sg', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-zuora-mcp', () => ({ zuoraMcpAdapter: { name: 'zu', isReadOnly: true, fetch: vi.fn() } }));
@@ -116,7 +133,7 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks } from './orchestrate.js';
+import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks, adapterFetchKey } from './orchestrate.js';
 import { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
 
 // Helpers to keep tests focused. The fixture only carries the fields
@@ -162,6 +179,7 @@ describe('runRefresh — orchestrator', () => {
   });
 
   afterEach(() => {
+    delete process.env.ADAPTER_CEREBRO;
     vi.restoreAllMocks();
   });
 
@@ -281,6 +299,57 @@ describe('runRefresh — orchestrator', () => {
     expect(readSnapshotAccounts).toHaveBeenCalledTimes(1);
     expect(readSnapshotOpportunities).toHaveBeenCalledTimes(1);
     expect(readSnapshotAccounts).toHaveBeenCalledWith(priorRunId);
+  });
+
+  it('merges cerebro-rest and cerebro-glean when both share source cerebro', async () => {
+    process.env.ADAPTER_CEREBRO = 'real';
+    const base = accountFixture('A1');
+
+    (fakeLocal.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      accounts: [base],
+      opportunities: [],
+    });
+    (fakeCerebroRest.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      accounts: [
+        {
+          ...base,
+          cerebroRiskCategory: 'Critical',
+          cerebroRiskAnalysis: 'REST-only risk analysis',
+        },
+      ],
+      opportunities: [],
+    });
+    (fakeCerebroGlean.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      accounts: [
+        {
+          ...base,
+          cerebroRisks: {
+            ...base.cerebroRisks,
+            utilizationRisk: true,
+          },
+        },
+      ],
+      opportunities: [],
+    });
+
+    await runRefresh({ actor: 'test' });
+
+    expect(replaceSnapshotAccounts).toHaveBeenCalled();
+    const accounts = replaceSnapshotAccounts.mock.calls[0]![1] as CanonicalAccount[];
+    const merged = accounts.find((a) => a.accountId === 'A1');
+    expect(merged?.cerebroRiskCategory).toBe('Critical');
+    expect(merged?.cerebroRiskAnalysis).toBe('REST-only risk analysis');
+    expect(merged?.cerebroRisks?.utilizationRisk).toBe(true);
+  });
+});
+
+describe('adapterFetchKey', () => {
+  it('uses adapter.name so adapters sharing a source do not collide', () => {
+    const rest = { name: 'cerebro-rest', source: 'cerebro' } as ReadAdapter;
+    const glean = { name: 'cerebro-glean', source: 'cerebro' } as ReadAdapter;
+    expect(adapterFetchKey(rest)).toBe('cerebro-rest');
+    expect(adapterFetchKey(glean)).toBe('cerebro-glean');
+    expect(adapterFetchKey(rest)).not.toBe(adapterFetchKey(glean));
   });
 });
 

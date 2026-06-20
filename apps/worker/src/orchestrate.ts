@@ -121,6 +121,15 @@ const DEFAULT_ADAPTER_TIMEOUT_MS = 25_000;
 // finish so it gets the full throughput budget.
 const DEFERRED_GLEAN_SOURCES = new Set(['glean-mcp']);
 
+/**
+ * Key for per-adapter fetch results. Must be adapter.name — multiple
+ * adapters share the same `source` (e.g. cerebro-rest + cerebro-glean
+ * both use source 'cerebro') and would collide if keyed by source.
+ */
+export function adapterFetchKey(adapter: ReadAdapter): string {
+  return adapter.name;
+}
+
 /** Split adapters for phased fetch; exported for unit tests. */
 export function partitionAdaptersForFetch(adapters: ReadAdapter[]): {
   immediate: ReadAdapter[];
@@ -564,7 +573,7 @@ export async function runRefresh(
     if (immediate.length > 0) {
       const immediateResults = await Promise.all(immediate.map(fetchOneAdapter));
       immediate.forEach((a, i) => {
-        fetchResults.set(a.source ?? a.name, immediateResults[i]!);
+        fetchResults.set(adapterFetchKey(a), immediateResults[i]!);
       });
     }
     if (deferred.length > 0) {
@@ -573,11 +582,11 @@ export async function runRefresh(
         deferred: deferred.map((a) => a.name),
       });
       for (const a of deferred) {
-        fetchResults.set(a.source ?? a.name, await fetchOneAdapter(a));
+        fetchResults.set(adapterFetchKey(a), await fetchOneAdapter(a));
       }
     }
     const fetched = adapters.map(
-      (a) => fetchResults.get(a.source ?? a.name) ?? ({} as Partial<MergedData>),
+      (a) => fetchResults.get(adapterFetchKey(a)) ?? ({} as Partial<MergedData>),
     );
 
   // Final progress flush before merge/score phase.
