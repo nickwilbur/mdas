@@ -257,6 +257,32 @@ export function summarizeSourceLinkCounts(data: MergedData): {
   };
 }
 
+const EMPTY_CEREBRO_RISKS: CanonicalAccount['cerebroRisks'] = {
+  utilizationRisk: null,
+  engagementRisk: null,
+  suiteRisk: null,
+  shareRisk: null,
+  legacyTechRisk: null,
+  expertiseRisk: null,
+  pricingRisk: null,
+};
+
+/** Preserve prior non-null risk flags when an adapter omits a signal (null). */
+export function mergeCerebroRisks(
+  existing: CanonicalAccount['cerebroRisks'] | undefined,
+  next: CanonicalAccount['cerebroRisks'] | undefined,
+): CanonicalAccount['cerebroRisks'] {
+  const base = existing ?? EMPTY_CEREBRO_RISKS;
+  if (!next) return base;
+  const merged = { ...base };
+  for (const key of Object.keys(base) as (keyof CanonicalAccount['cerebroRisks'])[]) {
+    if (next[key] !== null && next[key] !== undefined) {
+      merged[key] = next[key];
+    }
+  }
+  return merged;
+}
+
 function mergeAccount(
   existing: CanonicalAccount,
   next: CanonicalAccount,
@@ -264,6 +290,7 @@ function mergeAccount(
   return {
     ...existing,
     ...next,
+    cerebroRisks: mergeCerebroRisks(existing.cerebroRisks, next.cerebroRisks),
     lastFetchedFromSource: {
       ...(existing.lastFetchedFromSource ?? {}),
       ...(next.lastFetchedFromSource ?? {}),
@@ -560,11 +587,13 @@ export async function runRefresh(
       }
     }
 
+    // Key by adapter name — multiple adapters share `source` (e.g.
+    // cerebro-rest + cerebro-glean both use source "cerebro").
     const fetchResults = new Map<string, Partial<MergedData>>();
     if (immediate.length > 0) {
       const immediateResults = await Promise.all(immediate.map(fetchOneAdapter));
       immediate.forEach((a, i) => {
-        fetchResults.set(a.source ?? a.name, immediateResults[i]!);
+        fetchResults.set(a.name, immediateResults[i]!);
       });
     }
     if (deferred.length > 0) {
@@ -573,11 +602,11 @@ export async function runRefresh(
         deferred: deferred.map((a) => a.name),
       });
       for (const a of deferred) {
-        fetchResults.set(a.source ?? a.name, await fetchOneAdapter(a));
+        fetchResults.set(a.name, await fetchOneAdapter(a));
       }
     }
     const fetched = adapters.map(
-      (a) => fetchResults.get(a.source ?? a.name) ?? ({} as Partial<MergedData>),
+      (a) => fetchResults.get(a.name) ?? ({} as Partial<MergedData>),
     );
 
   // Final progress flush before merge/score phase.
