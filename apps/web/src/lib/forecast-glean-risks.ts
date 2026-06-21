@@ -27,9 +27,11 @@ import { gleanForRequest, type GleanClient } from './glean-server';
 import type { GleanChatRequestMessage } from '@mdas/adapter-shared/glean';
 import type { GleanFlaggedRisk } from '@mdas/forecast-generator';
 import { cleanGleanChatReply } from './clean-glean-chat-reply';
-
-const MAX_RATIONALE_CHARS = 240;
-const MAX_FLAGGED_PER_QUARTER = 8;
+import {
+  MAX_GLEAN_FLAGGED_PER_QUARTER,
+  MAX_GLEAN_FLAGGED_RATIONALE_CHARS,
+  parseGleanFlaggedRisks,
+} from './forecast-glean-risks-core';
 
 export interface QuarterAccountUniverse {
   quarter: 'current' | 'next';
@@ -125,7 +127,10 @@ async function runOneQuarter(
   const text = cleanGleanChatReply(reply.text);
   if (!text) return [];
 
-  return parseAndValidate(text, universe);
+  return parseGleanFlaggedRisks(text, {
+    quarter: universe.quarter,
+    accounts: universe.accounts,
+  });
 }
 
 function buildPrompt(
@@ -158,7 +163,7 @@ function buildPrompt(
     `  - Signals older than ~60 days (stale)`,
     `  - Anything that does NOT suggest a renewal save / downsell risk specifically`,
     ``,
-    `OUTPUT FORMAT — strict JSON array, no markdown, no preamble. Each entry MUST use an accountId from the bounded universe above. Maximum ${MAX_FLAGGED_PER_QUARTER} entries; if you have nothing to surface, return [].`,
+    `OUTPUT FORMAT — strict JSON array, no markdown, no preamble. Each entry MUST use an accountId from the bounded universe above. Maximum ${MAX_GLEAN_FLAGGED_PER_QUARTER} entries; if you have nothing to surface, return [].`,
     ``,
     `Example shape:`,
     `[`,
@@ -166,68 +171,8 @@ function buildPrompt(
     `  {"accountId": "0011A0000ABC", "rationale": "Procurement email Mon 5/19 flagging vendor consolidation review; CSE notes mention pilot with competitor."}`,
     `]`,
     ``,
-    `Rationale must be 1–2 plaintext sentences, ≤${MAX_RATIONALE_CHARS} chars. Cite source TYPE (Slack, email, account plan, meeting) not URLs. Do NOT invent details. If you cannot ground a rationale in a specific surfaced artifact, leave the account out.`,
+    `Rationale must be 1–2 plaintext sentences, ≤${MAX_GLEAN_FLAGGED_RATIONALE_CHARS} chars. Cite source TYPE (Slack, email, account plan, meeting) not URLs. Do NOT invent details. If you cannot ground a rationale in a specific surfaced artifact, leave the account out.`,
     ``,
     `Reply with ONLY the JSON array.`,
   ].join('\n');
-}
-
-/**
- * Strict parser + validator. JSON.parse the reply (after stripping a
- * surrounding markdown fence if the model added one despite the
- * prompt), validate each entry has a known accountId from the
- * bounded universe, and length-cap each rationale.
- *
- * Anything malformed → empty array. We prefer "no Glean-flagged
- * section" over "Glean section with bogus accounts" on the
- * leadership churn-call.
- */
-function parseAndValidate(
-  raw: string,
-  universe: QuarterAccountUniverse,
-): GleanFlaggedRisk[] {
-  // Strip ``` fences if the model added them despite the prompt
-  // asking for raw JSON.
-  let payload = raw.trim();
-  const fenceMatch = payload.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/);
-  if (fenceMatch) payload = fenceMatch[1]!.trim();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-
-  const universeById = new Map(
-    universe.accounts.map((a) => [a.accountId, a.accountName]),
-  );
-  const out: GleanFlaggedRisk[] = [];
-  for (const entry of parsed) {
-    if (out.length >= MAX_FLAGGED_PER_QUARTER) break;
-    if (!entry || typeof entry !== 'object') continue;
-    const e = entry as { accountId?: unknown; rationale?: unknown };
-    if (typeof e.accountId !== 'string') continue;
-    if (typeof e.rationale !== 'string') continue;
-    const name = universeById.get(e.accountId);
-    // Drop anything not in the bounded universe — this is the
-    // hallucination guard. The model occasionally invents plausible-
-    // looking accountIds when it has no signal; we must never paste
-    // those into the leadership doc.
-    if (!name) continue;
-    const rationale = e.rationale.trim();
-    if (rationale.length === 0) continue;
-    const capped =
-      rationale.length <= MAX_RATIONALE_CHARS
-        ? rationale
-        : rationale.slice(0, MAX_RATIONALE_CHARS).trimEnd() + '…';
-    out.push({
-      accountId: e.accountId,
-      accountName: name,
-      quarter: universe.quarter,
-      rationale: capped,
-    });
-  }
-  return out;
 }
