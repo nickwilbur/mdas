@@ -31,6 +31,7 @@ import {
   generateCTAsForViews,
   filterExpand3Views,
   mergeConfig,
+  mergeCTAUpdate,
   type CTARecord,
   type CTALogEntry,
 } from '@mdas/cta-engine';
@@ -97,6 +98,13 @@ function toLogEntry(cta: CTARecord, scanDate: string): CTALogEntry {
 
 function appendToLog(cta: CTARecord, scanDate: string): void {
   appendFileSync(logFilePath(), JSON.stringify(toLogEntry(cta, scanDate)) + '\n');
+}
+
+function appendLogUpdate(existing: CTALogEntry, cta: CTARecord, scanDate: string): void {
+  appendFileSync(
+    logFilePath(),
+    JSON.stringify(mergeCTAUpdate(existing, cta, scanDate)) + '\n',
+  );
 }
 
 /** Full-scan refresh: archive prior log and write only the current scan's CTAs. */
@@ -402,8 +410,11 @@ export async function runScan(options: {
       replaceLog(ctas, scanDate);
     } else {
       for (const cta of ctas) {
-        if (!existingLog.has(cta.cta_id)) {
+        const existing = existingLog.get(cta.cta_id);
+        if (!existing) {
           appendToLog(cta, scanDate);
+        } else {
+          appendLogUpdate(existing, cta, scanDate);
         }
       }
     }
