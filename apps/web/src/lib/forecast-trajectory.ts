@@ -129,7 +129,6 @@ export async function loadForecastTrajectory(
   const clariCurrentPlan = clariSelectionPlan(clariRows, currentFq.key);
 
   const currentPoints: TrajectoryPoint[] = [];
-  const latestDay = orderedDays[orderedDays.length - 1];
 
   for (const day of orderedDays) {
     const entry = lastPerDay.get(day)!;
@@ -138,15 +137,13 @@ export async function loadForecastTrajectory(
     let views: AccountView[];
     try {
       views = await buildViewsForRun(run.id);
-      if (day === latestDay) {
-        const prior = await loadChurnOpportunitySupplementFromRecentRefreshes(run.id);
-        views = supplementViewsWithDroppedQuarterChurnOpps(
-          views,
-          prior,
-          asOfDate,
-          buildAccountView,
-        );
-      }
+      const prior = await loadChurnOpportunitySupplementFromRecentRefreshes(run.id);
+      views = supplementViewsWithDroppedQuarterChurnOpps(
+        views,
+        prior,
+        asOfDate,
+        buildAccountView,
+      );
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('forecast.trajectory.buildViews.failed', {
