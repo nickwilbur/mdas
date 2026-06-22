@@ -116,7 +116,7 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks } from './orchestrate.js';
+import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks, mergeCerebroRisks } from './orchestrate.js';
 import { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
 
 // Helpers to keep tests focused. The fixture only carries the fields
@@ -281,6 +281,66 @@ describe('runRefresh — orchestrator', () => {
     expect(readSnapshotAccounts).toHaveBeenCalledTimes(1);
     expect(readSnapshotOpportunities).toHaveBeenCalledTimes(1);
     expect(readSnapshotAccounts).toHaveBeenCalledWith(priorRunId);
+  });
+});
+
+describe('mergeCerebroRisks', () => {
+  const withUtilizationTrue = {
+    utilizationRisk: true as const,
+    engagementRisk: null,
+    suiteRisk: null,
+    shareRisk: null,
+    legacyTechRisk: null,
+    expertiseRisk: null,
+    pricingRisk: null,
+  };
+
+  it('preserves existing true flags when the patch omits signals (null)', () => {
+    const sparse = {
+      utilizationRisk: null,
+      engagementRisk: true as const,
+      suiteRisk: null,
+      shareRisk: null,
+      legacyTechRisk: null,
+      expertiseRisk: null,
+      pricingRisk: null,
+    };
+    expect(mergeCerebroRisks(withUtilizationTrue, sparse)).toEqual({
+      utilizationRisk: true,
+      engagementRisk: true,
+      suiteRisk: null,
+      shareRisk: null,
+      legacyTechRisk: null,
+      expertiseRisk: null,
+      pricingRisk: null,
+    });
+  });
+
+  it('allows explicit false to override a prior true', () => {
+    const cleared = { ...withUtilizationTrue, utilizationRisk: false as const };
+    expect(mergeCerebroRisks(withUtilizationTrue, cleared).utilizationRisk).toBe(false);
+  });
+});
+
+describe('adapter fetch result keys', () => {
+  it('uses adapter name so shared source keys do not collide', () => {
+    const mk = (name: string, source: string): ReadAdapter =>
+      ({ name, source, isReadOnly: true, fetch: vi.fn() }) as ReadAdapter;
+    const rest = mk('cerebro-rest', 'cerebro');
+    const glean = mk('cerebro-glean', 'cerebro');
+    const fetchResults = new Map<string, Partial<{ accounts: CanonicalAccount[] }>>();
+    fetchResults.set(rest.name, {
+      accounts: [{ ...accountFixture('REST'), cerebroRiskCategory: 'High' } as CanonicalAccount],
+    });
+    fetchResults.set(glean.name, {
+      accounts: [{ ...accountFixture('GLEAN'), cerebroRiskCategory: 'Low' } as CanonicalAccount],
+    });
+
+    const adapters = [rest, glean];
+    const fetched = adapters.map((a) => fetchResults.get(a.name) ?? {});
+
+    expect(fetched[0]?.accounts?.[0]?.accountId).toBe('REST');
+    expect(fetched[1]?.accounts?.[0]?.accountId).toBe('GLEAN');
   });
 });
 
