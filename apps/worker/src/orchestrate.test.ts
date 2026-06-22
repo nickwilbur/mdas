@@ -92,7 +92,22 @@ vi.mock('@mdas/adapter-local-snapshots', () => ({
   localSnapshotsAdapter: fakeLocal,
 }));
 vi.mock('@mdas/adapter-salesforce', () => ({ salesforceAdapter: { name: 'sf', isReadOnly: true, fetch: vi.fn() } }));
-vi.mock('@mdas/adapter-cerebro-glean', () => ({ cerebroGleanAdapter: { name: 'cer', isReadOnly: true, fetch: vi.fn() } }));
+const { fakeCerebroRest, fakeCerebroGlean } = vi.hoisted(() => ({
+  fakeCerebroRest: {
+    name: 'cerebro-rest',
+    source: 'cerebro',
+    isReadOnly: true as const,
+    fetch: vi.fn(async () => ({ accounts: [], opportunities: [] })),
+  } as ReadAdapter,
+  fakeCerebroGlean: {
+    name: 'cerebro-glean',
+    source: 'cerebro',
+    isReadOnly: true as const,
+    fetch: vi.fn(async () => ({ accounts: [], opportunities: [] })),
+  } as ReadAdapter,
+}));
+vi.mock('@mdas/adapter-cerebro-rest', () => ({ cerebroRestAdapter: fakeCerebroRest }));
+vi.mock('@mdas/adapter-cerebro-glean', () => ({ cerebroGleanAdapter: fakeCerebroGlean }));
 vi.mock('@mdas/adapter-gainsight', () => ({ gainsightAdapter: { name: 'gs', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-staircase-gmail', () => ({ staircaseGmailAdapter: { name: 'sg', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-zuora-mcp', () => ({ zuoraMcpAdapter: { name: 'zu', isReadOnly: true, fetch: vi.fn() } }));
@@ -154,6 +169,12 @@ describe('runRefresh — orchestrator', () => {
   beforeEach(() => {
     dbCalls.length = 0;
     vi.clearAllMocks();
+    delete process.env.ADAPTER_CEREBRO;
+    delete process.env.ADAPTER_GAINSIGHT;
+    delete process.env.ADAPTER_GLEAN_MCP;
+    delete process.env.ADAPTER_STAIRCASE;
+    delete process.env.ADAPTER_ZUORA_MCP;
+    delete process.env.ADAPTER_SALESFORCE;
     // Re-arm minimum default mock behavior cleared by clearAllMocks.
     startRefreshRun.mockResolvedValue('refresh-123');
     baselineRunForWindow.mockResolvedValue(null);
@@ -256,6 +277,61 @@ describe('runRefresh — orchestrator', () => {
       'salesforce',
     ]);
     expect(deferred.map((a) => a.name)).toEqual(['glean-mcp']);
+  });
+
+  it('keeps results from two adapters that share a source (cerebro-rest + cerebro-glean)', async () => {
+    // Regression: fetchResults was keyed by `source`, so cerebro-glean
+    // (source 'cerebro', runs second) overwrote cerebro-rest's result
+    // (also source 'cerebro'), silently dropping Risk Category +
+    // narrative from every snapshot. Keying by adapter NAME fixes it.
+    process.env.ADAPTER_CEREBRO = 'real';
+    try {
+      (fakeLocal.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        accounts: [accountFixture('A1')],
+        opportunities: [],
+      });
+      (fakeCerebroRest.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        accounts: [
+          {
+            accountId: 'A1',
+            cerebroRiskCategory: 'Critical',
+            cerebroRiskAnalysis: 'Paused use of Zuora Revenue.',
+          } as unknown as CanonicalAccount,
+        ],
+        opportunities: [],
+      });
+      (fakeCerebroGlean.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        accounts: [
+          {
+            accountId: 'A1',
+            cerebroRisks: {
+              utilizationRisk: true,
+              engagementRisk: null,
+              suiteRisk: true,
+              shareRisk: null,
+              legacyTechRisk: null,
+              expertiseRisk: true,
+              pricingRisk: null,
+            },
+          } as unknown as CanonicalAccount,
+        ],
+        opportunities: [],
+      });
+
+      await runRefresh({ actor: 'test' });
+
+      const persisted = replaceSnapshotAccounts.mock.calls.at(-1)?.[1] as
+        | CanonicalAccount[]
+        | undefined;
+      const a1 = persisted?.find((a) => a.accountId === 'A1');
+      // cerebro-rest's Risk Category survives the merge…
+      expect(a1?.cerebroRiskCategory).toBe('Critical');
+      expect(a1?.cerebroRiskAnalysis).toBe('Paused use of Zuora Revenue.');
+      // …and cerebro-glean's booleans are also merged in.
+      expect(a1?.cerebroRisks?.utilizationRisk).toBe(true);
+    } finally {
+      delete process.env.ADAPTER_CEREBRO;
+    }
   });
 
   it('reuses the priorRun prefetch instead of re-reading for the diff window', async () => {

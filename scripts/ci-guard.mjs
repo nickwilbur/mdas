@@ -114,5 +114,31 @@ for (const file of walkFiles(adapterRoot)) {
 }
 if (writeVerbHits === 0) ok('No write verbs detected in adapter source.');
 
+// 5) No stale tsc artifacts in package/app src trees — Node ESM can
+// prefer these over .ts and break worker startup (missing named exports).
+function findStaleJs(dir, hits) {
+  if (!existsSync(dir)) return;
+  for (const entry of readdirSync(dir)) {
+    if (entry === 'node_modules' || entry === '.next' || entry === 'dist') continue;
+    const p = join(dir, entry);
+    let s;
+    try { s = statSync(p); } catch { continue; }
+    if (s.isDirectory()) findStaleJs(p, hits);
+    else if (entry.endsWith('.js') && !entry.endsWith('.test.js') && !entry.endsWith('.config.js')) hits.push(p);
+  }
+}
+const staleJs = [];
+for (const root of ['packages', 'apps']) {
+  const base = join(process.cwd(), root);
+  if (!existsSync(base)) continue;
+  for (const pkg of readdirSync(base)) {
+    const src = join(base, pkg, 'src');
+    findStaleJs(src, staleJs);
+  }
+}
+if (staleJs.length) {
+  fail(`Stale compiled .js files shadow TypeScript sources (delete them): ${staleJs.slice(0, 5).join(', ')}${staleJs.length > 5 ? ` (+${staleJs.length - 5} more)` : ''}`);
+} else ok('No stale compiled .js artifacts in package/app src trees.');
+
 if (failed) process.exit(1);
 console.log('[ci-guard] All checks passed.');

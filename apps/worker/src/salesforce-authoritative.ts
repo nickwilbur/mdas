@@ -1,5 +1,5 @@
 import type { CanonicalAccount, CanonicalOpportunity } from '@mdas/canonical';
-import { fiscalQuarterFromDate } from '@mdas/forecast-generator';
+import { fiscalQuarterFromDate } from '@mdas/cta-engine';
 
 export interface MergedSnapshotData {
   accounts: CanonicalAccount[];

@@ -8,6 +8,7 @@ import type {
 } from '@mdas/canonical';
 import type {
   CerebroAccountDetails,
+  CerebroCustomerRisks,
   CerebroHealthRiskRecord,
   CerebroHealthRiskSignal,
 } from './types.js';
@@ -122,6 +123,35 @@ export interface CerebroRestMappedRecord {
   patch: Partial<CanonicalAccount>;
 }
 
+/** Compose Cerebro Overall Assessment narrative for hover / drilldown. */
+export function composeCerebroOverallAssessmentNarrative(
+  detail: Pick<CerebroAccountDetails, 'summary'>,
+  risks: CerebroCustomerRisks | null | undefined,
+): string | null {
+  const parts: string[] = [];
+  const analysis = risks?.riskAnalysis?.trim();
+  const rationale = risks?.riskCategoryRationale?.trim();
+  const headline = detail.summary?.headline?.trim();
+  if (analysis) parts.push(analysis);
+  else if (rationale) parts.push(rationale);
+  else if (headline) parts.push(headline);
+
+  const bullets = [
+    ...(detail.summary?.risksAndConcerns ?? []),
+    ...(detail.summary?.whatChanged ?? []),
+    ...(detail.summary?.suggestedFocus ?? []),
+  ]
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (bullets.length > 0 && parts.length === 0) {
+    parts.push(bullets.slice(0, 4).join(' · '));
+  } else if (bullets.length > 0 && !analysis) {
+    parts.push(bullets.slice(0, 3).join(' · '));
+  }
+
+  return parts.join('\n\n').trim() || null;
+}
+
 /** Map `POST /api/accounts/details` item → canonical partial. */
 export function mapAccountDetailsItem(
   detail: CerebroAccountDetails,
@@ -133,7 +163,7 @@ export function mapAccountDetailsItem(
   const customerState = detail.customerState;
   const risks = customerState?.risks;
   const riskCategory = normalizeRiskCategory(risks?.riskCategory);
-  const riskAnalysis = risks?.riskAnalysis?.trim() || null;
+  const riskAnalysis = composeCerebroOverallAssessmentNarrative(detail, risks);
   const cerebroRisks = mapHealthSignals(customerState?.healthRisks);
 
   const customerName = detail.account?.accountName ?? null;
@@ -197,7 +227,9 @@ export function mapCerebroHealthRecord(
     flat.crRiskCategory ?? flat.riskCategory,
   );
   const riskAnalysis =
-    pickString(flat, 'crRiskAnalysis', 'riskAnalysis') ?? null;
+    pickString(flat, 'crRiskAnalysis', 'riskAnalysis') ??
+    pickString(flat, 'crRiskCategoryRationale', 'riskCategoryRationale') ??
+    null;
 
   const customerName = pickString(flat, 'crCustomerName', 'customerName');
   const indexedAt =

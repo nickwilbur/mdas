@@ -47,7 +47,10 @@ describe('subscribeRefreshJobPoll', () => {
     const unsub = subscribeRefreshJobPoll('job-1', { onProgress, onComplete });
 
     await vi.advanceTimersByTimeAsync(600);
-    expect(fetchMock).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/refresh?jobId=job-1',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
 
     fetchMock.mockClear();
     unsub();

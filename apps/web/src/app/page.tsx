@@ -20,6 +20,8 @@ import {
   fiscalQuarterFromDate,
   fiscalQuartersForAccount,
   parseQuartersParam,
+  resolveQuarterBucket,
+  scopeQuartersToBucket,
 } from '@/lib/fiscal';
 
 export const dynamic = 'force-dynamic';
@@ -36,9 +38,10 @@ export const dynamic = 'force-dynamic';
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ quarters?: string; window?: string }>;
+  searchParams: Promise<{ quarters?: string; window?: string; bucket?: string }>;
 }) {
-  const { quarters, window: windowParam } = await searchParams;
+  const { quarters, window: windowParam, bucket: bucketParam } = await searchParams;
+  const bucket = resolveQuarterBucket(bucketParam, 'prospective');
   const windowDays = [7, 14, 30].includes(Number(windowParam)) ? Number(windowParam) : DEFAULT_WINDOW_DAYS;
   // Load both feeds in parallel so the ActionQueue can rank by
   // movement-this-week without an extra database round trip.
@@ -59,67 +62,57 @@ export default async function DashboardPage({
     );
   }
 
-  // Apply fiscal quarter filter (URL-driven). Empty / "__none__" sentinel
-  // intentionally yields zero rows so the user sees their selection
-  // reflected literally rather than silently snapping back to all.
-  const selectedQuarters = parseQuartersParam(quarters);
+  // Apply fiscal quarter filter (URL-driven), scoped to the active bucket so
+  // past and future are never mixed. Empty / "__none__" sentinel intentionally
+  // yields zero rows so the user sees their selection reflected literally.
+  const scopeQuarters = scopeQuartersToBucket(parseQuartersParam(quarters), bucket);
   const availableQuarterKeys = Array.from(
     new Set(allViews.flatMap((v) => fiscalQuartersForAccount(v))),
   );
-  const views =
-    selectedQuarters === null
-      ? allViews
-      : allViews.filter((v) => {
-          const ks = fiscalQuartersForAccount(v);
-          return ks.some((k) => selectedQuarters.has(k));
-        });
+  const views = allViews.filter((v) => {
+    const ks = fiscalQuartersForAccount(v);
+    return ks.some((k) => scopeQuarters.has(k));
+  });
 
-  // Quarter-scoped metrics. We must apply the same canonical formulas used
-  // by packages/scoring (atrUSD = Σ availableToRenewUSD; acvAtRiskUSD, gated
-  // on bucket !== 'Healthy', = Σ |knownChurnUSD| + max(0, -acvDelta)) but
-  // restrict the summed opportunities to those whose close-quarter is in
-  // the selection. Without quarter filtering we fall through to the
-  // pre-computed account-level totals.
+  // Quarter-scoped metrics. We apply the same canonical formulas used by
+  // packages/scoring (atrUSD = Σ availableToRenewUSD; acvAtRiskUSD, gated on
+  // bucket !== 'Healthy', = Σ |knownChurnUSD| + max(0, -acvDelta)) but restrict
+  // the summed opportunities to those whose close-quarter is in scope.
   const totalAccounts = views.length;
   let totalATR = 0;
   let acvAtRisk = 0;
 
-  if (selectedQuarters === null) {
-    totalATR = views.reduce((s, v) => s + v.atrUSD, 0);
-    acvAtRisk = views.reduce((s, v) => s + v.acvAtRiskUSD, 0);
-  } else {
-    for (const v of views) {
-      const oppsInQuarter = v.opportunities.filter((o) => {
-        const fq = fiscalQuarterFromDate(o.closeDate);
-        return fq !== null && selectedQuarters.has(fq.key);
-      });
+  for (const v of views) {
+    const oppsInQuarter = v.opportunities.filter((o) => {
+      const fq = fiscalQuarterFromDate(o.closeDate);
+      return fq !== null && scopeQuarters.has(fq.key);
+    });
 
-      // ATR — straight sum of availableToRenewUSD over in-quarter opps.
-      totalATR += oppsInQuarter.reduce(
-        (s, o) => s + (o.availableToRenewUSD ?? 0),
-        0,
-      );
+    // ATR — straight sum of availableToRenewUSD over in-quarter opps.
+    totalATR += oppsInQuarter.reduce(
+      (s, o) => s + (o.availableToRenewUSD ?? 0),
+      0,
+    );
 
-      // ACV at Risk — gated by account bucket. For Confirmed Churn accounts
-      // bucketed into this quarter via their churn date, the relevant opps
-      // may have closeDates outside the quarter (or be empty), so fall back
-      // to the full opp set so we don't drop the known churn dollars.
-      if (v.bucket === 'Healthy') continue;
-      const isConfirmedChurnInQuarter =
-        v.bucket === 'Confirmed Churn' &&
-        (() => {
-          const fq = fiscalQuarterFromDate(v.account.churnDate);
-          return fq !== null && selectedQuarters.has(fq.key);
-        })();
-      const oppsForAcvAtRisk = isConfirmedChurnInQuarter
-        ? v.opportunities
-        : oppsInQuarter;
-      acvAtRisk += oppsForAcvAtRisk.reduce(
-        (s, o) =>
-          s + Math.abs(o.knownChurnUSD ?? 0) + Math.max(0, -(o.acvDelta ?? 0)),
-        0,
-      );
-    }
+    // ACV at Risk — gated by account bucket. For Confirmed Churn accounts
+    // bucketed into this quarter via their churn date, the relevant opps
+    // may have closeDates outside the quarter (or be empty), so fall back
+    // to the full opp set so we don't drop the known churn dollars.
+    if (v.bucket === 'Healthy') continue;
+    const isConfirmedChurnInQuarter =
+      v.bucket === 'Confirmed Churn' &&
+      (() => {
+        const fq = fiscalQuarterFromDate(v.account.churnDate);
+        return fq !== null && scopeQuarters.has(fq.key);
+      })();
+    const oppsForAcvAtRisk = isConfirmedChurnInQuarter
+      ? v.opportunities
+      : oppsInQuarter;
+    acvAtRisk += oppsForAcvAtRisk.reduce(
+      (s, o) =>
+        s + Math.abs(o.knownChurnUSD ?? 0) + Math.max(0, -(o.acvDelta ?? 0)),
+      0,
+    );
   }
 
   const byRisk = { Critical: 0, High: 0, Medium: 0, Low: 0, Unknown: 0 } as Record<string, number>;
@@ -143,7 +136,7 @@ export default async function DashboardPage({
             Last refresh: <RelativeTime iso={startedAt} />
             {' · '}
             <Link href="/renewals" className="text-blue-700 hover:underline">
-              Renewal dashboard →
+              Renewals scorecard →
             </Link>
           </p>
         </div>
@@ -158,7 +151,7 @@ export default async function DashboardPage({
         </div>
       </div>
 
-      <FiscalQuarterFilter availableQuarterKeys={availableQuarterKeys} />
+      <FiscalQuarterFilter availableQuarterKeys={availableQuarterKeys} defaultBucket="prospective" />
 
       {/* PR-A9: Movements strip — compressed WoW so the manager sees the
           "what changed" answer without leaving the page. */}

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CerebroRestClient, classifyHttpError } from './client.js';
+import { CerebroRestClient, classifyHttpError, isRetryableNetworkError } from './client.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const fixtures = (name: string) =>
@@ -114,12 +114,59 @@ describe('CerebroRestClient', () => {
     await client.whoami();
     expect(calls).toBe(3);
   });
+
+  it('retries on transient "fetch failed" network error then succeeds', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => {
+        calls += 1;
+        if (calls === 1) return Promise.reject(new TypeError('fetch failed'));
+        return Promise.resolve(new Response(JSON.stringify(whoamiSuccess), { status: 200 }));
+      }) as typeof fetch,
+    );
+    const client = new CerebroRestClient(CREDS);
+    await client.whoami();
+    expect(calls).toBe(2);
+  });
+
+  it('does not retry on 401 auth errors', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      mockFetch(() => {
+        calls += 1;
+        return new Response('unauthorized', { status: 401 });
+      }),
+    );
+    const client = new CerebroRestClient(CREDS);
+    await expect(client.whoami()).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
 });
 
 describe('classifyHttpError', () => {
   it('maps 422 validation', () => {
     const err = classifyHttpError(422, '{"detail":"bad filter"}');
     expect(err.code).toBe('validation');
+  });
+});
+
+describe('isRetryableNetworkError', () => {
+  it('treats undici fetch-failed with ECONNRESET cause as retryable', () => {
+    const err = new TypeError('fetch failed');
+    (err as { cause?: unknown }).cause = { code: 'ECONNRESET' };
+    expect(isRetryableNetworkError(err)).toBe(true);
+  });
+
+  it('treats abort as retryable', () => {
+    const err = new Error('The operation was aborted');
+    err.name = 'AbortError';
+    expect(isRetryableNetworkError(err)).toBe(true);
+  });
+
+  it('does not treat a plain validation error as retryable', () => {
+    expect(isRetryableNetworkError(new Error('bad input'))).toBe(false);
   });
 });
 

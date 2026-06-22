@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import React from 'react';
 import { fmtUSD } from '@/components/ui';
 import { TableHeader, type SortDirection } from '@/components/TableHeader';
@@ -27,11 +27,17 @@ type SortField =
 interface OpportunitiesTableProps {
   opportunities: CanonicalOpportunity[];
   accounts: Map<string, CanonicalAccount>;
+  /** Highlight and scroll to this opportunity row (deep-link from renewals). */
+  focusOpportunityId?: string;
 }
 
 const CLOSED_STAGE_NUMS = new Set([8, 9]);
 
-export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTableProps) {
+export function OpportunitiesTable({
+  opportunities,
+  accounts,
+  focusOpportunityId,
+}: OpportunitiesTableProps) {
   const [sortField, setSortField] = useState<SortField>('closeDate');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
@@ -176,6 +182,13 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     return result;
   }, [filteredOpps, accounts, sortField, sortDirection]);
 
+  const focusRowRef = useRef<HTMLTableRowElement>(null);
+  useEffect(() => {
+    if (focusOpportunityId && focusRowRef.current) {
+      focusRowRef.current.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [focusOpportunityId, sortedOpps]);
+
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
@@ -185,12 +198,24 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
     }
   };
 
-  const OpportunityRow = ({ opp }: { opp: CanonicalOpportunity }) => {
+  const OpportunityRow = ({
+    opp,
+    isFocused,
+    rowRef,
+  }: {
+    opp: CanonicalOpportunity;
+    isFocused?: boolean;
+    rowRef?: React.Ref<HTMLTableRowElement>;
+  }) => {
     const account = accounts.get(opp.accountId);
     const cseName = opp.salesEngineer?.name ?? '—';
     const accountName = account?.accountName || opp.accountId;
     return (
-      <tr className="border-t border-gray-100 hover:bg-gray-50">
+      <tr
+        ref={rowRef}
+        id={isFocused ? `opp-${opp.opportunityId}` : undefined}
+        className={`border-t border-gray-100 hover:bg-gray-50 ${isFocused ? 'bg-amber-50 ring-2 ring-amber-300 ring-inset' : ''}`}
+      >
         <td className="px-3 py-2 font-medium text-gray-700">{cseName}</td>
         <td className="px-3 py-2 font-medium">
           <Link href={`/accounts/${opp.accountId}`} className="hover:underline">
@@ -343,7 +368,14 @@ export function OpportunitiesTable({ opportunities, accounts }: OpportunitiesTab
             </tr>
           </thead>
           <tbody>
-            {sortedOpps.map((opp) => <OpportunityRow key={opp.opportunityId} opp={opp} />)}
+            {sortedOpps.map((opp) => (
+              <OpportunityRow
+                key={opp.opportunityId}
+                opp={opp}
+                isFocused={focusOpportunityId === opp.opportunityId}
+                rowRef={focusOpportunityId === opp.opportunityId ? focusRowRef : undefined}
+              />
+            ))}
           </tbody>
         </table>
       </div>

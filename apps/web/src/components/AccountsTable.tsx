@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useState, useMemo } from 'react';
 import React from 'react';
 import {
@@ -51,6 +52,116 @@ type SortField =
 
 interface AccountsTableProps {
   views: AccountView[];
+}
+
+function AccountRow({
+  v,
+  bucket,
+  isSelected,
+  onSelect,
+}: {
+  v: AccountView;
+  bucket: string;
+  isSelected: boolean;
+  onSelect: (accountId: string) => void;
+}) {
+  const router = useRouter();
+  const acvDelta = v.opportunities.reduce((s, o) => s + (o.acvDelta ?? 0), 0);
+  const sfLink = v.account.sourceLinks?.find((l) => l.source === 'salesforce');
+  const url =
+    sfLink?.url ?? `https://zuora.lightning.force.com/lightning/r/Account/${v.account.salesforceAccountId}/view`;
+  const accountHref = `/accounts/${v.account.accountId}`;
+
+  const closeDate = bucket === 'Saveable Risk' ? v.opportunities[0]?.closeDate : null;
+  const churnDate = bucket === 'Confirmed Churn' ? v.account.churnDate : null;
+
+  return (
+    <tr
+      key={v.account.accountId}
+      tabIndex={0}
+      data-hotkey-row
+      className="border-t border-gray-100 hover:bg-gray-50 focus:bg-blue-50 focus:outline-none"
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && !(e.target instanceof HTMLAnchorElement)) {
+          e.preventDefault();
+          router.push(accountHref);
+        }
+      }}
+    >
+      <td className="px-3 py-2">
+        <input
+          type="checkbox"
+          checked={isSelected}
+          onChange={() => onSelect(v.account.accountId)}
+          className="rounded border-gray-300"
+          aria-label={`Select ${v.account.accountName}`}
+        />
+      </td>
+      <td className="px-3 py-2 font-medium text-gray-700">{v.account.assignedCSE?.name ?? '—'}</td>
+      <td className="px-3 py-2 font-medium">
+        <Link href={accountHref} prefetch={false} className="text-blue-700 hover:underline">
+          {v.account.accountName}
+        </Link>
+      </td>
+      <td className="px-3 py-2"><BucketBadge bucket={v.bucket} /></td>
+      <td className="px-3 py-2">
+        {v.riskScore ? (
+          <div className="flex flex-col gap-0.5">
+            <RiskScoreBadge
+              score={v.riskScore.score}
+              band={v.riskScore.band}
+              confidence={v.riskScore.confidence}
+            />
+            <RiskBadge level={v.risk.level} source={v.risk.source} />
+          </div>
+        ) : (
+          <RiskBadge level={v.risk.level} source={v.risk.source} />
+        )}
+      </td>
+      <td className="px-3 py-2"><SentimentBadge value={v.account.cseSentiment} /></td>
+      <td className="px-3 py-2 text-right tabular-nums">{fmtUSD(v.atrUSD)}</td>
+      <td className={`px-3 py-2 text-right tabular-nums ${acvDelta < 0 ? 'text-red-700' : acvDelta > 0 ? 'text-green-700' : 'text-gray-600'}`}>
+        {fmtUSD(acvDelta)}
+      </td>
+      <td className="px-3 py-2 text-gray-700">
+        {v.daysToRenewal == null ? '—' : `${v.daysToRenewal}d`}
+      </td>
+      {bucket === 'Saveable Risk' && (
+        <td className="px-3 py-2 text-gray-700">
+          {closeDate ? new Date(closeDate).toLocaleDateString() : '—'}
+        </td>
+      )}
+      {bucket === 'Confirmed Churn' && (
+        <td className="px-3 py-2 text-gray-700">
+          {churnDate ? new Date(churnDate).toLocaleDateString() : '—'}
+        </td>
+      )}
+      <td className="px-3 py-2 text-center">
+        {v.hygiene.score === 0 ? (
+          <span className="text-gray-400">0</span>
+        ) : (
+          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+            {v.hygiene.score}
+          </span>
+        )}
+      </td>
+      <td className="px-3 py-2 text-xs text-gray-500">
+        <RelativeTime iso={v.account.cseSentimentCommentaryLastUpdated} />
+      </td>
+      <td className="px-3 py-2">
+        <SourceDots
+          freshness={v.account.lastFetchedFromSource}
+          errors={v.account.sourceErrors}
+          expectedSources={EXPECTED_SOURCES}
+        />
+      </td>
+      <td className="px-3 py-2">
+        <a href={url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+          View
+        </a>
+      </td>
+    </tr>
+  );
 }
 
 export function AccountsTable({ views }: AccountsTableProps) {
@@ -223,114 +334,6 @@ export function AccountsTable({ views }: AccountsTableProps) {
     });
   };
 
-  const AccountRow = ({ v, bucket }: { v: AccountView; bucket: string }) => {
-    const acvDelta = v.opportunities.reduce((s, o) => s + (o.acvDelta ?? 0), 0);
-    const sfLink = v.account.sourceLinks?.find((l) => l.source === 'salesforce');
-    const url =
-      sfLink?.url ?? `https://zuora.lightning.force.com/lightning/r/Account/${v.account.salesforceAccountId}/view`;
-    const isSelected = selectedAccounts.has(v.account.accountId);
-
-    // Get close date for Saveable Risk
-    const closeDate = bucket === 'Saveable Risk' 
-      ? v.opportunities[0]?.closeDate 
-      : null;
-    
-    // Get churn date for Confirmed Churn
-    const churnDate = bucket === 'Confirmed Churn'
-      ? v.account.churnDate
-      : null;
-
-    return (
-      <tr
-        key={v.account.accountId}
-        // PR-A7: tabIndex + data-hotkey-row makes the row focusable for j/k
-        // navigation. Focus styling uses the standard browser outline so
-        // we don't depend on a custom focus ring.
-        tabIndex={-1}
-        data-hotkey-row
-        className="border-t border-gray-100 hover:bg-gray-50 focus:bg-blue-50 focus:outline-none"
-      >
-        <td className="px-3 py-2">
-          <input
-            type="checkbox"
-            checked={isSelected}
-            onChange={() => handleSelectAccount(v.account.accountId)}
-            className="rounded border-gray-300"
-            // F-10: per-row checkbox needs an accessible name so screen
-            // readers announce "Select Acme Corp" rather than just "checkbox".
-            aria-label={`Select ${v.account.accountName}`}
-          />
-        </td>
-        <td className="px-3 py-2 font-medium text-gray-700">{v.account.assignedCSE?.name ?? '—'}</td>
-        <td className="px-3 py-2 font-medium">
-          <Link href={`/accounts/${v.account.accountId}`} className="hover:underline">
-            {v.account.accountName}
-          </Link>
-        </td>
-        <td className="px-3 py-2"><BucketBadge bucket={v.bucket} /></td>
-        <td className="px-3 py-2">
-          {v.riskScore ? (
-            // PR-B1: composite Risk Score is now the primary signal.
-            // RiskBadge (Cerebro passthrough) is kept inline as the
-            // source-of-truth reference per audit decision D-3.
-            <div className="flex flex-col gap-0.5">
-              <RiskScoreBadge
-                score={v.riskScore.score}
-                band={v.riskScore.band}
-                confidence={v.riskScore.confidence}
-              />
-              <RiskBadge level={v.risk.level} source={v.risk.source} />
-            </div>
-          ) : (
-            <RiskBadge level={v.risk.level} source={v.risk.source} />
-          )}
-        </td>
-        <td className="px-3 py-2"><SentimentBadge value={v.account.cseSentiment} /></td>
-        <td className="px-3 py-2 text-right tabular-nums">{fmtUSD(v.atrUSD)}</td>
-        <td className={`px-3 py-2 text-right tabular-nums ${acvDelta < 0 ? 'text-red-700' : acvDelta > 0 ? 'text-green-700' : 'text-gray-600'}`}>
-          {fmtUSD(acvDelta)}
-        </td>
-        <td className="px-3 py-2 text-gray-700">
-          {v.daysToRenewal == null ? '—' : `${v.daysToRenewal}d`}
-        </td>
-        {bucket === 'Saveable Risk' && (
-          <td className="px-3 py-2 text-gray-700">
-            {closeDate ? new Date(closeDate).toLocaleDateString() : '—'}
-          </td>
-        )}
-        {bucket === 'Confirmed Churn' && (
-          <td className="px-3 py-2 text-gray-700">
-            {churnDate ? new Date(churnDate).toLocaleDateString() : '—'}
-          </td>
-        )}
-        <td className="px-3 py-2 text-center">
-          {v.hygiene.score === 0 ? (
-            <span className="text-gray-400">0</span>
-          ) : (
-            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
-              {v.hygiene.score}
-            </span>
-          )}
-        </td>
-        <td className="px-3 py-2 text-xs text-gray-500">
-          <RelativeTime iso={v.account.cseSentimentCommentaryLastUpdated} />
-        </td>
-        <td className="px-3 py-2">
-          <SourceDots
-            freshness={v.account.lastFetchedFromSource}
-            errors={v.account.sourceErrors}
-            expectedSources={EXPECTED_SOURCES}
-          />
-        </td>
-        <td className="px-3 py-2">
-          <a href={url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-            View
-          </a>
-        </td>
-      </tr>
-    );
-  };
-
   const commonHeader = {
     sortField,
     sortDirection,
@@ -394,7 +397,15 @@ export function AccountsTable({ views }: AccountsTableProps) {
               </tr>
             </thead>
             <tbody>
-              {sortedSectionViews.map(v => <AccountRow key={v.account.accountId} v={v} bucket={bucket} />)}
+              {sortedSectionViews.map((v) => (
+                <AccountRow
+                  key={v.account.accountId}
+                  v={v}
+                  bucket={bucket}
+                  isSelected={selectedAccounts.has(v.account.accountId)}
+                  onSelect={handleSelectAccount}
+                />
+              ))}
             </tbody>
           </table>
         </div>

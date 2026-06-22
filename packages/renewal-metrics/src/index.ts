@@ -1,12 +1,48 @@
 import type { AccountView, CanonicalOpportunity } from '@mdas/canonical';
-import { isConfirmedFullChurnRisk, CONFIRMED_FULL_CHURN_RISK } from '@mdas/canonical';
-import { isConfirmedChurn } from '@mdas/canonical';
+import { isOperationalFullChurnOpportunity, CONFIRMED_FULL_CHURN_RISK } from '@mdas/canonical';
+import {
+  daysSinceLastCustomerEngagement,
+  daysSinceLastSlackChannelUpdate,
+  lastHumanCustomerEngagement,
+  lastHumanSlackPost,
+  type LastTouchDetail,
+} from './engagement.js';
+
+export type { LastTouchDetail } from './engagement.js';
+export {
+  daysSinceLastCustomerEngagement,
+  daysSinceLastSlackChannelUpdate,
+  lastHumanCustomerEngagement,
+  lastHumanSlackPost,
+} from './engagement.js';
+
+/** Hover detail for Slack / engagement day counters. */
+export interface EngagementLastTouch {
+  title: string | null;
+  summary: string | null;
+  url: string | null;
+  occurredAt: string | null;
+}
+
+function toEngagementLastTouch(detail: LastTouchDetail | null): EngagementLastTouch | null {
+  if (!detail) return null;
+  return {
+    title: detail.title,
+    summary: detail.summary,
+    url: detail.url,
+    occurredAt: detail.occurredAt,
+  };
+}
 import { asOfDateForQuarter, enumerateFiscalQuarterKeys } from './fiscal.js';
+
+const EPSILON = 0.01;
 
 export {
   asOfDateForQuarter,
   enumerateFiscalQuarterKeys,
   fiscalQuarterEnd,
+  isQuarterRetrospective,
+  isRetrospectiveScope,
   parseFiscalQuarterKey,
 } from './fiscal.js';
 
@@ -30,6 +66,42 @@ export type RenewalOutcome =
   | 'pending'
   | 'pushed';
 
+/** Closed renewal outcomes only — for quarter-close retrospective views. */
+export function isClosedRenewalOutcome(outcome: RenewalOutcome): boolean {
+  return outcome !== 'pending' && outcome !== 'pushed';
+}
+
+/** True when the renewal opportunity is still open in SFDC (not closed won/lost). */
+export function isOpenRenewalOpportunity(opp: CanonicalOpportunity): boolean {
+  return isRenewalLike(opp) && !isClosedOpportunity(opp);
+}
+
+export function isOpenRenewalOppRow(row: RenewalOppRow): boolean {
+  return row.outcome === 'pending' || row.outcome === 'pushed';
+}
+
+/** Human label for prospective pipeline status (open renewals). */
+export function prospectivePipelineStatus(
+  outcome: RenewalOutcome,
+  opts?: { atrUSD?: number; renewedRevenueUSD?: number },
+): string {
+  if (outcome === 'pushed') return 'Pushed / delayed';
+  if (outcome === 'pending') {
+    const atr = opts?.atrUSD ?? 0;
+    const renewed = opts?.renewedRevenueUSD ?? 0;
+    if (atr > 0 && renewed + EPSILON < atr) return 'Open · forecast downsell';
+    if (atr > 0 && renewed > atr + EPSILON) return 'Open · forecast expansion';
+    return 'Open';
+  }
+  return 'Closed';
+}
+
+export interface RenewalRiskSignalSummary {
+  label: string;
+  points: number;
+  source: string;
+}
+
 export interface RenewalOppRow {
   opportunityId: string;
   opportunityName: string;
@@ -37,6 +109,7 @@ export interface RenewalOppRow {
   accountName: string;
   cseName: string | null;
   accountOwner: string | null;
+  cseSentiment: string | null;
   closeDate: string | null;
   stageName: string;
   renewalStatus: string;
@@ -45,14 +118,31 @@ export interface RenewalOppRow {
   churnedAtrUSD: number;
   downsellAmountUSD: number;
   downsellPct: number | null;
+  /** Manager ML override or rep most-likely forecast (signed USD delta on ATR). */
+  forecastMostLikelyUSD: number | null;
   outcome: RenewalOutcome;
+  /** Cerebro / Glean Overall Assessment category (when available). */
+  overallAssessment: string | null;
+  /** Narrative detail for Overall Assessment hover. */
+  overallAssessmentDetail: string | null;
   healthScore: number | null;
   healthBand: string | null;
+  riskScoreConfidence: 'high' | 'low' | null;
+  riskSignals: RenewalRiskSignalSummary[];
   usageIndicator: string | null;
   reason: string | null;
   nextStep: string | null;
   lastActivityDate: string | null;
+  /** Days since last indexed Slack channel activity (null when no signal). */
+  daysSinceSlackUpdate: number | null;
+  /** Last human Slack post detail for hover. */
+  slackLastTouch: EngagementLastTouch | null;
+  /** Days since last customer-facing touch (meetings, workshops, CSE updates). */
+  daysSinceCustomerEngagement: number | null;
+  /** Last AE / CSE / leadership touch detail for hover. */
+  customerEngagementLastTouch: EngagementLastTouch | null;
   salesforceUrl: string | null;
+  opportunitySalesforceUrl: string;
 }
 
 export interface RenewalAccountRow {
@@ -60,6 +150,7 @@ export interface RenewalAccountRow {
   accountName: string;
   cseName: string | null;
   accountOwner: string | null;
+  cseSentiment: string | null;
   renewalDate: string | null;
   renewalStatus: string;
   atrUSD: number;
@@ -68,12 +159,22 @@ export interface RenewalAccountRow {
   downsellAmountUSD: number;
   downsellPct: number | null;
   outcome: RenewalOutcome;
+  overallAssessment: string | null;
+  overallAssessmentDetail: string | null;
   healthScore: number | null;
   healthBand: string | null;
+  riskScoreConfidence: 'high' | 'low' | null;
+  riskSignals: RenewalRiskSignalSummary[];
   usageIndicator: string | null;
   reason: string | null;
   nextStep: string | null;
   lastActivityDate: string | null;
+  /** Days since last indexed Slack channel activity (null when no signal). */
+  daysSinceSlackUpdate: number | null;
+  slackLastTouch: EngagementLastTouch | null;
+  /** Days since last customer-facing touch (meetings, workshops, CSE updates). */
+  daysSinceCustomerEngagement: number | null;
+  customerEngagementLastTouch: EngagementLastTouch | null;
   opportunityCount: number;
   salesforceUrl: string | null;
   opportunities: RenewalOppRow[];
@@ -139,7 +240,12 @@ export interface RenewalMetricsSummary {
   grossRevenueRetentionPct: number | null;
   accountsUpForRenewal: number;
   outcomeCounts: RenewalOutcomeCounts;
-  /** Bridge components — reconcile to renewedRevenueUSD. */
+  /** Closed outcomes only — for quarter-close retrospective charts. */
+  retrospectiveOutcomeCounts: RenewalOutcomeCounts;
+  /** Open renewals in scope (prospective pipeline). */
+  openRenewalCount: number;
+  openRenewalAtrUSD: number;
+  pushedRenewalCount: number;
   bridge: {
     startingAtrUSD: number;
     fullChurnUSD: number;
@@ -171,8 +277,6 @@ export interface BuildRenewalMetricsOpts {
   /** Optional prior-quarter keys for period-over-period KPI deltas. */
   priorQuarterKeys?: Set<string> | null;
 }
-
-const EPSILON = 0.01;
 
 /** True when SFDC Type is a renewal. */
 export function isRenewalLike(opp: CanonicalOpportunity): boolean {
@@ -207,17 +311,18 @@ function managerForecastMostLikelyUSD(opp: CanonicalOpportunity): number | null 
   return opp.forecastMostLikely;
 }
 
-/** True when SFDC Churn_Risk__c is Confirmed Full Churn on a renewal opportunity. */
+/** True when SFDC marks operational full churn (Churn Risk = Confirmed Full Churn). */
 export function isKnownChurnOpportunity(opp: CanonicalOpportunity): boolean {
-  return isRenewalLike(opp) && isConfirmedFullChurnRisk(opp.churnRisk);
+  return isRenewalLike(opp) && isOperationalFullChurnOpportunity(opp);
 }
 
-function isFullChurnSignal(opp: CanonicalOpportunity, view: AccountView): boolean {
-  // Known churn is excluded upstream — do not double-count here.
-  if (opp.fullChurnNotificationToOwnerDate || opp.fullChurnFinalEmailSentDate) return true;
-  if (closedOpportunityOutcome(opp) === 'lost') return true;
-  if (isConfirmedChurn(view.account, view.opportunities) && isClosedOpportunity(opp)) return true;
-  return false;
+/**
+ * Saveable-book full churn: SFDC Confirmed Full Churn, or closed-lost renewal.
+ * Churn-notice-submitted dates are excluded — related workflow, not the marker.
+ */
+function isFullChurnSignal(opp: CanonicalOpportunity): boolean {
+  if (isOperationalFullChurnOpportunity(opp)) return true;
+  return isClosedOpportunity(opp) && closedOpportunityOutcome(opp) === 'lost';
 }
 
 /**
@@ -268,7 +373,7 @@ export function deriveRenewedRevenueUSD(
   const atr = opp.availableToRenewUSD ?? 0;
   if (!isRenewalLike(opp)) return 0;
   if (isKnownChurnOpportunity(opp)) return 0;
-  if (isFullChurnSignal(opp, view)) return 0;
+  if (isFullChurnSignal(opp)) return 0;
 
   const closed = closedOpportunityOutcome(opp);
   if (closed === 'won') {
@@ -298,17 +403,25 @@ export function classifyRenewalOutcome(
 ): RenewalOutcome {
   const atrVal = opp.availableToRenewUSD ?? 0;
   const renewed = deriveRenewedRevenueUSD(opp, view);
+  const closedLost =
+    isClosedOpportunity(opp) && closedOpportunityOutcome(opp) === 'lost';
 
-  // Revenue-based outcomes apply to open and closed renewals alike.
-  if (renewed <= EPSILON && atrVal > EPSILON) return 'full_churn';
-  if (renewed + EPSILON < atrVal) return 'downsell';
-  if (renewed > atrVal + EPSILON) return 'expanded';
+  if (
+    isOperationalFullChurnOpportunity(opp) ||
+    (closedLost && renewed <= EPSILON && atrVal > EPSILON)
+  ) {
+    return 'full_churn';
+  }
 
+  // Open renewals stay pending/pushed regardless of forecast shape — downsell
+  // / expansion are quarter-close outcomes for closed deals only.
   if (!isClosedOpportunity(opp)) {
     if (opp.closeDate && opp.closeDate < asOfDate.slice(0, 10)) return 'pushed';
     return 'pending';
   }
 
+  if (renewed + EPSILON < atrVal) return 'downsell';
+  if (renewed > atrVal + EPSILON) return 'expanded';
   return 'flat';
 }
 
@@ -316,13 +429,19 @@ export function classifyRenewalOutcome(
 export function classifyAccountOutcome(
   atrUSD: number,
   renewedRevenueUSD: number,
-  _oppOutcomes: RenewalOutcome[],
+  oppOutcomes: RenewalOutcome[],
   asOfDate: string,
   hasOpenOpp: boolean,
   latestCloseDate: string | null,
 ): RenewalOutcome {
-  if (renewedRevenueUSD <= EPSILON && atrUSD > EPSILON) return 'full_churn';
-  if (renewedRevenueUSD + EPSILON < atrUSD) return 'downsell';
+  if (oppOutcomes.includes('full_churn')) return 'full_churn';
+  if (renewedRevenueUSD + EPSILON < atrUSD) {
+    if (hasOpenOpp) {
+      if (latestCloseDate && latestCloseDate < asOfDate.slice(0, 10)) return 'pushed';
+      return 'pending';
+    }
+    return 'downsell';
+  }
   if (renewedRevenueUSD > atrUSD + EPSILON) return 'expanded';
 
   if (hasOpenOpp) {
@@ -351,6 +470,111 @@ function usageIndicator(view: AccountView): string | null {
   return 'Active engagement';
 }
 
+function riskScoreSummary(view: AccountView): {
+  confidence: 'high' | 'low' | null;
+  signals: RenewalRiskSignalSummary[];
+} {
+  const rs = view.riskScore;
+  if (!rs) return { confidence: null, signals: [] };
+  return {
+    confidence: rs.confidence,
+    signals: rs.signals.map((s) => ({
+      label: s.label,
+      points: s.points,
+      source: s.source,
+    })),
+  };
+}
+
+function overallAssessment(view: AccountView): string | null {
+  return view.account.cerebroRiskCategory ?? null;
+}
+
+function overallAssessmentDetail(view: AccountView): string | null {
+  const analysis = view.account.cerebroRiskAnalysis?.trim();
+  if (analysis) return analysis;
+
+  const flags = Object.entries(view.account.cerebroRisks ?? {})
+    .filter(([, atRisk]) => atRisk === true)
+    .map(([key]) => key.replace(/Risk$/, ''));
+  if (flags.length > 0 && view.account.cerebroRiskCategory) {
+    return `Cerebro overall assessment: ${view.account.cerebroRiskCategory} — ${flags.join(', ')} risk signal${flags.length === 1 ? '' : 's'} flagged.`;
+  }
+  return null;
+}
+
+/** Representative score aligned to Cerebro Overall Assessment category bands. */
+function cerebroAssessmentScore(category: string | null | undefined): number | null {
+  switch (category) {
+    case 'Critical':
+      return 88;
+    case 'High':
+      return 63;
+    case 'Medium':
+      return 38;
+    case 'Low':
+      return 12;
+    default:
+      return null;
+  }
+}
+
+/** Sort weight for Overall Assessment category (higher = more severe). */
+export function overallAssessmentSortRank(category: string | null | undefined): number {
+  switch (category) {
+    case 'Critical':
+      return 4;
+    case 'High':
+      return 3;
+    case 'Medium':
+      return 2;
+    case 'Low':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/** True when Cerebro Overall Assessment is Critical or High (at-risk band). */
+export function isOverallAssessmentAtRisk(category: string | null | undefined): boolean {
+  return category === 'Critical' || category === 'High';
+}
+
+/** Open renewal opps flagged at-risk by Cerebro Overall Assessment. */
+export function filterAtRiskByOverallAssessment(rows: RenewalOppRow[]): RenewalOppRow[] {
+  return rows.filter(
+    (r) => isOpenRenewalOppRow(r) && isOverallAssessmentAtRisk(r.overallAssessment),
+  );
+}
+
+/** Open renewal opps with close date within the next N calendar days. */
+export function filterUpcomingRenewals(
+  rows: RenewalOppRow[],
+  horizonDays: number,
+  asOfDate: string = new Date().toISOString(),
+): RenewalOppRow[] {
+  const today = Date.parse(asOfDate.slice(0, 10));
+  const horizon = today + horizonDays * 86_400_000;
+  return rows.filter((r) => {
+    if (!isOpenRenewalOppRow(r) || !r.closeDate) return false;
+    const close = Date.parse(r.closeDate);
+    if (!Number.isFinite(close)) return false;
+    return close >= today && close <= horizon;
+  });
+}
+
+function engagementMetrics(view: AccountView, asOfDate: string) {
+  const slack = lastHumanSlackPost(view.account, asOfDate);
+  const engagement = lastHumanCustomerEngagement(view.account, asOfDate);
+  return {
+    daysSinceSlackUpdate: slack?.daysSince ?? daysSinceLastSlackChannelUpdate(view.account, asOfDate),
+    slackLastTouch: toEngagementLastTouch(slack),
+    daysSinceCustomerEngagement:
+      engagement?.daysSince ?? daysSinceLastCustomerEngagement(view.account, asOfDate),
+    customerEngagementLastTouch: toEngagementLastTouch(engagement),
+  };
+}
+
 function pickReason(view: AccountView, opp: CanonicalOpportunity): string | null {
   return (
     opp.churnDownsellReason ??
@@ -377,6 +601,10 @@ function pickLastActivity(view: AccountView, opp: CanonicalOpportunity): string 
 function sfAccountUrl(view: AccountView): string | null {
   const link = view.account.sourceLinks?.find((l) => l.source === 'salesforce');
   return link?.url ?? null;
+}
+
+function sfOpportunityUrl(opportunityId: string): string {
+  return `https://zuora.lightning.force.com/lightning/r/Opportunity/${opportunityId}/view`;
 }
 
 export function buildKnownChurnOppRows(
@@ -431,15 +659,22 @@ export function buildRenewalOppRows(
       if (isKnownChurnOpportunity(opp)) continue;
       if (!oppInQuarters(opp, quarterKeys, quarterKeyFn)) continue;
       const atr = opp.availableToRenewUSD ?? 0;
-      if (atr <= 0 && !isFullChurnSignal(opp, view)) continue;
+      if (atr <= 0 && !isFullChurnSignal(opp)) continue;
 
       const renewed = deriveRenewedRevenueUSD(opp, view);
       const outcome = classifyRenewalOutcome(opp, view, asOfDate);
       const churned = outcome === 'full_churn' ? atr : 0;
+      const isOpen = outcome === 'pending' || outcome === 'pushed';
       const downsell =
-        outcome === 'downsell' ? Math.max(0, atr - renewed) : 0;
+        outcome === 'downsell'
+          ? Math.max(0, atr - renewed)
+          : isOpen && renewed + EPSILON < atr
+            ? Math.max(0, atr - renewed)
+            : 0;
       const downsellPct =
         outcome === 'downsell' && atr > 0 ? (downsell / atr) * 100 : null;
+      const risk = riskScoreSummary(view);
+      const engagement = engagementMetrics(view, asOfDate);
 
       rows.push({
         opportunityId: opp.opportunityId,
@@ -448,6 +683,7 @@ export function buildRenewalOppRows(
         accountName: view.account.accountName,
         cseName: view.account.assignedCSE?.name ?? null,
         accountOwner: view.account.accountOwner?.name ?? null,
+        cseSentiment: view.account.cseSentiment ?? null,
         closeDate: opp.closeDate,
         stageName: opp.stageName,
         renewalStatus: opp.forecastCategory ?? opp.stageName,
@@ -456,14 +692,33 @@ export function buildRenewalOppRows(
         churnedAtrUSD: churned,
         downsellAmountUSD: downsell,
         downsellPct,
+        forecastMostLikelyUSD: managerForecastMostLikelyUSD(opp),
         outcome,
-        healthScore: view.riskScore?.score ?? null,
-        healthBand: view.riskScore?.band ?? view.risk.level ?? null,
+        overallAssessment: overallAssessment(view),
+        overallAssessmentDetail: overallAssessmentDetail(view),
+        healthScore:
+          cerebroAssessmentScore(view.account.cerebroRiskCategory) ??
+          view.riskScore?.score ??
+          null,
+        healthBand:
+          view.account.cerebroRiskCategory ??
+          view.riskScore?.band ??
+          view.risk.level ??
+          null,
+        riskScoreConfidence: view.account.cerebroRiskCategory
+          ? 'high'
+          : risk.confidence,
+        riskSignals: risk.signals,
         usageIndicator: usageIndicator(view),
         reason: pickReason(view, opp),
         nextStep: pickNextStep(opp),
         lastActivityDate: pickLastActivity(view, opp),
+        daysSinceSlackUpdate: engagement.daysSinceSlackUpdate,
+        slackLastTouch: engagement.slackLastTouch,
+        daysSinceCustomerEngagement: engagement.daysSinceCustomerEngagement,
+        customerEngagementLastTouch: engagement.customerEngagementLastTouch,
         salesforceUrl: sfAccountUrl(view),
+        opportunitySalesforceUrl: sfOpportunityUrl(opp.opportunityId),
       });
     }
   }
@@ -494,7 +749,7 @@ export function buildRenewalAccountRows(
         ? (downsellAmountUSD / atrUSD) * 100
         : null;
 
-    const hasOpen = opps.some((o) => o.outcome === 'pending' || o.outcome === 'pushed');
+    const hasOpen = opps.some((o) => isOpenRenewalOppRow(o));
     const latestClose = opps
       .map((o) => o.closeDate)
       .filter(Boolean)
@@ -514,6 +769,7 @@ export function buildRenewalAccountRows(
       accountName: first.accountName,
       cseName: first.cseName,
       accountOwner: first.accountOwner,
+      cseSentiment: first.cseSentiment,
       renewalDate: latestClose,
       renewalStatus: opps.map((o) => o.renewalStatus).join('; '),
       atrUSD,
@@ -522,8 +778,12 @@ export function buildRenewalAccountRows(
       downsellAmountUSD,
       downsellPct,
       outcome,
+      overallAssessment: first.overallAssessment,
+      overallAssessmentDetail: first.overallAssessmentDetail,
       healthScore: first.healthScore,
       healthBand: first.healthBand,
+      riskScoreConfidence: first.riskScoreConfidence,
+      riskSignals: first.riskSignals,
       usageIndicator: first.usageIndicator,
       reason: opps.map((o) => o.reason).find(Boolean) ?? null,
       nextStep: opps.map((o) => o.nextStep).find(Boolean) ?? null,
@@ -531,6 +791,10 @@ export function buildRenewalAccountRows(
         .map((o) => o.lastActivityDate)
         .filter(Boolean)
         .sort((a, b) => Date.parse(b!) - Date.parse(a!))[0] ?? null,
+      daysSinceSlackUpdate: first.daysSinceSlackUpdate,
+      slackLastTouch: first.slackLastTouch,
+      daysSinceCustomerEngagement: first.daysSinceCustomerEngagement,
+      customerEngagementLastTouch: first.customerEngagementLastTouch,
       opportunityCount: opps.length,
       salesforceUrl: first.salesforceUrl,
       opportunities: opps,
@@ -544,7 +808,7 @@ function summarizeReasons(
   outcome: RenewalOutcome,
 ): ReasonSummary[] {
   const map = new Map<string, { count: number; atr: number }>();
-  for (const a of accounts.filter((x) => x.outcome === outcome)) {
+  for (const a of accounts.filter((x) => x.outcome === outcome && isClosedRenewalOutcome(x.outcome))) {
     const reason = (a.reason ?? 'Unspecified').trim() || 'Unspecified';
     const cur = map.get(reason) ?? { count: 0, atr: 0 };
     cur.count += 1;
@@ -558,6 +822,16 @@ function summarizeReasons(
       atrUSD: v.atr,
     }))
     .sort((a, b) => b.atrUSD - a.atrUSD);
+}
+
+function pipelineStatsFromAccounts(accounts: RenewalAccountRow[]) {
+  const opps = accounts.flatMap((a) => a.opportunities);
+  const openOpps = opps.filter((o) => isOpenRenewalOppRow(o));
+  return {
+    openRenewalCount: new Set(openOpps.map((o) => o.accountId)).size,
+    openRenewalAtrUSD: openOpps.reduce((s, o) => s + o.atrUSD, 0),
+    pushedRenewalCount: openOpps.filter((o) => o.outcome === 'pushed').length,
+  };
 }
 
 function aggregateFromAccounts(accounts: RenewalAccountRow[]): RenewalMetricsSummary {
@@ -579,6 +853,16 @@ function aggregateFromAccounts(accounts: RenewalAccountRow[]): RenewalMetricsSum
     pushed: accounts.filter((a) => a.outcome === 'pushed').length,
   };
 
+  const closedAccounts = accounts.filter((a) => isClosedRenewalOutcome(a.outcome));
+  const retrospectiveOutcomeCounts: RenewalOutcomeCounts = {
+    flat: closedAccounts.filter((a) => a.outcome === 'flat').length,
+    downsell: closedAccounts.filter((a) => a.outcome === 'downsell').length,
+    full_churn: closedAccounts.filter((a) => a.outcome === 'full_churn').length,
+    expanded: closedAccounts.filter((a) => a.outcome === 'expanded').length,
+    pending: 0,
+    pushed: 0,
+  };
+
   const expansionUSD = accounts
     .filter((a) => a.outcome === 'expanded')
     .reduce((s, a) => s + Math.max(0, a.renewedRevenueUSD - a.atrUSD), 0);
@@ -598,6 +882,8 @@ function aggregateFromAccounts(accounts: RenewalAccountRow[]): RenewalMetricsSum
       atrUpForRenewalUSD > 0 ? renewedRevenueUSD / atrUpForRenewalUSD : null,
     accountsUpForRenewal,
     outcomeCounts,
+    retrospectiveOutcomeCounts,
+    ...pipelineStatsFromAccounts(accounts),
     bridge: {
       startingAtrUSD: atrUpForRenewalUSD,
       fullChurnUSD: atrChurnedUSD,

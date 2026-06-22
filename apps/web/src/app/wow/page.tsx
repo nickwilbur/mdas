@@ -3,7 +3,12 @@ import { getDashboardData, getWoWChangeEvents, DEFAULT_WINDOW_DAYS } from '@/lib
 import { Card } from '@/components/ui';
 import { FiscalQuarterFilter } from '@/components/FiscalQuarterFilter';
 import { WindowSelector } from '@/components/WindowSelector';
-import { fiscalQuartersForAccount, parseQuartersParam } from '@/lib/fiscal';
+import {
+  fiscalQuartersForAccount,
+  parseQuartersParam,
+  resolveQuarterBucket,
+  scopeQuartersToBucket,
+} from '@/lib/fiscal';
 import type { ChangeEvent } from '@mdas/canonical';
 
 export const dynamic = 'force-dynamic';
@@ -25,9 +30,10 @@ function formatDate(iso: string | null): string {
 export default async function WoWPage({
   searchParams,
 }: {
-  searchParams: Promise<{ quarters?: string; window?: string }>;
+  searchParams: Promise<{ quarters?: string; window?: string; bucket?: string }>;
 }) {
-  const { quarters, window: windowParam } = await searchParams;
+  const { quarters, window: windowParam, bucket: bucketParam } = await searchParams;
+  const bucket = resolveQuarterBucket(bucketParam, 'retrospective');
   const windowDays = [7, 14, 30].includes(Number(windowParam)) ? Number(windowParam) : DEFAULT_WINDOW_DAYS;
   const [{ events, baselineDate, windowDays: wd }, { views }] = await Promise.all([
     getWoWChangeEvents(windowDays),
@@ -44,14 +50,11 @@ export default async function WoWPage({
     new Set(views.flatMap((v) => fiscalQuartersForAccount(v))),
   );
 
-  const selectedQuarters = parseQuartersParam(quarters);
-  const filteredEvents =
-    selectedQuarters === null
-      ? events
-      : events.filter((e) => {
-          const ks = accountQuartersMap.get(e.accountId) ?? [];
-          return ks.some((k) => selectedQuarters.has(k));
-        });
+  const scopeQuarters = scopeQuartersToBucket(parseQuartersParam(quarters), bucket);
+  const filteredEvents = events.filter((e) => {
+    const ks = accountQuartersMap.get(e.accountId) ?? [];
+    return ks.some((k) => scopeQuarters.has(k));
+  });
 
   const groups = new Map<string, ChangeEvent[]>();
   for (const e of filteredEvents) {
@@ -72,7 +75,7 @@ export default async function WoWPage({
         </div>
         <WindowSelector current={windowDays} />
       </div>
-      <FiscalQuarterFilter availableQuarterKeys={availableQuarterKeys} />
+      <FiscalQuarterFilter availableQuarterKeys={availableQuarterKeys} defaultBucket="retrospective" />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {CATEGORIES.map(({ key, title }) => {
           const list = groups.get(key) ?? [];

@@ -11,7 +11,6 @@ export const metadata = {
 const NAV = [
   { href: '/', label: 'Operations' },
   { href: '/renewals', label: 'Renewals' },
-  { href: '/renewal-analysis', label: 'Renewal Analysis' },
   { href: '/accounts', label: 'Accounts' },
   { href: '/opportunities', label: 'Opportunities' },
   { href: '/wow', label: 'WoW' },

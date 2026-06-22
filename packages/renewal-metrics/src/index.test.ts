@@ -6,6 +6,11 @@ import {
   buildRenewalOppRows,
   classifyRenewalOutcome,
   deriveRenewedRevenueUSD,
+  filterAtRiskByOverallAssessment,
+  filterUpcomingRenewals,
+  isKnownChurnOpportunity,
+  isOverallAssessmentAtRisk,
+  type RenewalOppRow,
 } from './index.js';
 
 const AS_OF = '2026-06-16';
@@ -182,6 +187,16 @@ describe('deriveRenewedRevenueUSD', () => {
     );
     expect(deriveRenewedRevenueUSD(view.opportunities[0]!, view)).toBe(0);
   });
+
+  it('does not zero revenue for churn notice dates without Confirmed Full Churn', () => {
+    const opp = mkOpp({
+      churnRisk: 'At Risk',
+      fullChurnNotificationToOwnerDate: '2026-04-01',
+      forecastMostLikely: 0,
+    });
+    const view = mkView(mkAccount(), [opp]);
+    expect(deriveRenewedRevenueUSD(opp, view)).toBe(100_000);
+  });
 });
 
 describe('classifyRenewalOutcome', () => {
@@ -191,10 +206,38 @@ describe('classifyRenewalOutcome', () => {
     expect(classifyRenewalOutcome(opp, view, AS_OF)).toBe('full_churn');
   });
 
-  it('classifies downsell', () => {
-    const opp = mkOpp({ forecastMostLikely: -25_000 });
+  it('classifies closed downsell', () => {
+    const opp = mkOpp({
+      forecastMostLikely: -25_000,
+      stageName: '8.0 - Closed/Won (Finance)',
+      acv: 75_000,
+      acvDelta: -25_000,
+    });
     const view = mkView(mkAccount(), [opp]);
     expect(classifyRenewalOutcome(opp, view, AS_OF)).toBe('downsell');
+  });
+
+  it('classifies open forecast downsell as pending not closed downsell', () => {
+    const opp = mkOpp({ forecastMostLikely: -25_000, closeDate: '2026-08-01' });
+    const view = mkView(mkAccount(), [opp]);
+    expect(classifyRenewalOutcome(opp, view, AS_OF)).toBe('pending');
+  });
+
+  it('classifies open 100% loss forecast as pending not full churn', () => {
+    const opp = mkOpp({ forecastMostLikely: -100_000, closeDate: '2026-08-01' });
+    const view = mkView(mkAccount(), [opp]);
+    expect(classifyRenewalOutcome(opp, view, AS_OF)).toBe('pending');
+  });
+
+  it('does not classify churn notice alone as full churn on open opp', () => {
+    const opp = mkOpp({
+      churnRisk: 'At Risk',
+      fullChurnNotificationToOwnerDate: '2026-04-01',
+      forecastMostLikely: -100_000,
+      closeDate: '2026-08-01',
+    });
+    const view = mkView(mkAccount(), [opp]);
+    expect(classifyRenewalOutcome(opp, view, AS_OF)).toBe('pending');
   });
 
   it('classifies expansion', () => {
@@ -268,7 +311,10 @@ describe('buildRenewalMetrics', () => {
     expect(metrics.atrChurnedUSD).toBe(0);
     expect(metrics.downsellAmountUSD).toBe(40_000);
     expect(metrics.fullChurnAccountCount).toBe(0);
-    expect(metrics.downsellAccountCount).toBe(1);
+    expect(metrics.downsellAccountCount).toBe(0);
+    expect(metrics.outcomeCounts.pushed).toBe(2);
+    expect(metrics.openRenewalCount).toBe(2);
+    expect(metrics.openRenewalAtrUSD).toBe(180_000);
     expect(metrics.knownChurn.accountCount).toBe(1);
     expect(metrics.knownChurn.opportunityCount).toBe(1);
     expect(metrics.knownChurn.atrUSD).toBe(200_000);
@@ -347,5 +393,86 @@ describe('buildRenewalMetrics', () => {
     });
     expect(metrics.knownChurn.opportunityCount).toBe(0);
     expect(metrics.atrUpForRenewalUSD).toBe(100_000);
+  });
+
+  it('requires Confirmed Full Churn for known churn, not notice dates alone', () => {
+    const opp = mkOpp({
+      churnRisk: 'At Risk',
+      fullChurnNotificationToOwnerDate: '2026-04-01',
+    });
+    expect(isKnownChurnOpportunity(opp)).toBe(false);
+  });
+
+  it('rejects Confirmed Full Churn when Sub-type is not Full Churn', () => {
+    const opp = mkOpp({ churnRisk: 'Confirmed Full Churn', subType: 'Downsell' });
+    expect(isKnownChurnOpportunity(opp)).toBe(false);
+  });
+
+  it('accepts Confirmed Full Churn with Full Churn sub-type', () => {
+    const opp = mkOpp({ churnRisk: 'Confirmed Full Churn', subType: 'Full Churn' });
+    expect(isKnownChurnOpportunity(opp)).toBe(true);
+  });
+});
+
+describe('overall assessment at-risk filters', () => {
+  const row = (partial: Partial<RenewalOppRow>): RenewalOppRow =>
+    ({
+      opportunityId: 'O1',
+      opportunityName: 'Renewal',
+      accountId: 'A1',
+      accountName: 'Acct',
+      cseName: null,
+      accountOwner: null,
+      cseSentiment: null,
+      closeDate: '2026-08-01',
+      stageName: 'Open',
+      renewalStatus: 'Open',
+      atrUSD: 100_000,
+      renewedRevenueUSD: 100_000,
+      churnedAtrUSD: 0,
+      downsellAmountUSD: 0,
+      downsellPct: null,
+      forecastMostLikelyUSD: null,
+      outcome: 'pending',
+      overallAssessment: null,
+      overallAssessmentDetail: null,
+      healthScore: null,
+      healthBand: null,
+      riskScoreConfidence: null,
+      riskSignals: [],
+      usageIndicator: null,
+      reason: null,
+      nextStep: null,
+      lastActivityDate: null,
+      daysSinceSlackUpdate: null,
+      slackLastTouch: null,
+      daysSinceCustomerEngagement: null,
+      customerEngagementLastTouch: null,
+      salesforceUrl: null,
+      opportunitySalesforceUrl: null,
+      ...partial,
+    }) as RenewalOppRow;
+
+  it('flags Critical and High open renewals as at-risk', () => {
+    expect(isOverallAssessmentAtRisk('Critical')).toBe(true);
+    expect(isOverallAssessmentAtRisk('High')).toBe(true);
+    expect(isOverallAssessmentAtRisk('Medium')).toBe(false);
+    const rows = [
+      row({ opportunityId: '1', overallAssessment: 'Critical' }),
+      row({ opportunityId: '2', overallAssessment: 'High' }),
+      row({ opportunityId: '3', overallAssessment: 'Medium' }),
+      row({ opportunityId: '4', overallAssessment: 'Critical', outcome: 'full_churn' }),
+    ];
+    expect(filterAtRiskByOverallAssessment(rows).map((r) => r.opportunityId)).toEqual(['1', '2']);
+  });
+
+  it('filters upcoming renewals by close date horizon', () => {
+    const asOf = '2026-06-22T12:00:00.000Z';
+    const rows = [
+      row({ opportunityId: 'soon', closeDate: '2026-07-01' }),
+      row({ opportunityId: 'later', closeDate: '2026-12-01' }),
+      row({ opportunityId: 'closed', closeDate: '2026-07-01', outcome: 'flat' }),
+    ];
+    expect(filterUpcomingRenewals(rows, 30, asOf).map((r) => r.opportunityId)).toEqual(['soon']);
   });
 });

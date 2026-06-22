@@ -1,7 +1,7 @@
-// SalesforceClient — thin wrapper around a jsforce Connection.
+// SalesforceClient — read-only REST/Bulk wrapper using native fetch().
 //
 // Read-only by construction:
-//   - Only exposes query (REST) and bulk2.query (Bulk API 2.0) methods.
+//   - Only exposes query (REST) and bulkQuery (REST auto-pagination) methods.
 //   - No create / update / upsert / destroy / delete methods are exported.
 //   - The CI guard (scripts/ci-guard.mjs) greps adapter source for write
 //     verbs as a defense-in-depth check.
@@ -10,8 +10,11 @@
 // secret (env or Docker secret) and exchanged for an access token on first
 // use. Access tokens are cached in-memory for their lifetime; on 401 we
 // transparently refresh once and retry.
-import { Connection, OAuth2 } from 'jsforce';
-
+//
+// HTTP uses Node's native fetch(), not jsforce's node-fetch transport.
+// Behind corporate TLS inspection (Zscaler), jsforce hangs on instance-URL
+// calls even when login.salesforce.com OAuth succeeds. Native fetch respects
+// NODE_EXTRA_CA_CERTS when .docker-ca.pem is mounted (see README.md).
 export interface SalesforceCredentials {
   clientId: string;
   clientSecret: string;
@@ -21,9 +24,7 @@ export interface SalesforceCredentials {
   /** Optional: pin a Salesforce REST API version. Defaults to 59.0. */
   apiVersion?: string;
   /** Optional: override the OAuth token endpoint base URL.
-   *  Defaults to instanceUrl (which Salesforce routes correctly for both
-   *  production and sandbox orgs). Set this only if the org requires a
-   *  specific login endpoint, e.g. https://login.salesforce.com. */
+   *  Defaults to https://login.salesforce.com when unset. */
   loginUrl?: string;
 }
 
@@ -32,134 +33,139 @@ export interface SalesforceQueryRecord {
   [field: string]: unknown;
 }
 
+interface OAuthTokenResponse {
+  access_token?: string;
+  error?: string;
+  error_description?: string;
+}
+
+interface QueryResultPage<T> {
+  records: T[];
+  done: boolean;
+  nextRecordsUrl?: string;
+  totalSize: number;
+}
+
+/** Exchange a refresh token via the standard Salesforce OAuth endpoint. */
+async function refreshAccessToken(creds: SalesforceCredentials): Promise<string> {
+  const loginUrl = (creds.loginUrl ?? 'https://login.salesforce.com').replace(/\/$/, '');
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    client_id: creds.clientId,
+    refresh_token: creds.refreshToken,
+  });
+  if (creds.clientSecret) body.set('client_secret', creds.clientSecret);
+
+  const res = await fetch(`${loginUrl}/services/oauth2/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  const json = (await res.json()) as OAuthTokenResponse;
+  if (!res.ok || !json.access_token) {
+    const detail = [json.error, json.error_description].filter(Boolean).join(': ');
+    throw new Error(
+      `Salesforce OAuth refresh failed (HTTP ${res.status})${detail ? `: ${detail}` : ''}`,
+    );
+  }
+  return json.access_token;
+}
+
 export class SalesforceClient {
-  private connection: Connection | null = null;
   private accessToken: string | null = null;
-  /** In-flight connection promise — deduplicates parallel ensureConnection()
-   *  calls so 3 concurrent query() invocations share a single OAuth round-trip. */
-  private connectingPromise: Promise<Connection> | null = null;
+  /** Deduplicates parallel ensureAccessToken() calls. */
+  private tokenPromise: Promise<string> | null = null;
 
   constructor(private readonly creds: SalesforceCredentials) {}
 
-  private async ensureConnection(): Promise<Connection> {
-    if (this.connection) return this.connection;
-    // Deduplicate: if another call is already creating the connection,
-    // piggyback on its promise instead of issuing a second OAuth refresh.
-    if (!this.connectingPromise) {
-      this.connectingPromise = this.createConnection().finally(() => {
-        this.connectingPromise = null;
-      });
-    }
-    return this.connectingPromise;
+  private apiVersion(): string {
+    return this.creds.apiVersion ?? '59.0';
   }
 
-  private async createConnection(): Promise<Connection> {
-    // loginUrl defaults to instanceUrl — Salesforce routes token requests
-    // from My Domain URLs correctly for both production and sandbox orgs.
-    // Overridable via SALESFORCE_LOGIN_URL for orgs that require a
-    // specific endpoint (e.g. https://login.salesforce.com).
-    const loginUrl = this.creds.loginUrl ?? this.creds.instanceUrl;
-    const oauth2 = new OAuth2({
-      loginUrl,
-      clientId: this.creds.clientId,
-      clientSecret: this.creds.clientSecret,
-      // No redirectUri needed for refresh_token grant.
-    });
+  private instanceBase(): string {
+    return this.creds.instanceUrl.replace(/\/$/, '');
+  }
 
-    // Exchange the refresh token for an access token. jsforce's
-    // oauth2.refreshToken returns a TokenResponse but doesn't construct
-    // the Connection for us, so we issue the call ourselves and pass the
-    // access token through the Connection ctor.
-    const tokenRes = await oauth2.refreshToken(this.creds.refreshToken);
-    if (!tokenRes.access_token || typeof tokenRes.access_token !== 'string') {
-      throw new Error(
-        `Salesforce OAuth token refresh did not return an access_token. ` +
-        `loginUrl=${loginUrl} clientId=${this.creds.clientId}`,
-      );
+  private async ensureAccessToken(): Promise<string> {
+    if (this.accessToken) return this.accessToken;
+    if (!this.tokenPromise) {
+      this.tokenPromise = refreshAccessToken(this.creds)
+        .then((token) => {
+          this.accessToken = token;
+          return token;
+        })
+        .finally(() => {
+          this.tokenPromise = null;
+        });
     }
-    this.accessToken = tokenRes.access_token;
+    return this.tokenPromise;
+  }
 
-    this.connection = new Connection({
-      oauth2,
-      instanceUrl: this.creds.instanceUrl,
-      accessToken: this.accessToken,
-      version: this.creds.apiVersion ?? '59.0',
-      // jsforce tries to refresh on session_id_invalid automatically when
-      // we attach the OAuth2 instance + refreshToken via a refresh handler.
-      refreshFn: async (_conn: Connection, callback: (err: Error | null, accessToken?: string) => void) => {
-        try {
-          const fresh = await oauth2.refreshToken(this.creds.refreshToken);
-          if (!fresh.access_token) {
-            callback(new Error('Salesforce OAuth mid-session refresh returned no access_token'));
-            return;
-          }
-          this.accessToken = fresh.access_token;
-          callback(null, fresh.access_token);
-        } catch (err) {
-          callback(err as Error);
-        }
+  /** Authenticated fetch against the org instance URL. Retries once on 401. */
+  private async apiFetch(path: string, init: RequestInit = {}, allowRetry = true): Promise<Response> {
+    const token = await this.ensureAccessToken();
+    const url = path.startsWith('http') ? path : `${this.instanceBase()}${path}`;
+    const res = await fetch(url, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        ...init.headers,
       },
     });
+    if (res.status === 401 && allowRetry) {
+      this.accessToken = null;
+      await this.ensureAccessToken();
+      return this.apiFetch(path, init, false);
+    }
+    return res;
+  }
 
-    return this.connection;
+  private async readJson<T>(res: Response, label: string): Promise<T> {
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Salesforce ${label} failed (HTTP ${res.status})${text ? `: ${text.slice(0, 300)}` : ''}`);
+    }
+    return JSON.parse(text) as T;
   }
 
   /**
-   * Run a SOQL query via the REST API. Use for queries returning < 2,000
-   * rows. For larger or historical pulls, use bulkQuery() instead.
-   *
-   * Auto-paginates: jsforce's Connection.query handles the `nextRecordsUrl`
-   * cursor when `autoFetch: true` is set on `queryAll`. We use the simpler
-   * `query` and check `done` ourselves so we can return a single array.
+   * Run a SOQL query via the REST API with auto-pagination.
    */
   async query<T extends SalesforceQueryRecord = SalesforceQueryRecord>(
     soql: string,
   ): Promise<T[]> {
-    const conn = await this.ensureConnection();
     const out: T[] = [];
-    let result = await conn.query<T>(soql);
-    out.push(...(result.records as T[]));
-    while (!result.done && result.nextRecordsUrl) {
-      // jsforce exposes queryMore on the connection; type-narrowed via cast.
-      result = await (conn as unknown as {
-        queryMore: <R>(url: string) => Promise<{
-          records: R[];
-          done: boolean;
-          nextRecordsUrl?: string;
-          totalSize: number;
-        }>;
-      }).queryMore<T>(result.nextRecordsUrl);
-      out.push(...(result.records as T[]));
+    let path =
+      `/services/data/v${this.apiVersion()}/query?q=${encodeURIComponent(soql)}`;
+    for (;;) {
+      const page = await this.readJson<QueryResultPage<T>>(
+        await this.apiFetch(path),
+        'query',
+      );
+      out.push(...page.records);
+      if (page.done || !page.nextRecordsUrl) break;
+      path = page.nextRecordsUrl;
     }
     return out;
   }
 
   /**
-   * Bulk API 2.0 query. Use for queries that may return > 2,000 rows or
-   * span historical data. jsforce's bulk2 client streams CSV server-side
-   * and we collect into an array.
+   * Large SOQL pulls. Uses REST auto-pagination (reliable behind corp TLS).
+   * Expand 3 opps (~3k rows) typically completes in a few paginated calls.
    */
   async bulkQuery<T extends SalesforceQueryRecord = SalesforceQueryRecord>(
     soql: string,
   ): Promise<T[]> {
-    const conn = await this.ensureConnection();
-    // jsforce's bulk2 client returns a record stream; collect into an array.
-    // Types here are loose because jsforce's bulk2 typings vary by version.
-    const records = (await (conn as unknown as {
-      bulk2: { query: <R>(soql: string) => Promise<R[]> };
-    }).bulk2.query<T>(soql)) as T[];
-    return records;
+    return this.query<T>(soql);
   }
 
   /**
-   * Health check used by adapter.healthCheck() — verifies token can be
-   * obtained and a trivial SELECT runs without error. Returns details
-   * suitable for surfacing on the dashboard's "Source freshness" panel.
+   * Health check — verifies token exchange and a trivial SELECT.
    */
   async healthCheck(): Promise<{ ok: boolean; details: string }> {
-    const loginUrl = this.creds.loginUrl ?? this.creds.instanceUrl;
+    const loginUrl = this.creds.loginUrl ?? 'https://login.salesforce.com';
     try {
-      await this.ensureConnection();
       const r = await this.query<SalesforceQueryRecord>('SELECT Id FROM User LIMIT 1');
       return {
         ok: true,
@@ -183,10 +189,6 @@ export class SalesforceClient {
  */
 export function readSalesforceCredsFromEnv(): SalesforceCredentials | null {
   const e = process.env;
-  // Note: SALESFORCE_CLIENT_SECRET is allowed to be empty/undefined.
-  // Salesforce's built-in PlatformCLI Connected App is a public client
-  // (no secret), and jsforce's OAuth2 helper accepts an empty string
-  // for refresh-token grants against public clients.
   if (
     !e.SALESFORCE_CLIENT_ID ||
     !e.SALESFORCE_REFRESH_TOKEN ||

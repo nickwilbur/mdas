@@ -19,6 +19,7 @@ export default defineConfig({
       '@mdas/scoring': resolve(__dirname, 'packages/scoring/src/index.ts'),
       '@mdas/forecast-generator': resolve(__dirname, 'packages/forecast-generator/src/index.ts'),
       '@mdas/renewal-metrics': resolve(__dirname, 'packages/renewal-metrics/src/index.ts'),
+      '@mdas/account-plan-engine': resolve(__dirname, 'packages/account-plan-engine/src/index.ts'),
       '@mdas/cta-engine': resolve(__dirname, 'packages/cta-engine/src/index.ts'),
       '@mdas/db': resolve(__dirname, 'packages/db/src/index.ts'),
       '@mdas/slack-send': resolve(__dirname, 'packages/slack-send/src/index.ts'),

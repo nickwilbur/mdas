@@ -25,6 +25,12 @@ load_env() {
   # shellcheck disable=SC1091
   source "$REPO_ROOT/.env"
   set +a
+  # Corporate TLS interception (Zscaler etc.): OAuth against login.salesforce.com
+  # succeeds without extra CAs, but REST/Bulk calls to the My Domain instance URL
+  # hang or fail unless Node trusts the corp root. See README.md § Corporate TLS.
+  if [[ -z "${NODE_EXTRA_CA_CERTS:-}" && -f "$REPO_ROOT/.docker-ca.pem" ]]; then
+    export NODE_EXTRA_CA_CERTS="$REPO_ROOT/.docker-ca.pem"
+  fi
 }
 
 screen_running() {
@@ -55,6 +61,9 @@ start_screen() {
     set -a
     source '$REPO_ROOT/.env'
     set +a
+    if [[ -z \"\${NODE_EXTRA_CA_CERTS:-}\" && -f '$REPO_ROOT/.docker-ca.pem' ]]; then
+      export NODE_EXTRA_CA_CERTS='$REPO_ROOT/.docker-ca.pem'
+    fi
     exec \"\$@\" >>'$logfile' 2>&1
   " bash "$@"
 }

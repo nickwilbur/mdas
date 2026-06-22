@@ -3,30 +3,33 @@ import { getDashboardData } from '@/lib/read-model';
 import { Card } from '@/components/ui';
 import { HygieneFilters } from './HygieneClient';
 import { FiscalQuarterFilter } from '@/components/FiscalQuarterFilter';
-import { fiscalQuartersForAccount, parseQuartersParam } from '@/lib/fiscal';
+import {
+  fiscalQuartersForAccount,
+  parseQuartersParam,
+  resolveQuarterBucket,
+  scopeQuartersToBucket,
+} from '@/lib/fiscal';
 
 export const dynamic = 'force-dynamic';
 
 export default async function HygienePage({
   searchParams,
 }: {
-  searchParams: Promise<{ violationTypes?: string; quarters?: string }>;
+  searchParams: Promise<{ violationTypes?: string; quarters?: string; bucket?: string }>;
 }) {
-  const { violationTypes, quarters } = await searchParams;
+  const { violationTypes, quarters, bucket: bucketParam } = await searchParams;
   const { views: allViews } = await getDashboardData();
+  const bucket = resolveQuarterBucket(bucketParam, 'prospective');
 
-  // 1. Apply fiscal quarter filter first (cross-page contract).
-  const selectedQuarters = parseQuartersParam(quarters);
+  // 1. Apply fiscal quarter filter first (cross-page contract), scoped to bucket.
   const availableQuarterKeys = Array.from(
     new Set(allViews.flatMap((v) => fiscalQuartersForAccount(v))),
   );
-  const quarterFilteredViews =
-    selectedQuarters === null
-      ? allViews
-      : allViews.filter((v) => {
-          const ks = fiscalQuartersForAccount(v);
-          return ks.some((k) => selectedQuarters.has(k));
-        });
+  const scopeQuarters = scopeQuartersToBucket(parseQuartersParam(quarters), bucket);
+  const quarterFilteredViews = allViews.filter((v) => {
+    const ks = fiscalQuartersForAccount(v);
+    return ks.some((k) => scopeQuarters.has(k));
+  });
 
   // 2. Then derive violation types from the quarter-filtered slice so
   //    counts in the dropdown reflect the visible scope.
@@ -79,7 +82,7 @@ export default async function HygienePage({
       </div>
 
       <div className="flex flex-wrap items-center gap-4">
-        <FiscalQuarterFilter availableQuarterKeys={availableQuarterKeys} />
+        <FiscalQuarterFilter availableQuarterKeys={availableQuarterKeys} defaultBucket="prospective" />
         <HygieneFilters violationOptions={violationOptions} />
       </div>
 

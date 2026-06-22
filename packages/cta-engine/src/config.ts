@@ -1,3 +1,5 @@
+import { defaultRenewalFiscalYears, FISCAL_QUARTER_FORWARD_COUNT } from './fiscal.js';
+
 export interface CTAEngineConfig {
   /** Days without meaningful engagement to count as dark. */
   darkAccountLookbackDays: number;
@@ -27,18 +29,22 @@ export const DEFAULT_CTA_CONFIG: CTAEngineConfig = {
   darkAccountLookbackDays: 90,
   darkAccountMinWeight: 2.0,
   darkRenewalOppStaleDays: 60,
-  renewalWindowQuarters: 4,
+  renewalWindowQuarters: FISCAL_QUARTER_FORWARD_COUNT,
   dedupWindowDays: 14,
   maxCtasPerScan: 50,
   lowEngagementMinutes30d: 10,
   utilizationThresholdPct: 65,
   sentimentStaleDays: 90,
-  renewalFiscalYears: [2027, 2028],
+  renewalFiscalYears: [],
   requireRiskOrUnhealthy: true,
 };
 
 export function mergeConfig(
   partial?: Partial<CTAEngineConfig>,
 ): CTAEngineConfig {
-  return { ...DEFAULT_CTA_CONFIG, ...partial };
+  const merged = { ...DEFAULT_CTA_CONFIG, ...partial };
+  if (!('renewalFiscalYears' in (partial ?? {}))) {
+    merged.renewalFiscalYears = defaultRenewalFiscalYears();
+  }
+  return merged;
 }

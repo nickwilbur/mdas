@@ -23,6 +23,12 @@ When `ADAPTER_CEREBRO=real`:
 1. **`cerebro-rest`** runs first if `CEREBRO_API_TOKEN` is set (production path).
 2. **`cerebro-glean`** runs second; fills gaps when REST creds are missing or per-account REST 404.
 
+**Freshness:** both adapters stamp `lastFetchedFromSource.cerebro`, but only REST
+provides Risk Category + narrative. REST therefore **never skips** an account that
+is missing `cerebroRiskCategory` / `cerebroRiskAnalysis`, even when Glean refreshed
+the shared stamp within `GLEAN_FRESHNESS_HOURS`. Without this, glean-only refreshes
+left the workbench showing composite risk scores with "Cerebro narrative not synced".
+
 See also: [Cerebro connection analysis](../engineering/cerebro-connection-analysis.md).
 
 ## Required access

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { CanonicalAccount, CanonicalOpportunity } from '@mdas/canonical';
 import { buildAccountView } from '@mdas/scoring';
-import { fiscalYearFromDate } from './fiscal.js';
+import { fiscalYearFromDate, fiscalQuarterWindowEndKey, defaultRenewalFiscalYears } from './fiscal.js';
 import { hasOpenRenewalInFiscalYears } from './scope.js';
 
 describe('fiscalYearFromDate', () => {
@@ -12,6 +12,18 @@ describe('fiscalYearFromDate', () => {
 
   it('maps Zuora FY28 dates', () => {
     expect(fiscalYearFromDate('2027-03-01')).toBe(2028);
+  });
+});
+
+describe('fiscal horizon', () => {
+  const ANCHOR = new Date('2026-06-16T12:00:00Z');
+
+  it('ends at current quarter + 8 forward from anchor', () => {
+    expect(fiscalQuarterWindowEndKey(8, ANCHOR)).toBe('2029-Q2');
+  });
+
+  it('defaultRenewalFiscalYears spans FY26 through forward horizon', () => {
+    expect(defaultRenewalFiscalYears(ANCHOR)).toEqual([2026, 2027, 2028, 2029]);
   });
 });
 

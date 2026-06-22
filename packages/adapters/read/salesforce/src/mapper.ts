@@ -81,6 +81,7 @@ export interface SfdcOpportunityRow extends SalesforceQueryRecord {
   Zephr_ACV_Delta_USD__c: number | null;
   Known_Churn_USD__c: number | null;
   Churn_Risk__c: string | null;
+  Sub_type__c: string | null;
   FLM_Notes__c: string | null;
   SLM_Notes__c: string | null;
   SE_Next_Steps__c: string | null;
@@ -246,6 +247,7 @@ export function mapOpportunity(
     acvDelta: row.fml_DerivedACVDelta_USD__c ?? row.Billing_ACV_Delta_USD__c,
     knownChurnUSD: row.Known_Churn_USD__c,
     churnRisk: row.Churn_Risk__c,
+    subType: row.Sub_type__c,
     productLine: row.Product_Line__c,
     forecastCategory:
       row.fml_Manager_ForecastCategory__c ?? row.ForecastCategoryName ?? null,

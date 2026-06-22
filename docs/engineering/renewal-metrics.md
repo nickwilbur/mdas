@@ -43,10 +43,10 @@ Per **saveable** renewal opportunity (not known churn):
 Account rows aggregate multiple renewal opps in the same period (multi-subscription safe).
 
 ### ATR churned
-Sum of ATR where account/opp outcome is **full churn** (`renewedRevenue = 0`, ATR > 0). Mutually exclusive with downsell classification.
+Sum of ATR where account/opp outcome is **full churn** (`renewedRevenue = 0`, ATR > 0) on the **saveable book**. Includes **closed-lost** renewals after close. Excludes SFDC `Churn_Risk__c = Confirmed Full Churn` (see Known churn). Churn-notice-submitted dates alone do **not** count as full churn.
 
 ### Full logo churn rate
-`full_churn_accounts / accounts_up_for_renewal`. Numerator/denominator shown on KPI card.
+`full_churn_accounts / accounts_up_for_renewal` on the saveable book (closed-lost outcomes). SFDC **Confirmed Full Churn** opps (`Churn_Risk__c`, usually `Sub_type__c = Full Churn`) are in the **Known churn** card, not this numerator.
 
 ### Downsell account rate
 Accounts with `0 < renewed < ATR` divided by accounts up for renewal. Downsell amount = `ATR − renewed` on those accounts.
@@ -57,7 +57,7 @@ Accounts with `0 < renewed < ATR` divided by accounts up for renewal. Downsell a
 ### Renewal outcomes
 | Outcome | Rule |
 |---------|------|
-| `full_churn` | Renewed = 0, ATR > 0, closed |
+| `full_churn` | SFDC `Churn_Risk__c = Confirmed Full Churn` (Known churn track), or closed-lost with renewed = 0 |
 | `downsell` | 0 < renewed < ATR |
 | `flat` | renewed ≈ ATR |
 | `expanded` | renewed > ATR |
@@ -81,9 +81,35 @@ Churn and downsell are mutually exclusive at the **account** level after opp rol
 
 ## UI
 
-Route: `/renewals` — executive renewal dashboard (summary, trends, charts).
+Route: `/renewals` — **Renewal Scorecard** (executive summary, trends, plan vs flash).
 
-Route: `/renewal-analysis` — account-level drilldown table and KPI filters.
+Route: `/renewal-analysis` — **Renewal Workbench** (operational drill-down: forward pipeline + quarter-close review). Both share one nav item ("Renewals") with Scorecard / Workbench tabs — not two separate top-level destinations.
+
+### Quarter buckets (app-wide)
+
+Every fiscal quarter belongs to **exactly one bucket** — buckets are contiguous and never overlap. The current (in-progress) quarter is **prospective-only** so a quarter is never split across both lenses.
+
+| Bucket | Window | Size |
+|--------|--------|------|
+| **Retrospective** | The most recently completed quarters (excludes current) | `FISCAL_QUARTER_RETROSPECTIVE_COUNT = 8` |
+| **Prospective** | Current quarter + next 7 | `FISCAL_QUARTER_PROSPECTIVE_COUNT = 8` |
+
+Implemented in [apps/web/src/lib/fiscal.ts](apps/web/src/lib/fiscal.ts): `fiscalQuarterRetrospectiveOptions`, `fiscalQuarterProspectiveOptions`, `bucketQuarterKeys`, `isRetrospectiveQuarterKey`, `isProspectiveQuarterKey`, `scopeQuartersToBucket`, `resolveQuarterBucket`.
+
+The data-pull / close-date horizon (`FISCAL_QUARTER_FORWARD_COUNT`, current + 8) is intentionally a superset of the selectable prospective window so the worker pull is unaffected.
+
+**Selector** ([apps/web/src/components/FiscalQuarterFilter.tsx](apps/web/src/components/FiscalQuarterFilter.tsx)): a Retrospective / Prospective toggle (URL `?bucket=`) shown on every page via the `defaultBucket` prop; the quarter menu only ever lists the active bucket's 8 quarters. Default bucket per page: prospective for `/`, `/accounts`, `/opportunities`, `/hygiene`; retrospective for `/wow`, `/renewals`. On `/renewal-analysis` the bucket is pinned by the view tabs (Pipeline = prospective, Quarter close = retrospective) so the toggle is hidden. Switching bucket/view resets the quarter selection to that bucket so past and future are never mixed.
+- Open pipeline ATR, pushed renewals, at-risk (Cerebro Critical/High), renewals next 30 days, total book ATR, known churn
+- Drilldown shows **open renewals only** with Status (Open / Pushed), next step, and **Overall Assessment** (Cerebro category + hover narrative)
+- Preset drilldown views: **By renewal date**, **By ATR**, **By health**
+- Churn/downsell reason tables and outcome breakdown are hidden (not useful for forward management)
+
+### Quarter close (retrospective)
+- GRR, churn/downsell rates, revenue bridge, outcome breakdown (**closed outcomes only**)
+- Top churn/downsell reasons (by ATR) — review after the quarter ends
+- Drilldown includes Outcome, Renewed, Churned, Downsell, Reason columns
+
+Overall Assessment maps to `cerebroRiskCategory` with `cerebroRiskAnalysis` on hover (from Cerebro REST/Glean indexing).
 
 Reuses: `FiscalQuarterFilter`, `StatTile`, `Card`, `TableHeader`, `RiskScoreBadge`.
 

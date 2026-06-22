@@ -55,6 +55,25 @@ export function asOfDateForQuarter(quarterKey: string, todayIso: string = new Da
   return `${use}T23:59:59.000Z`;
 }
 
+/** True when the fiscal quarter has fully ended (quarter-close retrospective view). */
+export function isQuarterRetrospective(
+  quarterKey: string,
+  asOfDate: string = new Date().toISOString(),
+): boolean {
+  const fq = parseFiscalQuarterKey(quarterKey);
+  if (!fq) return false;
+  return asOfDate.slice(0, 10) > fiscalQuarterEnd(fq);
+}
+
+/** True when every selected quarter is in the past (retrospective scope). */
+export function isRetrospectiveScope(
+  quarterKeys: Set<string> | null | undefined,
+  asOfDate: string = new Date().toISOString(),
+): boolean {
+  if (!quarterKeys || quarterKeys.size === 0) return false;
+  return [...quarterKeys].every((k) => isQuarterRetrospective(k, asOfDate));
+}
+
 /** Inclusive range of fiscal quarter keys from `fromKey` through `toKey`. */
 export function enumerateFiscalQuarterKeys(fromKey: string, toKey: string): string[] {
   const out: string[] = [];

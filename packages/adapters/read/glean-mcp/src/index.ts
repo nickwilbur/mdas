@@ -156,6 +156,7 @@ export const gleanMcpAdapter: ReadAdapter = {
         const input = {
           accountId: account.accountId,
           accountName: account.accountName,
+          salesforceSlackChannelUrl: account.salesforceSlackChannelUrl,
           // Lets fetchAccountContext skip the secondary QBR query when
           // this account already has plan coverage from a prior snapshot.
           priorPlanLinks: account.accountPlanLinks?.length ?? 0,
@@ -175,7 +176,13 @@ export const gleanMcpAdapter: ReadAdapter = {
         const patch: Partial<CanonicalAccount> = {
           accountId: account.accountId,
         };
-        applyContextAndEvidenceToAccount(patch, context, evidence, refreshAt);
+        applyContextAndEvidenceToAccount(
+          patch,
+          context,
+          evidence,
+          refreshAt,
+          account.recentMeetings,
+        );
         return patch;
       },
     );
@@ -200,4 +207,6 @@ export const gleanMcpAdapter: ReadAdapter = {
   },
 };
 
+export { fetchAccountContext } from './account-context.js';
+export { fetchAccountEvidence, applyContextAndEvidenceToAccount } from './evidence.js';
 export default gleanMcpAdapter;

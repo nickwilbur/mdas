@@ -14,10 +14,8 @@ import type {
   RefreshContext,
 } from '@mdas/canonical';
 import { latestSuccessfulRun, readSnapshotAccounts } from '@mdas/db';
-import {
-  isFreshEnoughToSkip,
-  resolveGleanEnrichLimit,
-} from '../../_shared/src/glean.js';
+import { resolveGleanEnrichLimit } from '../../_shared/src/glean.js';
+import { shouldSkipCerebroRestFetch } from './freshness.js';
 import { CerebroRestClient } from './client.js';
 import { readCerebroCredsFromEnv } from './config.js';
 import { runCerebroConnectionTest } from './connection-test.js';
@@ -108,11 +106,11 @@ export const cerebroRestAdapter: ReadAdapter = {
             })
             .slice(0, limit);
 
-    const toFetch = scoped.filter(
-      (a) => !isFreshEnoughToSkip(a.lastFetchedFromSource?.cerebro),
-    );
+    const toFetch = scoped.filter((a) => !shouldSkipCerebroRestFetch(a));
     if (toFetch.length === 0) {
-      log?.info('cerebro-rest.skip', { reason: 'all accounts within freshness window' });
+      log?.info('cerebro-rest.skip', {
+        reason: 'all accounts within freshness window with Cerebro narrative',
+      });
       return { accounts: [], opportunities: [] };
     }
 

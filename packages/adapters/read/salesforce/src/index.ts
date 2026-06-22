@@ -67,6 +67,7 @@ SELECT
   fml_DerivedACVDelta_USD__c, Billing_ACV_Delta_USD__c, Revenue_ACV_Delta_USD__c, Zephr_ACV_Delta_USD__c,
   Known_Churn_USD__c,
   Churn_Risk__c,
+  Sub_type__c,
   FLM_Notes__c, SLM_Notes__c, SE_Next_Steps__c,
   Sales_Engineer__c, Sales_Engineer__r.Name,
   Full_Churn_Notification_to_Owner_Date__c, Full_Churn_Final_Email_Sent_Date__c,
@@ -122,9 +123,19 @@ export const salesforceAdapter: ReadAdapter = {
     //    authoritative for the account/opp record set when it succeeds.
     //    Accounts and Opps go through REST. Workshops use REST with
     //    auto-paging unless the count exceeds BULK_THRESHOLD.
+    // Accounts via REST (~200 rows). Opportunities via Bulk API 2.0 —
+    // Expand 3 routinely exceeds REST's 2k page size (~3k opps) and
+    // multi-page REST pagination was timing out at the default 25s adapter
+    // cap even with a higher timeout override.
     const [accountRows, oppRows, workshopRowsInitial] = await Promise.all([
       client.query<SfdcAccountRow>(SOQL_ACCOUNTS),
-      client.query<SfdcOpportunityRow>(SOQL_OPPS),
+      client.bulkQuery<SfdcOpportunityRow>(SOQL_OPPS).catch(async (bulkErr) => {
+        log?.warn('salesforce.bulkQuery.opps.failed', {
+          error: (bulkErr as Error).message,
+          fallback: 'rest',
+        });
+        return client.query<SfdcOpportunityRow>(SOQL_OPPS);
+      }),
       client.query<SfdcWorkshopRow>(SOQL_WORKSHOPS),
     ]);
 

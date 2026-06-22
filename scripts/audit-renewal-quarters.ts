@@ -3,9 +3,11 @@
  */
 import { latestSuccessfulRun, readAccountViews } from '../packages/db/src/index.js';
 import {
+  currentFiscalQuarter,
+  effectiveFiscalHistoryStartKey,
   fiscalQuarterFromDate,
   fiscalQuarterLabel,
-  currentFiscalQuarter,
+  fiscalQuarterWindowEndKey,
   previousFiscalQuarterKey,
 } from '../apps/web/src/lib/fiscal.js';
 import {
@@ -112,12 +114,14 @@ async function main() {
     samples.reduce((s, x) => s + (x.renewed as number), 0),
   );
 
-  console.log('\n=== Full trend FY26 Q1 → FY27 Q2 (quarter-end asOf) ===');
-  const { buildRenewalQuarterTrend, enumerateFiscalQuarterKeys } =
-    await import('../packages/renewal-metrics/src/index.js');
+  console.log('\n=== Full retention trend (history → forward horizon, quarter-end asOf) ===');
+  const { enumerateFiscalQuarterKeys } = await import('../packages/renewal-metrics/src/index.js');
+  const dataKeys = [...byQ.keys()].sort();
+  const trendStart = effectiveFiscalHistoryStartKey(dataKeys);
+  const trendEnd = fiscalQuarterWindowEndKey();
   const trend = buildRenewalQuarterTrend(
     views,
-    enumerateFiscalQuarterKeys('2026-Q1', '2027-Q2'),
+    enumerateFiscalQuarterKeys(trendStart, trendEnd),
     qfn,
     fiscalQuarterLabel,
   );

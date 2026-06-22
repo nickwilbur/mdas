@@ -23,6 +23,34 @@ function backoffMs(attempt: number): number {
   return Math.min(30_000, 500 * Math.pow(2, attempt)) + Math.floor(Math.random() * 200);
 }
 
+/** Transient transport errors worth a retry (timeouts + undici network resets). */
+const TRANSIENT_NETWORK_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'EPIPE',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
+export function isRetryableNetworkError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { name?: string; message?: string; code?: string; cause?: unknown };
+  const msg = (e.message ?? '').toLowerCase();
+  if (e.name === 'AbortError' || msg.includes('abort')) return true;
+  if (msg.includes('fetch failed') || msg.includes('socket hang up') || msg.includes('network')) {
+    return true;
+  }
+  if (e.code && TRANSIENT_NETWORK_CODES.has(e.code)) return true;
+  const cause = e.cause as { code?: string; message?: string } | undefined;
+  if (cause?.code && TRANSIENT_NETWORK_CODES.has(cause.code)) return true;
+  if (cause?.message && cause.message.toLowerCase().includes('timeout')) return true;
+  return false;
+}
+
 export interface CerebroRestClientOptions {
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
@@ -94,8 +122,14 @@ export class CerebroRestClient {
         clearTimeout(timer);
         lastErr = err;
         if (err instanceof ApiError) throw err;
-        const msg = (err as Error).message ?? String(err);
-        if (msg.includes('abort') && attempt < MAX_RETRIES - 1) {
+        // Retry transient transport failures (abort/timeout + Node undici
+        // network errors). Under batch concurrency the corp Cerebro
+        // endpoint intermittently resets connections, surfaced as a bare
+        // `TypeError: fetch failed` with the real cause on `err.cause`.
+        // These are not surfaced as HTTP statuses, so without retrying
+        // them ~30% of account-details batches were silently dropped and
+        // the workbench showed "Cerebro narrative not synced".
+        if (isRetryableNetworkError(err) && attempt < MAX_RETRIES - 1) {
           await sleep(backoffMs(attempt));
           continue;
         }

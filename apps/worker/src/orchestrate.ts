@@ -29,7 +29,6 @@ import {
   replaceAccountViews,
   updateRefreshTrajectoryKpis,
 } from '@mdas/db';
-import { computeRefreshTrajectoryKpis } from '@mdas/forecast-generator';
 import {
   // SCORING_VERSION, // TODO: Fix module resolution issue
   buildAccountView,
@@ -560,11 +559,17 @@ export async function runRefresh(
       }
     }
 
+    // Key by adapter NAME, not source: cerebro-rest and cerebro-glean
+    // both report source 'cerebro', so keying by source made the
+    // second-running adapter (cerebro-glean) overwrite the first's
+    // (cerebro-rest) result in this map. That silently dropped every
+    // cerebro-rest account — Risk Category + narrative never reached the
+    // merge or the snapshot, surfacing as "Cerebro narrative not synced".
     const fetchResults = new Map<string, Partial<MergedData>>();
     if (immediate.length > 0) {
       const immediateResults = await Promise.all(immediate.map(fetchOneAdapter));
       immediate.forEach((a, i) => {
-        fetchResults.set(a.source ?? a.name, immediateResults[i]!);
+        fetchResults.set(a.name, immediateResults[i]!);
       });
     }
     if (deferred.length > 0) {
@@ -573,11 +578,11 @@ export async function runRefresh(
         deferred: deferred.map((a) => a.name),
       });
       for (const a of deferred) {
-        fetchResults.set(a.source ?? a.name, await fetchOneAdapter(a));
+        fetchResults.set(a.name, await fetchOneAdapter(a));
       }
     }
     const fetched = adapters.map(
-      (a) => fetchResults.get(a.source ?? a.name) ?? ({} as Partial<MergedData>),
+      (a) => fetchResults.get(a.name) ?? ({} as Partial<MergedData>),
     );
 
   // Final progress flush before merge/score phase.
@@ -696,6 +701,7 @@ export async function runRefresh(
   if (status !== 'failed') {
     try {
       const asOfDate = startedAt.toISOString().slice(0, 10);
+      const { computeRefreshTrajectoryKpis } = await import('@mdas/forecast-generator');
       await updateRefreshTrajectoryKpis(
         refreshId,
         computeRefreshTrajectoryKpis(ranked, asOfDate),

@@ -543,3 +543,263 @@ export async function attachRefreshRunToJob(
     [jobId, refreshRunId],
   );
 }
+
+// ---------- Account plans ----------
+
+export interface DbAccountPlanRow {
+  id: string;
+  account_id: string;
+  account_name: string | null;
+  franchise: string;
+  status: string;
+  schema_version: string;
+  generated_at: string;
+  generated_by: string | null;
+  generation_mode: string;
+  source_snapshot: unknown;
+  plan: unknown;
+  error_metadata: unknown | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function insertAccountPlan(row: {
+  accountId: string;
+  accountName?: string;
+  franchise?: string;
+  status: string;
+  schemaVersion: string;
+  generatedAt: string;
+  generatedBy?: string;
+  generationMode: string;
+  sourceSnapshot: unknown;
+  plan: unknown;
+  errorMetadata?: unknown;
+}): Promise<string> {
+  const r = await query<{ id: string }>(
+    `INSERT INTO account_plans (
+       account_id, account_name, franchise, status, schema_version,
+       generated_at, generated_by, generation_mode, source_snapshot, plan, error_metadata
+     ) VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb)
+     RETURNING id`,
+    [
+      row.accountId,
+      row.accountName ?? null,
+      row.franchise ?? 'Expand 3',
+      row.status,
+      row.schemaVersion,
+      row.generatedAt,
+      row.generatedBy ?? null,
+      row.generationMode,
+      JSON.stringify(row.sourceSnapshot),
+      JSON.stringify(row.plan),
+      JSON.stringify(row.errorMetadata ?? null),
+    ],
+  );
+  return r.rows[0]!.id;
+}
+
+export async function getLatestAccountPlan(accountId: string): Promise<DbAccountPlanRow | null> {
+  const r = await query<DbAccountPlanRow>(
+    `SELECT * FROM account_plans
+       WHERE account_id = $1 AND status != 'refreshing'
+     ORDER BY generated_at DESC
+     LIMIT 1`,
+    [accountId],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function listAccountPlanHistory(
+  accountId: string,
+  limit = 20,
+): Promise<DbAccountPlanRow[]> {
+  const r = await query<DbAccountPlanRow>(
+    `SELECT * FROM account_plans
+       WHERE account_id = $1 AND status != 'refreshing'
+     ORDER BY generated_at DESC
+     LIMIT $2`,
+    [accountId, limit],
+  );
+  return r.rows;
+}
+
+export async function hasActiveAccountPlanRefresh(accountId: string): Promise<boolean> {
+  const r = await query<{ id: string }>(
+    `SELECT id FROM account_plans
+       WHERE account_id = $1 AND status = 'refreshing'
+         AND updated_at > NOW() - INTERVAL '30 minutes'
+     LIMIT 1`,
+    [accountId],
+  );
+  return Boolean(r.rows[0]);
+}
+
+export async function setAccountPlanRefreshingLock(
+  accountId: string,
+  accountName: string | undefined,
+  generatedBy: string | undefined,
+): Promise<string> {
+  return insertAccountPlan({
+    accountId,
+    accountName,
+    status: 'refreshing',
+    schemaVersion: '1.0.0',
+    generatedAt: new Date().toISOString(),
+    generatedBy,
+    generationMode: 'manual_refresh',
+    sourceSnapshot: { collectedAt: new Date().toISOString(), collectors: [], signalIds: [] },
+    plan: { accountId, status: 'refreshing' },
+  });
+}
+
+export async function deleteAccountPlanById(id: string): Promise<void> {
+  await query(`DELETE FROM account_plans WHERE id = $1`, [id]);
+}
+
+export async function clearStaleRefreshingPlans(maxAgeMinutes = 30): Promise<number> {
+  const r = await query<{ id: string }>(
+    `DELETE FROM account_plans
+       WHERE status = 'refreshing'
+         AND updated_at < NOW() - ($1::int || ' minutes')::interval
+     RETURNING id`,
+    [maxAgeMinutes],
+  );
+  return r.rowCount ?? 0;
+}
+
+export interface AccountPlanBulkJobRow {
+  id: string;
+  enqueued_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  status: string;
+  requested_by: string;
+  progress: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+}
+
+export async function enqueueAccountPlanBulkJob(
+  accountIds: string[],
+  requestedBy = 'manual:nick',
+): Promise<string> {
+  const r = await query<{ id: string }>(
+    `INSERT INTO account_plan_bulk_jobs (requested_by, progress)
+     VALUES ($1, $2::jsonb)
+     RETURNING id`,
+    [requestedBy, JSON.stringify({ total: accountIds.length, completed: 0, failed: 0, skipped: 0 })],
+  );
+  const jobId = r.rows[0]!.id;
+  if (accountIds.length > 0) {
+    const values: string[] = [];
+    const params: unknown[] = [jobId];
+    accountIds.forEach((accountId, i) => {
+      values.push(`($1, $${i + 2})`);
+      params.push(accountId);
+    });
+    await query(
+      `INSERT INTO account_plan_bulk_job_items (job_id, account_id) VALUES ${values.join(',')}`,
+      params,
+    );
+  }
+  return jobId;
+}
+
+export async function getAccountPlanBulkJob(jobId: string): Promise<AccountPlanBulkJobRow | null> {
+  const r = await query<AccountPlanBulkJobRow>(
+    `SELECT * FROM account_plan_bulk_jobs WHERE id = $1`,
+    [jobId],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateAccountPlanBulkJobProgress(
+  jobId: string,
+  progress: Record<string, unknown>,
+): Promise<void> {
+  await query(
+    `UPDATE account_plan_bulk_jobs SET progress = $2::jsonb WHERE id = $1`,
+    [jobId, JSON.stringify(progress)],
+  );
+}
+
+export async function startAccountPlanBulkJob(jobId: string): Promise<void> {
+  await query(
+    `UPDATE account_plan_bulk_jobs SET status = 'running', started_at = NOW() WHERE id = $1`,
+    [jobId],
+  );
+}
+
+export async function completeAccountPlanBulkJob(
+  jobId: string,
+  status: 'success' | 'partial' | 'failed',
+  result: Record<string, unknown>,
+): Promise<void> {
+  await query(
+    `UPDATE account_plan_bulk_jobs
+        SET status = $2, completed_at = NOW(), result = $3::jsonb
+      WHERE id = $1`,
+    [jobId, status, JSON.stringify(result)],
+  );
+}
+
+export async function listPendingBulkJobItems(
+  jobId: string,
+  limit: number,
+): Promise<{ account_id: string }[]> {
+  const r = await query<{ account_id: string }>(
+    `SELECT account_id FROM account_plan_bulk_job_items
+       WHERE job_id = $1 AND status = 'pending'
+     ORDER BY account_id
+     LIMIT $2`,
+    [jobId, limit],
+  );
+  return r.rows;
+}
+
+export async function updateBulkJobItem(
+  jobId: string,
+  accountId: string,
+  data: {
+    status: 'success' | 'failed' | 'skipped';
+    planId?: string;
+    errorMessage?: string;
+  },
+): Promise<void> {
+  await query(
+    `UPDATE account_plan_bulk_job_items
+        SET status = $3,
+            plan_id = $4,
+            error_message = $5,
+            completed_at = NOW(),
+            started_at = COALESCE(started_at, NOW())
+      WHERE job_id = $1 AND account_id = $2`,
+    [jobId, accountId, data.status, data.planId ?? null, data.errorMessage ?? null],
+  );
+}
+
+export async function countBulkJobItemsByStatus(
+  jobId: string,
+): Promise<Record<string, number>> {
+  const r = await query<{ status: string; count: string }>(
+    `SELECT status, COUNT(*)::text AS count
+       FROM account_plan_bulk_job_items
+      WHERE job_id = $1
+      GROUP BY status`,
+    [jobId],
+  );
+  const out: Record<string, number> = {};
+  for (const row of r.rows) out[row.status] = Number(row.count);
+  return out;
+}
+
+export async function findActiveAccountPlanBulkJob(): Promise<{ id: string; status: string } | null> {
+  const r = await query<{ id: string; status: string }>(
+    `SELECT id, status FROM account_plan_bulk_jobs
+       WHERE status IN ('queued', 'running')
+         AND (started_at IS NULL OR started_at > NOW() - INTERVAL '2 hours')
+     ORDER BY enqueued_at DESC
+     LIMIT 1`,
+  );
+  return r.rows[0] ?? null;
+}

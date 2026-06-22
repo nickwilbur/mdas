@@ -19,6 +19,10 @@ import { RiskScoreExplainer } from '@/components/RiskScoreExplainer';
 import { AccountGleanButton } from '@/components/AccountGleanButton';
 import { CerebroEngagePanel } from '@/components/CerebroEngagePanel';
 import { fetchCerebroAccountIntel } from '@/lib/cerebro-account-intel';
+import { AccountPlanPanel } from '@/components/AccountPlanPanel';
+import { isExpand3AccountPlanEnabled } from '@/lib/account-plan/feature';
+import { getPersistedAccountPlan } from '@/lib/account-plan/generate';
+import { checkExpand3Eligibility } from '@mdas/account-plan-engine';
 import type { AdapterSource } from '@mdas/canonical';
 
 // Sources we expect to have run for an Expand 3 account when adapters
@@ -65,6 +69,10 @@ export default async function AccountPage({
   const cerebroIntel = await fetchCerebroAccountIntel(sfId);
   const opps = v.opportunities;
   const isExec = mode === 'exec';
+  const accountPlanEnabled = isExpand3AccountPlanEnabled() && checkExpand3Eligibility(v).eligible;
+  const initialAccountPlan = accountPlanEnabled
+    ? await getPersistedAccountPlan(params.accountId)
+    : null;
 
   return (
     <div className="space-y-6">
@@ -145,6 +153,14 @@ export default async function AccountPage({
         >
           <RiskScoreExplainer riskScore={v.riskScore} />
         </Card>
+      ) : null}
+
+      {accountPlanEnabled && !isExec ? (
+        <AccountPlanPanel
+          accountId={a.accountId}
+          initialPlan={initialAccountPlan}
+          enabled={accountPlanEnabled}
+        />
       ) : null}
 
       <Card title="Cerebro Risk Analysis" right={<RiskBadge level={v.risk.level} source={v.risk.source} />}>

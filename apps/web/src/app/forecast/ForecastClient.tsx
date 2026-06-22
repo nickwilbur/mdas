@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react';
 import {
   currentFiscalQuarter,
-  rollingFiscalQuarters,
+  fiscalQuarterFilterOptions,
   type FiscalQuarter,
 } from '@/lib/fiscal';
 import {
@@ -35,8 +35,8 @@ function quarterStartIso(fq: FiscalQuarter): string {
 }
 
 export function ForecastClient() {
-  // Show today + the next 4 quarters; manager rarely needs to look back.
-  const availableQuarters = rollingFiscalQuarters(0, 4);
+  // History through current + 8 forward quarters (same window as dashboard filters).
+  const availableQuarters = fiscalQuarterFilterOptions();
   const today = currentFiscalQuarter();
   const [selectedKey, setSelectedKey] = useState<string>(today.key);
   const [planUSD, setPlanUSD] = useState<string>('');

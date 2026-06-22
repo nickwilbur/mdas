@@ -42,6 +42,37 @@ describe('mapAccountDetailsItem', () => {
     expect(rec!.patch.cerebroRiskCategory).toBe('High');
   });
 
+  it('falls back to riskCategoryRationale when riskAnalysis is absent', () => {
+    const item = {
+      ...accountDetailsSuccess.items[0],
+      customerState: {
+        ...accountDetailsSuccess.items[0].customerState,
+        risks: {
+          riskCategory: 'High',
+          riskCategoryRationale: 'Elevated share and utilization risks.',
+          riskAnalysis: null,
+        },
+      },
+    };
+    const rec = mapAccountDetailsItem(item, { refreshAt: REFRESH_AT });
+    expect(rec!.patch.cerebroRiskAnalysis).toContain('Elevated share');
+  });
+
+  it('falls back to summary headline when only summary is present', () => {
+    const item = {
+      account: accountDetailsSuccess.items[0].account,
+      summary: {
+        headline: 'Renewal at risk due to executive disengagement.',
+        risksAndConcerns: ['Low meeting cadence'],
+      },
+      customerState: {
+        risks: { riskCategory: 'Medium' },
+      },
+    };
+    const rec = mapAccountDetailsItem(item, { refreshAt: REFRESH_AT });
+    expect(rec!.patch.cerebroRiskAnalysis).toContain('executive disengagement');
+  });
+
   it('returns null without salesforce account id', () => {
     const rec = mapAccountDetailsItem({ account: {} }, { refreshAt: REFRESH_AT });
     expect(rec).toBeNull();

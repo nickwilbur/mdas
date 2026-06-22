@@ -8,7 +8,8 @@
     "start": "next start -p 3000"
   },
   "dependencies": {
-    "@mdas/adapter-cerebro-glean": "*",
+    "@mdas/account-plan-engine": "*",
+    "@mdas/adapter-glean-mcp": "*",
     "@mdas/adapter-cerebro-rest": "*",
     "@mdas/adapter-shared": "*",
     "@mdas/canonical": "*",

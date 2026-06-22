@@ -1,15 +1,23 @@
 import { getDashboardData } from '@/lib/read-model';
 import { FiscalQuarterFilter } from '@/components/FiscalQuarterFilter';
+import { RenewalNav } from '@/components/RenewalNav';
 import { RefreshButton } from '@/components/RefreshButton';
 import { RelativeTime } from '@/components/ui';
 import {
   currentFiscalQuarter,
+  defaultFiscalQuarterForBucket,
   fiscalQuarterFromDate,
+  fiscalQuarterKeysTrailing,
   fiscalQuarterLabel,
+  fiscalQuarterRetrospectiveEndKey,
   fiscalQuarterStartIso,
   fiscalQuartersForAccount,
+  formatQuarterSelectionLabel,
   parseQuartersParam,
   previousFiscalQuarterKey,
+  resolveQuarterBucket,
+  scopeQuartersToBucket,
+  FISCAL_QUARTER_RETROSPECTIVE_COUNT,
 } from '@/lib/fiscal';
 import { computeQuarterKpis } from '@mdas/forecast-generator';
 import {
@@ -19,7 +27,6 @@ import {
   buildRenewalOppRows,
   buildRenewalQuarterTrend,
   asOfDateForQuarter,
-  enumerateFiscalQuarterKeys,
   type RenewalAccountRow,
   type RenewalOutcome,
 } from '@mdas/renewal-metrics';
@@ -61,16 +68,17 @@ function upcomingAtr(
 export default async function RenewalsDashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ quarters?: string }>;
+  searchParams: Promise<{ quarters?: string; bucket?: string }>;
 }) {
-  const { quarters } = await searchParams;
+  const { quarters, bucket: bucketParam } = await searchParams;
+  const bucket = resolveQuarterBucket(bucketParam, 'retrospective');
   const asOfDate = new Date().toISOString();
   const { views: allViews, refreshId, startedAt } = await getDashboardData();
 
   if (!refreshId) {
     return (
       <div className="space-y-4">
-        <h1 className="text-2xl font-semibold">Renewal dashboard</h1>
+        <h1 className="text-2xl font-semibold">Renewals</h1>
         <p className="text-gray-700">
           No data yet. Run <code>make seed</code> or click Refresh.
         </p>
@@ -80,14 +88,23 @@ export default async function RenewalsDashboardPage({
   }
 
   const selectedQuarters = parseQuartersParam(quarters);
+  const explicitNone = selectedQuarters?.has('__none__') ?? false;
   const availableQuarterKeys = Array.from(
     new Set(allViews.flatMap((v) => fiscalQuartersForAccount(v))),
   );
 
-  // Default to current fiscal quarter when no filter — clearer executive view.
-  const effectiveQuarters =
-    selectedQuarters ??
-    new Set([currentFiscalQuarter().key]);
+  // Executive view defaults to a single quarter (latest closed). Explicit
+  // selection is constrained to retrospective bucket (max 8 behind current).
+  let effectiveQuarters: Set<string>;
+  if (explicitNone) {
+    effectiveQuarters = new Set(['__none__']);
+  } else {
+    const scopeQuarters = scopeQuartersToBucket(selectedQuarters, bucket);
+    effectiveQuarters =
+      selectedQuarters === null || scopeQuarters.size === 0
+        ? new Set([defaultFiscalQuarterForBucket(bucket)])
+        : scopeQuarters;
+  }
 
   const quarterKeyFn = (iso: string | null | undefined) =>
     fiscalQuarterFromDate(iso)?.key ?? null;
@@ -113,9 +130,15 @@ export default async function RenewalsDashboardPage({
   const oppRows = buildRenewalOppRows(allViews, effectiveQuarters, quarterKeyFn, metricsAsOf);
   const accounts = buildRenewalAccountRows(oppRows, metricsAsOf);
 
-  // Full FY26 → current quarter trend (all historical data in snapshot).
-  const trendEndKey = primaryQuarterKey;
-  const trendKeys = enumerateFiscalQuarterKeys('2026-Q1', trendEndKey);
+  const trendEndKey =
+    effectiveQuarters.size === 1 && !explicitNone
+      ? [...effectiveQuarters][0]!
+      : fiscalQuarterRetrospectiveEndKey(new Date(asOfDate));
+  const trendKeys = fiscalQuarterKeysTrailing(
+    FISCAL_QUARTER_RETROSPECTIVE_COUNT,
+    trendEndKey,
+  );
+  const trendStartKey = trendKeys[0] ?? trendEndKey;
 
   const trend = buildRenewalQuarterTrend(
     allViews,
@@ -125,10 +148,11 @@ export default async function RenewalsDashboardPage({
     asOfDate,
   );
 
-  const quarterLabel =
-    effectiveQuarters.size === 1
+  const quarterLabel = explicitNone
+    ? 'None'
+    : effectiveQuarters.size === 1
       ? fiscalQuarterLabel([...effectiveQuarters][0]!)
-      : [...effectiveQuarters].map(fiscalQuarterLabel).join(', ');
+      : formatQuarterSelectionLabel(effectiveQuarters);
 
   const selectedQuarterKey =
     effectiveQuarters.size === 1 ? [...effectiveQuarters][0]! : null;
@@ -146,16 +170,21 @@ export default async function RenewalsDashboardPage({
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Renewal dashboard</h1>
+        <div className="space-y-2">
+          <h1 className="text-2xl font-semibold tracking-tight">Renewals</h1>
+          <RenewalNav />
           <p className="text-xs text-gray-500">
-            Expand 3 CSE renewal health · Last refresh: <RelativeTime iso={startedAt} />
+            Scorecard · Expand 3 CSE renewal health · Last refresh:{' '}
+            <RelativeTime iso={startedAt} />
           </p>
         </div>
         <RefreshButton />
       </div>
 
-      <FiscalQuarterFilter availableQuarterKeys={availableQuarterKeys} />
+      <FiscalQuarterFilter
+        availableQuarterKeys={availableQuarterKeys}
+        quarterBucket="retrospective"
+      />
 
       <RenewalDashboardClient
         metrics={metrics}
@@ -166,6 +195,7 @@ export default async function RenewalsDashboardPage({
         atRisk90={upcomingAtr(allViews, 90, asOfDate)}
         quarterLabel={quarterLabel}
         selectedQuarterKey={selectedQuarterKey}
+        trendStartKey={trendStartKey}
         quarterFlashUSD={quarterFlashUSD}
       />
     </div>

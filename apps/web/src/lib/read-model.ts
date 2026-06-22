@@ -15,6 +15,7 @@ import {
 import type { AccountView, CanonicalAccount, CanonicalOpportunity, ChangeEvent } from '@mdas/canonical';
 import { diffAll, computeRiskScore } from '@mdas/scoring';
 import { summarizeCerebroSnapshotQuality } from '@/lib/cerebro-connectors';
+import { fiscalOpportunityCloseDateRange } from '@/lib/fiscal';
 
 // PR-B1 — enrich views with the composite Risk Score at read time.
 //
@@ -427,14 +428,11 @@ export async function getAllOpportunities(): Promise<{
     ),
   ]);
 
-  // Filter: 36 months forward, 15 months trailing from today
-  const now = new Date();
-  const minDate = new Date(now);
-  minDate.setMonth(minDate.getMonth() - 15);
-  const maxDate = new Date(now);
-  maxDate.setMonth(maxDate.getMonth() + 36);
+  const { min: minDateStr, max: maxDateStr } = fiscalOpportunityCloseDateRange();
+  const minDate = new Date(`${minDateStr}T00:00:00Z`);
+  const maxDate = new Date(`${maxDateStr}T23:59:59Z`);
 
-  const filteredOpps = opportunities.filter(opp => {
+  const filteredOpps = opportunities.filter((opp) => {
     const closeDate = new Date(opp.closeDate);
     return closeDate >= minDate && closeDate <= maxDate;
   });

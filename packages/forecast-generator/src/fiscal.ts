@@ -3,6 +3,9 @@
 // @mdas/forecast-generator package remains a leaf dependency with no
 // reverse pointer up into Next.js code. Keep these two files in sync;
 // the canonical version is apps/web/src/lib/fiscal.ts.
+//
+// Fiscal horizon (history start + current + 8 forward quarters) lives
+// in apps/web/src/lib/fiscal.ts — not duplicated here.
 
 export interface FiscalQuarter {
   fy: number;

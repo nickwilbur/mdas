@@ -152,13 +152,37 @@ export function RefreshButton(): JSX.Element {
       setBusy(true);
 
       unsubscribeRef.current = subscribeRefreshJobPoll(jobId, {
-        onProgress: (prog, pct) => {
+        onProgress: (prog, pct, queueStatus) => {
           if (!mountedRef.current) return;
           if (prog) setProgress(prog);
-          setMsg({ label: `Refreshing… ${pct}%`, tone: 'warn' });
+          const label =
+            queueStatus === 'queued' && pct === 0
+              ? 'Queued — waiting for worker process…'
+              : `Refreshing… ${pct}%`;
+          setMsg({ label, tone: 'warn' });
+        },
+        onPollError: (failures) => {
+          if (!mountedRef.current) return;
+          if (failures >= 3) {
+            setMsg({
+              label: `Refresh in progress — status API slow (${failures} retries)…`,
+              tone: 'warn',
+            });
+          }
         },
         onComplete: (sj) => {
           if (!mountedRef.current) return;
+          const effective = sj.runStatus ?? sj.status;
+          if (effective === 'failed' && sj.progress?.pct && sj.progress.pct > 0 && sj.progress.pct < 100) {
+            setMsg({
+              label: 'Lost connection to refresh status — reload the page to resume watching',
+              tone: 'err',
+            });
+            setProgress(sj.progress);
+            setBusy(false);
+            detachFromJob();
+            return;
+          }
           setMsg(describeOutcome(sj));
           setProgress(sj.progress);
           startTransition(() => router.refresh());

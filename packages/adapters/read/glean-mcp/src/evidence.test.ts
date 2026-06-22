@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { applyContextAndEvidenceToAccount, fetchAccountEvidence } from './evidence.js';
+import {
+  applyContextAndEvidenceToAccount,
+  docMatchesAccount,
+  fetchAccountEvidence,
+  mergeRecentMeetings,
+} from './evidence.js';
 import type { CanonicalAccount } from '@mdas/canonical';
 import type { GleanClient, GleanDocument } from '../../_shared/src/glean.js';
 
@@ -97,8 +102,8 @@ describe('fetchAccountEvidence', () => {
   it('drops stale results outside the recency window', async () => {
     const client = makeClientByDatasource({
       googlecalendar: [
-        { title: 'Old EBR', url: 'https://cal/old', updateTime: STALE, datasource: 'googlecalendar' },
-        { title: 'Fresh EBR', url: 'https://cal/new', updateTime: RECENT, datasource: 'googlecalendar' },
+        { title: 'Old Acme EBR', url: 'https://cal/old', updateTime: STALE, datasource: 'googlecalendar' },
+        { title: 'Fresh Acme EBR', url: 'https://cal/new', updateTime: RECENT, datasource: 'googlecalendar' },
       ],
     });
     const out = await fetchAccountEvidence(
@@ -107,12 +112,12 @@ describe('fetchAccountEvidence', () => {
       { recencyDays: 30 },
     );
     const titles = out.recentMeetings.map((m) => m.title);
-    expect(titles).toEqual(['Fresh EBR']);
+    expect(titles).toEqual(['Fresh Acme EBR']);
   });
 
   it('caps results at topNPerSource to avoid noisy accounts blowing out canonical', async () => {
     const cal: GleanDocument[] = Array.from({ length: 8 }, (_v, i) => ({
-      title: `Meet ${i}`,
+      title: `Acme Meet ${i}`,
       url: `https://cal/${i}`,
       updateTime: RECENT,
       datasource: 'googlecalendar',
@@ -157,13 +162,134 @@ describe('fetchAccountEvidence', () => {
 
   it('emits SourceLinks with the right `source` per datasource', async () => {
     const client = makeClientByDatasource({
-      googlecalendar: [{ title: 'cal', url: 'u1', updateTime: RECENT, datasource: 'googlecalendar' }],
-      slack: [{ title: 'slk', url: 'u2', updateTime: RECENT, datasource: 'slack' }],
-      gmail: [{ title: 'gm', url: 'u3', updateTime: RECENT, datasource: 'gmail' }],
+      googlecalendar: [{ title: 'Acme cal', url: 'u1', updateTime: RECENT, datasource: 'googlecalendar' }],
+      slack: [{ title: 'Slack: cust-acme channel', url: 'u2', updateTime: RECENT, datasource: 'slack' }],
+      gmail: [{ title: 'Staircase weekly summary — Acme', url: 'u3', updateTime: RECENT, datasource: 'gmail' }],
     });
     const out = await fetchAccountEvidence(client, { accountId: 'a1', accountName: 'Acme' });
     const sources = out.sourceLinks.map((sl) => sl.source);
     expect(new Set(sources)).toEqual(new Set(['calendar', 'slack', 'gmail']));
+  });
+
+  it('searches Slack by cust- channel slug and rejects cross-account staircase noise', async () => {
+    const search = vi.fn(async ({ query }: { query: string }) => {
+      if (query === 'cust-kustomer') {
+        return {
+          results: [
+            {
+              title: 'Dominic Varner in cust-kustomer',
+              url: 'https://zuora.enterprise.slack.com/archives/C06JHCM76PK/p1',
+              updateTime: RECENT,
+              snippets: ['Notes ahead of meeting with Mike tomorrow — CPQ testing in SBX.'],
+              datasource: 'slack',
+            },
+            {
+              title: 'Account Pulse APP joined #cust-kustomer',
+              url: 'https://zuora.enterprise.slack.com/archives/C06JHCM76PK/p2',
+              updateTime: RECENT,
+              snippets: ['Account Pulse APP joined #cust-kustomer'],
+              datasource: 'slack',
+            },
+          ],
+        };
+      }
+      if (query.includes('staircase')) {
+        return {
+          results: [
+            {
+              title: 'Meeting summary - Leafly, LLC (Jun-17)',
+              url: 'https://mail.google.com/mail/u/#inbox/leafly',
+              updateTime: RECENT,
+              datasource: 'gmail',
+            },
+            {
+              title: 'Meeting summary - Kustomer, LLC (Jun-05)',
+              url: 'https://mail.google.com/mail/u/#inbox/kustomer',
+              updateTime: RECENT,
+              datasource: 'gmail',
+            },
+          ],
+        };
+      }
+      return { results: [] };
+    });
+    const client = { search, searchAll: vi.fn(), getDocuments: vi.fn(), healthCheck: vi.fn() } as unknown as GleanClient;
+
+    const out = await fetchAccountEvidence(
+      client,
+      {
+        accountId: 'sf1',
+        accountName: 'Kustomer, LLC.',
+        salesforceSlackChannelUrl: 'https://zuora.enterprise.slack.com/archives/C06JHCM76PK',
+      },
+      { recencyDays: 30 },
+    );
+
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ query: 'cust-kustomer' }));
+    const titles = out.recentMeetings.map((m) => m.title);
+    expect(titles).toContain('Dominic Varner in cust-kustomer');
+    expect(titles).not.toContain('Meeting summary - Leafly, LLC (Jun-17)');
+    expect(titles).toContain('Meeting summary - Kustomer, LLC (Jun-05)');
+  });
+});
+
+describe('docMatchesAccount', () => {
+  it('requires channel id or slug for Slack docs', () => {
+    const input = {
+      accountId: '1',
+      accountName: 'Kustomer, LLC.',
+      salesforceSlackChannelUrl: 'https://zuora.enterprise.slack.com/archives/C06JHCM76PK',
+    };
+    expect(
+      docMatchesAccount(
+        {
+          title: 'Leafly update',
+          url: 'https://zuora.enterprise.slack.com/archives/COTHER/p1',
+          datasource: 'slack',
+        },
+        input,
+        'slack',
+      ),
+    ).toBe(false);
+    expect(
+      docMatchesAccount(
+        {
+          title: 'Dominic in cust-kustomer',
+          url: 'https://zuora.enterprise.slack.com/archives/C06JHCM76PK/p1',
+          datasource: 'slack',
+        },
+        input,
+        'slack',
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('mergeRecentMeetings', () => {
+  it('dedupes by URL and keeps newer evidence alongside prior Slack hits', () => {
+    const prior = [
+      {
+        source: 'calendar' as const,
+        title: 'Old Slack post',
+        startTime: '2026-05-01T00:00:00.000Z',
+        attendees: [],
+        summary: 'prior',
+        url: 'https://zuora.enterprise.slack.com/archives/C06JHCM76PK/p-old',
+      },
+    ];
+    const next = [
+      {
+        source: 'calendar' as const,
+        title: 'Fresh Slack post',
+        startTime: '2026-06-05T00:00:00.000Z',
+        attendees: [],
+        summary: 'new',
+        url: 'https://zuora.enterprise.slack.com/archives/C06JHCM76PK/p-new',
+      },
+    ];
+    const merged = mergeRecentMeetings(prior, next);
+    expect(merged).toHaveLength(2);
+    expect(merged[0]?.title).toBe('Fresh Slack post');
   });
 });
 

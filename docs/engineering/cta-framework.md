@@ -62,13 +62,13 @@ Defaults in `packages/cta-engine/src/config.ts`:
 darkAccountLookbackDays: 90
 darkAccountMinWeight: 2.0
 darkRenewalOppStaleDays: 60
-renewalWindowQuarters: 4
+renewalWindowQuarters: 8
 dedupWindowDays: 14
 maxCtasPerScan: 50
 lowEngagementMinutes30d: 10
 utilizationThresholdPct: 65
 sentimentStaleDays: 90
-renewalFiscalYears: [2027, 2028]
+renewalFiscalYears: [] // computed at scan time via mergeConfig() — FY26 through current + 8Q
 requireRiskOrUnhealthy: true
 ```
 
@@ -112,7 +112,7 @@ To repair an existing bloated snapshot: `npm run snapshot:prune-expand3`
 
 CTAs are generated from this book (optional intersection with the SFDC Expand 3 report JSON).
 
-**Renewal window (default):** only accounts with an **open renewal** in **FY27 or FY28** (Zuora FY: Feb→Jan). Configured via `renewalFiscalYears: [2027, 2028]` in `config.ts`.
+**Renewal window (default):** accounts with an **open renewal** whose close date falls in the MDAS fiscal horizon — all history from FY26 Q1 (or earlier if present in data) through **current quarter + 8 future quarters** (rolling). `renewalFiscalYears` is derived at scan time in `mergeConfig()` from `defaultRenewalFiscalYears()` in `packages/cta-engine/src/fiscal.ts`.
 
 **CTA eligibility gate (default):** emit a CTA when a **risk/dark play** matches (`dark_account`, `dark_renewal`, Cerebro risk family, etc.) or when `accountNeedsCtaAttention` is true. **Green sentiment does not skip darkness or risk evaluation** — the same dark-signal detector and Cerebro flags run regardless of sentiment color. Only `data_quality_gap` on an otherwise healthy account is suppressed (`requireRiskOrUnhealthy: true`).
 

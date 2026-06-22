@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { audit, enqueueRefreshJob, query } from '@mdas/db';
+import { getRefreshJobStatus } from '@/lib/refresh-status';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -30,11 +31,19 @@ async function findActiveRefreshJob(): Promise<{ id: string; status: string } | 
 }
 
 // GET /api/refresh — report the currently active refresh job (if any)
-// without enqueuing one. The refresh itself is server-side (the worker
-// runs it regardless of any open browser); this lets the client page
-// rediscover an in-flight job on load and resume showing its status
-// even if the window that started it was closed.
-export async function GET(): Promise<Response> {
+// without enqueuing one. Pass ?jobId=… for full status + live progress
+// (preferred by the browser poller — avoids dynamic-route dispatch issues
+// in Next dev where /api/refresh/[jobId] can hang indefinitely).
+export async function GET(req: Request): Promise<Response> {
+  const jobId = new URL(req.url).searchParams.get('jobId');
+  if (jobId) {
+    const status = await getRefreshJobStatus(jobId);
+    if (!status) {
+      return NextResponse.json({ error: 'not found' }, { status: 404 });
+    }
+    return NextResponse.json(status, { headers: { 'Cache-Control': 'no-store' } });
+  }
+
   const active = await findActiveRefreshJob();
   return NextResponse.json(
     active ? { jobId: active.id, status: active.status } : { jobId: null },

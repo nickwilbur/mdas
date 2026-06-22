@@ -25,8 +25,10 @@ export interface RefreshJobStatus {
 }
 
 export type RefreshPollCallbacks = {
-  onProgress: (progress: RefreshProgress | null, pct: number) => void;
+  onProgress: (progress: RefreshProgress | null, pct: number, queueStatus?: string) => void;
   onComplete: (status: RefreshJobStatus) => void;
+  /** Called when a poll request fails (timeout, non-OK, network). */
+  onPollError?: (failures: number) => void;
 };
 
 type Session = {
@@ -37,6 +39,10 @@ type Session = {
 };
 
 let session: Session | null = null;
+
+function refreshJobPollUrl(jobId: string): string {
+  return `/api/refresh?jobId=${encodeURIComponent(jobId)}`;
+}
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) {
@@ -68,7 +74,7 @@ function notifyProgress(sj: RefreshJobStatus): void {
   if (!session) return;
   const pct = sj.progress?.pct ?? 0;
   for (const cb of session.subscribers.values()) {
-    cb.onProgress(sj.progress, pct);
+    cb.onProgress(sj.progress, pct, sj.status);
   }
 }
 
@@ -79,13 +85,55 @@ function notifyComplete(sj: RefreshJobStatus): void {
   }
 }
 
+function notifyPollError(failures: number): void {
+  if (!session) return;
+  for (const cb of session.subscribers.values()) {
+    cb.onPollError?.(failures);
+  }
+}
+
+async function fetchJobStatus(jobId: string, signal: AbortSignal): Promise<RefreshJobStatus | null> {
+  const s = await fetch(refreshJobPollUrl(jobId), {
+    signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]),
+    cache: 'no-store',
+  });
+  if (!s.ok) return null;
+  return (await s.json()) as RefreshJobStatus;
+}
+
+async function pollOnce(sess: Session): Promise<RefreshJobStatus | null> {
+  try {
+    return await fetchJobStatus(sess.jobId, sess.abort.signal);
+  } catch {
+    return null;
+  }
+}
+
 async function pollLoop(sess: Session): Promise<void> {
-  const { jobId, abort } = sess;
+  const { abort } = sess;
   const POLL_DEADLINE = Date.now() + 40 * 60 * 1000;
   let pollIdx = 0;
+  let pollFailures = 0;
+  let lastStatus: RefreshJobStatus | null = null;
 
   try {
     while (!abort.signal.aborted && Date.now() < POLL_DEADLINE) {
+      const sj = await pollOnce(sess);
+      if (abort.signal.aborted) break;
+
+      if (sj) {
+        pollFailures = 0;
+        lastStatus = sj;
+        notifyProgress(sj);
+        if (isTerminal(sj)) {
+          notifyComplete(sj);
+          return;
+        }
+      } else {
+        pollFailures += 1;
+        notifyPollError(pollFailures);
+      }
+
       const interval = pollIdx < 12 ? 500 : 2000;
       pollIdx += 1;
       try {
@@ -93,26 +141,14 @@ async function pollLoop(sess: Session): Promise<void> {
       } catch {
         break;
       }
+    }
 
-      let sj: RefreshJobStatus | null = null;
-      try {
-        const s = await fetch(`/api/refresh/${jobId}`, {
-          signal: AbortSignal.timeout(8000),
-        });
-        if (abort.signal.aborted) break;
-        if (!s.ok) continue;
-        sj = (await s.json()) as RefreshJobStatus;
-      } catch {
-        if (abort.signal.aborted) break;
-        continue;
-      }
-
-      notifyProgress(sj);
-
-      if (isTerminal(sj)) {
-        notifyComplete(sj);
-        break;
-      }
+    if (!abort.signal.aborted && lastStatus) {
+      notifyComplete({
+        ...lastStatus,
+        status: 'failed',
+        runStatus: 'failed',
+      });
     }
   } finally {
     if (session === sess) {

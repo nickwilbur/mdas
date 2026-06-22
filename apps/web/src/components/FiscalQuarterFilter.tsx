@@ -13,21 +13,26 @@
 //   3. One component, one keyboard model. Used identically on Dashboard,
 //      Accounts, Opportunities, Hygiene, and WoW pages so the muscle
 //      memory transfers.
-//   4. Stable option list via `rollingFiscalQuarters()` — the dropdown
-//      always renders 4 trailing + current + 4 forward, regardless of
-//      whether any data falls in those quarters. This avoids the
-//      "options vanish when filtered" anti-pattern.
+//   4. Stable option list via `fiscalQuarterFilterOptions()` — history
+//      through current + 8 future quarters (rolling), regardless of
+//      whether any data falls in those quarters.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   currentFiscalQuarter,
+  defaultFiscalQuarterForBucket,
+  fiscalQuarterFilterOptions,
   fiscalQuarterLabel,
+  fiscalQuarterOptionsForBucket,
+  formatQuarterSelectionLabel,
+  resolveQuarterBucket,
   rollingFiscalQuarters,
   type FiscalQuarter,
+  type FiscalQuarterBucket,
 } from '@/lib/fiscal';
 
-const STORAGE_KEY = 'mdas:fiscalQuarterFilter';
+const STORAGE_KEY_BASE = 'mdas:fiscalQuarterFilter';
 
 interface Props {
   /**
@@ -42,6 +47,19 @@ interface Props {
    */
   windowOptions?: { trailing?: number; forward?: number };
   /**
+   * Pin the filter to one bucket and HIDE the toggle. Prospective = current
+   * + next 7 (8 total); retrospective = last 8 ended quarters. Quarters never
+   * span both buckets. Used by pages that drive the bucket themselves (e.g.
+   * Renewal pipeline view tabs).
+   */
+  quarterBucket?: FiscalQuarterBucket;
+  /**
+   * Initial bucket when the user-facing Retro/Prospective toggle is shown.
+   * Read from `?bucket=` first, then this default. Ignored when
+   * `quarterBucket` (fixed) is set.
+   */
+  defaultBucket?: FiscalQuarterBucket;
+  /**
    * Whether to auto-redirect to today's quarter when the URL param is
    * empty AND localStorage is empty. Default: true. The Forecast page
    * sets this false because it manages its own single-quarter state.
@@ -52,6 +70,8 @@ interface Props {
 export function FiscalQuarterFilter({
   availableQuarterKeys = [],
   windowOptions,
+  quarterBucket,
+  defaultBucket,
   autoDefault = true,
 }: Props) {
   const router = useRouter();
@@ -60,6 +80,19 @@ export function FiscalQuarterFilter({
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // The toggle is shown only when the bucket is not pinned but a default
+  // bucket was supplied. `activeBucket` is null only for legacy flat usage.
+  const bucketParam = searchParams.get('bucket');
+  const showBucketToggle = !quarterBucket && defaultBucket !== undefined;
+  const activeBucket: FiscalQuarterBucket | null = quarterBucket
+    ? quarterBucket
+    : defaultBucket !== undefined
+      ? resolveQuarterBucket(bucketParam, defaultBucket)
+      : null;
+  const storageKey = activeBucket
+    ? `${STORAGE_KEY_BASE}:${activeBucket}`
+    : STORAGE_KEY_BASE;
+
   const param = searchParams.get('quarters') ?? '';
   const selected = useMemo(
     () => new Set(param ? param.split(',').filter(Boolean) : []),
@@ -67,10 +100,18 @@ export function FiscalQuarterFilter({
   );
 
   // Stable option list independent of data — see file header note.
-  const options = useMemo<FiscalQuarter[]>(
-    () => rollingFiscalQuarters(windowOptions?.trailing ?? 4, windowOptions?.forward ?? 4),
-    [windowOptions?.trailing, windowOptions?.forward],
-  );
+  const options = useMemo<FiscalQuarter[]>(() => {
+    if (activeBucket) {
+      return fiscalQuarterOptionsForBucket(activeBucket);
+    }
+    if (windowOptions?.trailing != null || windowOptions?.forward != null) {
+      return rollingFiscalQuarters(
+        windowOptions?.trailing ?? 4,
+        windowOptions?.forward ?? 4,
+      );
+    }
+    return fiscalQuarterFilterOptions({ dataQuarterKeys: availableQuarterKeys });
+  }, [activeBucket, windowOptions?.trailing, windowOptions?.forward, availableQuarterKeys]);
   const allKeys = useMemo(() => options.map((o) => o.key), [options]);
   const availableSet = useMemo(
     () => new Set(availableQuarterKeys),
@@ -85,18 +126,19 @@ export function FiscalQuarterFilter({
     if (param !== '') return;
     let next: string | null = null;
     try {
-      const stored = window.localStorage.getItem(STORAGE_KEY);
+      const stored = window.localStorage.getItem(storageKey);
       if (stored) {
         const arr = JSON.parse(stored) as string[];
         const valid = arr.filter((k) => allKeys.includes(k));
         if (valid.length > 0) next = valid.join(',');
       }
     } catch {
-      // ignore parse errors; fall through to today
+      // ignore parse errors; fall through to default
     }
     if (!next) {
-      const today = currentFiscalQuarter();
-      next = today.key;
+      next = activeBucket
+        ? defaultFiscalQuarterForBucket(activeBucket)
+        : currentFiscalQuarter().key;
     }
     const params = new URLSearchParams(searchParams.toString());
     params.set('quarters', next);
@@ -105,7 +147,23 @@ export function FiscalQuarterFilter({
     // auto-default fires once per page entry. allKeys is stable per
     // window options.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [param, pathname, autoDefault]);
+  }, [param, pathname, autoDefault, activeBucket, storageKey]);
+
+  // When the bucket changes, drop any quarters that belong to the other bucket.
+  useEffect(() => {
+    if (!activeBucket || param === '' || param === '__none__') return;
+    const selectedKeys = param.split(',').filter(Boolean);
+    const invalid = selectedKeys.some((k) => !allKeys.includes(k));
+    if (!invalid) return;
+    const valid = selectedKeys.filter((k) => allKeys.includes(k));
+    const params = new URLSearchParams(searchParams.toString());
+    params.set(
+      'quarters',
+      valid.length > 0 ? valid.join(',') : defaultFiscalQuarterForBucket(activeBucket),
+    );
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBucket, allKeys.join(',')]);
 
   // close on outside click
   useEffect(() => {
@@ -121,7 +179,7 @@ export function FiscalQuarterFilter({
 
   const persist = (keys: string[]) => {
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(keys));
+      window.localStorage.setItem(storageKey, JSON.stringify(keys));
     } catch {
       // best-effort persistence; ignore quota errors
     }
@@ -158,10 +216,34 @@ export function FiscalQuarterFilter({
     router.push(`${pathname}?${params.toString()}`, { scroll: false });
   };
 
-  const selectToday = () => updateSelection(new Set([currentFiscalQuarter().key]));
+  const selectToday = () =>
+    updateSelection(
+      new Set([
+        activeBucket
+          ? defaultFiscalQuarterForBucket(activeBucket)
+          : currentFiscalQuarter().key,
+      ]),
+    );
+
+  // Flip the bucket: switch lens and reset the quarter selection to "all in
+  // bucket" so past and future are never mixed.
+  const setBucket = (next: FiscalQuarterBucket) => {
+    if (next === activeBucket) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('bucket', next);
+    params.delete('quarters');
+    router.push(`${pathname}?${params.toString()}`, { scroll: false });
+  };
+
+  const bucketHint =
+    activeBucket === 'prospective'
+      ? 'Current + next 7 quarters'
+      : activeBucket === 'retrospective'
+        ? 'Last 8 completed quarters'
+        : null;
 
   const triggerLabel = (() => {
-    if (allActive) return 'All Quarters';
+    if (allActive) return quarterBucket ? `All ${allKeys.length} quarters` : 'All Quarters';
     if (selected.size === 0) return 'None';
     if (selected.size === 1) {
       const only = [...selected][0] ?? '';
@@ -169,13 +251,40 @@ export function FiscalQuarterFilter({
     }
     if (selected.size === allKeys.length) return 'All Quarters';
     const sorted = allKeys.filter((k) => selected.has(k));
-    if (sorted.length <= 2) return sorted.map(fiscalQuarterLabel).join(', ');
-    return `${sorted.slice(0, 2).map(fiscalQuarterLabel).join(', ')} +${sorted.length - 2}`;
+    if (sorted.length <= 2) return formatQuarterSelectionLabel(sorted);
+    const label = formatQuarterSelectionLabel(sorted.slice(0, 2));
+    return `${label} +${sorted.length - 2}`;
   })();
 
   return (
-    <div className="flex items-center gap-2" ref={containerRef}>
-      <label className="text-sm font-medium text-gray-700">Fiscal Quarter:</label>
+    <div className="flex flex-wrap items-center gap-2" ref={containerRef}>
+      {showBucketToggle && (
+        <div
+          className="inline-flex rounded-md border border-gray-200 bg-white p-0.5 text-xs shadow-sm"
+          role="group"
+          aria-label="Quarter bucket"
+        >
+          <button
+            type="button"
+            onClick={() => setBucket('retrospective')}
+            className={`rounded px-2.5 py-1 font-medium ${activeBucket === 'retrospective' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900'}`}
+            title="Last 8 completed quarters"
+          >
+            Retrospective
+          </button>
+          <button
+            type="button"
+            onClick={() => setBucket('prospective')}
+            className={`rounded px-2.5 py-1 font-medium ${activeBucket === 'prospective' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900'}`}
+            title="Current quarter + next 7"
+          >
+            Prospective
+          </button>
+        </div>
+      )}
+      <label className="text-sm font-medium text-gray-700">
+        Fiscal Quarter{bucketHint ? ` (${bucketHint})` : ''}:
+      </label>
       <div className="relative">
         <button
           type="button"
@@ -208,14 +317,14 @@ export function FiscalQuarterFilter({
                 onClick={selectToday}
                 className="text-xs font-medium text-blue-600 hover:text-blue-800"
               >
-                Today's Quarter
+                {quarterBucket === 'retrospective' ? 'Latest closed' : "Today's quarter"}
               </button>
               <button
                 type="button"
                 onClick={selectAll}
                 className="text-xs font-medium text-blue-600 hover:text-blue-800"
               >
-                All
+                All {allKeys.length}
               </button>
             </div>
             <ul className="max-h-72 overflow-y-auto py-1" role="listbox">

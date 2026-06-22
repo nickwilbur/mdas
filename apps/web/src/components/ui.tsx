@@ -39,6 +39,32 @@ export function RiskBadge({
   );
 }
 
+/** Compact Cerebro assessment pill for list rows (no source suffix). */
+export function AssessmentPill({
+  category,
+}: {
+  category: string | null | undefined;
+}) {
+  const level = category ?? 'Unknown';
+  const colors: Record<string, string> = {
+    Critical: 'bg-red-600 text-white',
+    High: 'bg-orange-600 text-white',
+    Medium: 'bg-yellow-500 text-black',
+    Low: 'bg-green-600 text-white',
+    Unknown: 'bg-gray-400 text-white',
+  };
+  return (
+    <span
+      className={clsx(
+        'inline-flex shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+        colors[level] ?? colors.Unknown,
+      )}
+    >
+      {level}
+    </span>
+  );
+}
+
 // PR-B1: composite Risk Score badge.
 //
 // Renders the 0–100 score and band, plus a low-confidence indicator
@@ -152,7 +178,7 @@ export function StatTile({
   onClick,
   active,
 }: {
-  label: string;
+  label: ReactNode;
   value: string | number;
   sub?: string;
   /** Tooltip explaining the metric definition. */
@@ -160,22 +186,34 @@ export function StatTile({
   onClick?: () => void;
   active?: boolean;
 }) {
-  const Tag = onClick ? 'button' : 'div';
+  // Use div (not button) when clickable so LabelWithHint / MetricHint can
+  // nest a focusable ? control without invalid <button><button> markup.
   return (
-    <Tag
-      type={onClick ? 'button' : undefined}
+    <div
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
       onClick={onClick}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
       title={title}
       className={clsx(
         'rounded-lg border bg-white p-4 shadow-sm text-left w-full',
         active ? 'border-blue-500 ring-1 ring-blue-200' : 'border-gray-200',
-        onClick && 'cursor-pointer hover:border-gray-300',
+        onClick && 'cursor-pointer hover:border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-300',
       )}
     >
       <div className="text-xs uppercase tracking-wide text-gray-500">{label}</div>
       <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
       {sub ? <div className="mt-1 text-xs text-gray-500">{sub}</div> : null}
-    </Tag>
+    </div>
   );
 }
 

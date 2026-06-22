@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Bar,
   BarChart,
@@ -18,7 +18,9 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { fmtUSD } from '@/components/ui';
+import { fmtUSD, RiskScoreBadge, SentimentBadge } from '@/components/ui';
+import { LabelWithHint } from '@/components/MetricHint';
+import { TableHeader, type SortDirection } from '@/components/TableHeader';
 import {
   formatGapToPlan,
   fmtSignedUSD,
@@ -29,11 +31,15 @@ import {
   planPerformanceTone,
   PLAN_TONE_STYLES,
 } from '@/lib/forecast-plan-kpi';
+import { fiscalQuarterLabel } from '@/lib/fiscal';
 import { loadChurnPlansByQuarter } from '@/lib/forecast-plan-storage';
+import { RENEWAL_DASHBOARD_HINTS } from '@/lib/renewal-metric-tooltips';
+import type { CSESentiment } from '@mdas/canonical';
 import type {
   QuarterTrendPoint,
   RenewalAccountRow,
   RenewalMetricsSummary,
+  RenewalOppRow,
   RenewalOutcome,
 } from '@mdas/renewal-metrics';
 
@@ -58,6 +64,158 @@ function fmtCompact(n: number): string {
 function pct(n: number | null, digits = 1): string {
   if (n == null) return '—';
   return `${(n * 100).toFixed(digits)}%`;
+}
+
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function opportunityHref(opportunityId: string): string {
+  return `/opportunities?focus=${encodeURIComponent(opportunityId)}`;
+}
+
+type AttentionSortField =
+  | 'account'
+  | 'opportunity'
+  | 'outcome'
+  | 'atr'
+  | 'mostLikely'
+  | 'renewalDate'
+  | 'risk';
+
+function primaryOpp(account: RenewalAccountRow): RenewalOppRow | null {
+  if (account.opportunities.length === 0) return null;
+  return [...account.opportunities].sort((a, b) => b.atrUSD - a.atrUSD)[0]!;
+}
+
+function UpcomingAtrBucket({
+  label,
+  rows,
+}: {
+  label: string;
+  rows: RenewalAccountRow[];
+}) {
+  const total = rows.reduce((s, r) => s + r.atrUSD, 0);
+  const sorted = [...rows].sort((a, b) => b.atrUSD - a.atrUSD);
+
+  return (
+    <div className="group relative rounded-md px-1 py-1 hover:bg-gray-50 focus-within:bg-gray-50">
+      <dt className="text-xs font-medium uppercase text-gray-500">{label}</dt>
+      <dd className="mt-1 flex items-baseline justify-between">
+        <span className="text-2xl font-semibold tabular-nums">{fmtCompact(total)}</span>
+        <span className="text-xs text-gray-500">
+          {rows.length} account{rows.length === 1 ? '' : 's'}
+        </span>
+      </dd>
+      {sorted.length > 0 ? (
+        <div
+          className="pointer-events-none absolute bottom-full left-0 right-0 z-30 mb-1 hidden rounded-lg border border-gray-200 bg-white p-3 shadow-lg group-hover:pointer-events-auto group-hover:block group-focus-within:pointer-events-auto group-focus-within:block"
+          role="tooltip"
+        >
+          <p className="mb-2 text-xs font-semibold text-gray-900">{label}</p>
+          <ul className="max-h-64 space-y-2 overflow-y-auto text-xs">
+            {sorted.map((a) => {
+              const opp = primaryOpp(a);
+              return (
+                <li
+                  key={a.accountId}
+                  className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 border-b border-gray-100 pb-2 last:border-0 last:pb-0"
+                >
+                  <div className="min-w-0">
+                    <Link
+                      href={`/accounts/${a.accountId}`}
+                      className="font-medium text-blue-700 hover:underline"
+                    >
+                      {a.accountName}
+                    </Link>
+                    {opp ? (
+                      <Link
+                        href={opportunityHref(opp.opportunityId)}
+                        className="block truncate text-gray-500 hover:text-blue-700 hover:underline"
+                      >
+                        {opp.opportunityName}
+                      </Link>
+                    ) : null}
+                  </div>
+                  <div className="text-right tabular-nums">
+                    <p className="font-medium">{fmtUSD(a.atrUSD)}</p>
+                    <p className="text-gray-500">
+                      {opp?.forecastMostLikelyUSD != null
+                        ? fmtSignedUSD(opp.forecastMostLikelyUSD)
+                        : '—'}{' '}
+                      ML
+                    </p>
+                  </div>
+                  <div className="col-span-2 flex flex-wrap items-center gap-2 text-gray-500">
+                    <span>{fmtDate(a.renewalDate)}</span>
+                    {a.healthScore != null && a.healthBand ? (
+                      <RiskScoreBadge
+                        score={a.healthScore}
+                        band={a.healthBand as 'Low' | 'Medium' | 'High' | 'Critical'}
+                        confidence={a.riskScoreConfidence ?? 'low'}
+                      />
+                    ) : null}
+                    {a.cseSentiment ? (
+                      <SentimentBadge value={a.cseSentiment as CSESentiment} />
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const RISK_ROW_BORDER: Record<string, string> = {
+  Critical: 'border-l-red-600',
+  High: 'border-l-orange-500',
+  Medium: 'border-l-amber-400',
+  Low: 'border-l-emerald-500',
+};
+
+const PIE_LABEL_MIN_PCT = 0.06;
+
+function OutcomePieLabel({
+  cx = 0,
+  cy = 0,
+  midAngle = 0,
+  innerRadius = 0,
+  outerRadius = 0,
+  percent = 0,
+}: {
+  cx?: number;
+  cy?: number;
+  midAngle?: number;
+  innerRadius?: number;
+  outerRadius?: number;
+  percent?: number;
+}) {
+  if (percent < PIE_LABEL_MIN_PCT) return null;
+  const radius = innerRadius + (outerRadius - innerRadius) * 0.55;
+  const radian = (-midAngle * Math.PI) / 180;
+  const x = cx + radius * Math.cos(radian);
+  const y = cy + radius * Math.sin(radian);
+  return (
+    <text
+      x={x}
+      y={y}
+      fill="#fff"
+      textAnchor="middle"
+      dominantBaseline="central"
+      fontSize={11}
+      fontWeight={600}
+    >
+      {(percent * 100).toFixed(0)}%
+    </text>
+  );
 }
 
 function DeltaBadge({
@@ -117,6 +275,8 @@ export interface RenewalDashboardClientProps {
   atRisk90: RenewalAccountRow[];
   quarterLabel: string;
   selectedQuarterKey: string | null;
+  /** First quarter key on the retention trend chart (rolling history start). */
+  trendStartKey: string;
   /** Churn/Downsell Flash for the selected quarter (single-quarter view only). */
   quarterFlashUSD?: number | null;
 }
@@ -130,6 +290,7 @@ export function RenewalDashboardClient({
   atRisk90,
   quarterLabel,
   selectedQuarterKey,
+  trendStartKey,
   quarterFlashUSD = null,
 }: RenewalDashboardClientProps) {
   const prior = metrics.priorPeriod;
@@ -189,13 +350,69 @@ export function RenewalDashboardClient({
     accounts: t.accountsUpForRenewal,
   }));
 
+  const [attentionSortField, setAttentionSortField] = useState<AttentionSortField>('atr');
+  const [attentionSortDirection, setAttentionSortDirection] = useState<SortDirection>('desc');
+
+  const sortedAttentionAccounts = useMemo(() => {
+    const rows = [...attentionAccounts];
+    const dir = attentionSortDirection === 'asc' ? 1 : -1;
+    const cmp = (a: number | string | null, b: number | string | null) => {
+      if (a == null && b == null) return 0;
+      if (a == null) return 1;
+      if (b == null) return -1;
+      if (a < b) return -1 * dir;
+      if (a > b) return 1 * dir;
+      return 0;
+    };
+    rows.sort((a, b) => {
+      const oppA = primaryOpp(a);
+      const oppB = primaryOpp(b);
+      switch (attentionSortField) {
+        case 'account':
+          return cmp(a.accountName, b.accountName);
+        case 'opportunity':
+          return cmp(oppA?.opportunityName ?? null, oppB?.opportunityName ?? null);
+        case 'outcome':
+          return cmp(a.outcome, b.outcome);
+        case 'mostLikely':
+          return cmp(oppA?.forecastMostLikelyUSD ?? null, oppB?.forecastMostLikelyUSD ?? null);
+        case 'renewalDate':
+          return cmp(
+            a.renewalDate ? Date.parse(a.renewalDate) : null,
+            b.renewalDate ? Date.parse(b.renewalDate) : null,
+          );
+        case 'risk':
+          return cmp(a.healthScore, b.healthScore);
+        case 'atr':
+        default:
+          return cmp(a.atrUSD, b.atrUSD);
+      }
+    });
+    return rows;
+  }, [attentionAccounts, attentionSortField, attentionSortDirection]);
+
+  const handleAttentionSort = (field: AttentionSortField) => {
+    if (attentionSortField === field) {
+      setAttentionSortDirection((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setAttentionSortField(field);
+      setAttentionSortDirection(field === 'account' || field === 'opportunity' ? 'asc' : 'desc');
+    }
+  };
+
+  const attentionHeader = {
+    sortField: attentionSortField,
+    sortDirection: attentionSortDirection,
+    onSort: handleAttentionSort,
+  };
+
   const drilldownHref = (outcome?: RenewalOutcome, knownChurn = false) => {
     const params = new URLSearchParams();
+    params.set('view', outcome || knownChurn ? 'quarter-close' : 'pipeline');
     if (selectedQuarterKey) params.set('quarters', selectedQuarterKey);
     if (outcome) params.set('outcome', outcome);
     if (knownChurn) params.set('knownChurn', '1');
-    const q = params.toString();
-    return `/renewal-analysis${q ? `?${q}` : ''}`;
+    return `/renewal-analysis?${params.toString()}`;
   };
 
   return (
@@ -216,7 +433,7 @@ export function RenewalDashboardClient({
             href={drilldownHref()}
             className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800"
           >
-            Open account analysis →
+            Open workbench →
           </Link>
         </div>
       </div>
@@ -230,7 +447,7 @@ export function RenewalDashboardClient({
             className={`rounded-xl border p-6 ${grrTone.border} ${grrTone.bg} ${showPlanCard ? 'lg:col-span-4' : 'lg:col-span-4'}`}
           >
             <h2 id="hero-grr" className={`text-sm font-medium ${grrTone.title}`}>
-              Gross renewal retention
+              <LabelWithHint label="Gross renewal retention" hint={RENEWAL_DASHBOARD_HINTS.grr} />
             </h2>
             <p className={`mt-2 text-5xl font-bold tabular-nums tracking-tight ${grrTone.value}`}>
               {pct(grr, 1)}
@@ -256,7 +473,10 @@ export function RenewalDashboardClient({
               aria-labelledby="hero-plan"
             >
               <h2 id="hero-plan" className={`text-sm font-medium ${planStyles.text}`}>
-                Churn / downsell vs plan
+                <LabelWithHint
+                  label="Churn / downsell vs plan"
+                  hint={RENEWAL_DASHBOARD_HINTS.planVsFlash}
+                />
               </h2>
               <p className={`mt-1 text-xs ${planStyles.sub}`}>
                 Same Flash &amp; Plan as the{' '}
@@ -302,12 +522,14 @@ export function RenewalDashboardClient({
             {[
               {
                 label: 'ATR at risk',
+                hint: RENEWAL_DASHBOARD_HINTS.atrUp,
                 value: fmtCompact(metrics.atrUpForRenewalUSD),
                 sub: `${metrics.accountsUpForRenewal} accounts`,
                 delta: prior ? fmtCompact(metrics.atrUpForRenewalUSD - prior.atrUpForRenewalUSD) : null,
               },
               {
                 label: 'ATR churned',
+                hint: RENEWAL_DASHBOARD_HINTS.atrChurned,
                 value: fmtCompact(metrics.atrChurnedUSD),
                 sub: pct(metrics.atrChurnedUSD / Math.max(metrics.atrUpForRenewalUSD, 1)) + ' of ATR',
                 delta: prior ? fmtCompact(metrics.atrChurnedUSD - prior.atrChurnedUSD) : null,
@@ -315,6 +537,7 @@ export function RenewalDashboardClient({
               },
               {
                 label: 'Logo churn',
+                hint: RENEWAL_DASHBOARD_HINTS.logoChurn,
                 value: pct(metrics.fullLogoChurnRate),
                 sub: `${metrics.fullChurnAccountCount} accounts`,
                 delta: prior && metrics.fullLogoChurnRate != null && prior.fullLogoChurnRate != null
@@ -324,6 +547,7 @@ export function RenewalDashboardClient({
               },
               {
                 label: 'Downsell exposure',
+                hint: RENEWAL_DASHBOARD_HINTS.downsellExposure,
                 value: fmtCompact(metrics.downsellAmountUSD),
                 sub: `${metrics.downsellAccountCount} accounts (${pct(metrics.downsellAccountRate, 0)})`,
                 delta: prior ? fmtCompact(metrics.downsellAmountUSD - prior.downsellAmountUSD) : null,
@@ -335,7 +559,7 @@ export function RenewalDashboardClient({
                 className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"
               >
                 <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                  {kpi.label}
+                  <LabelWithHint label={kpi.label} hint={kpi.hint} />
                 </p>
                 <p
                   className={`mt-1 text-2xl font-semibold tabular-nums ${kpi.warn ? 'text-gray-900' : 'text-gray-900'}`}
@@ -361,7 +585,7 @@ export function RenewalDashboardClient({
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <h2 id="known-churn-heading" className="text-sm font-semibold text-gray-900">
-                Known churn
+                <LabelWithHint label="Known churn" hint={RENEWAL_DASHBOARD_HINTS.knownChurn} />
               </h2>
               <p className="mt-1 text-xs text-gray-600">
                 Renewal opps with SFDC Churn Risk = <strong>Confirmed Full Churn</strong> —
@@ -401,10 +625,13 @@ export function RenewalDashboardClient({
       {/* Trends + composition — compare over time before drilling down */}
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
         <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm xl:col-span-7">
-          <h3 className="text-sm font-semibold text-gray-900">Retention trend by quarter</h3>
+          <h3 className="text-sm font-semibold text-gray-900">
+            <LabelWithHint label="Retention trend by quarter" hint={RENEWAL_DASHBOARD_HINTS.retentionTrend} />
+          </h3>
           <p className="mt-0.5 text-xs text-gray-500">
-            FY26 Q1 through {quarterLabel} — each quarter evaluated as-of its close (or today for
-            the open quarter)
+            {fiscalQuarterLabel(trendStartKey)} through{' '}
+            {fiscalQuarterLabel(trend[trend.length - 1]?.quarterKey ?? trendStartKey)} — last{' '}
+            {trend.length} quarters
           </p>
           <div className="mt-4 h-72 min-h-[288px] w-full min-w-0" role="img" aria-label="Retention trend chart">
             <ResponsiveContainer width="100%" height="100%" minWidth={0} debounce={50}>
@@ -457,7 +684,9 @@ export function RenewalDashboardClient({
         </div>
 
         <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm xl:col-span-5">
-          <h3 className="text-sm font-semibold text-gray-900">Outcome mix</h3>
+          <h3 className="text-sm font-semibold text-gray-900">
+            <LabelWithHint label="Outcome mix" hint={RENEWAL_DASHBOARD_HINTS.outcomeMix} />
+          </h3>
           <p className="mt-0.5 text-xs text-gray-500">Share of accounts by renewal result</p>
           <div className="mt-4 h-72 min-h-[288px] w-full min-w-0" role="img" aria-label="Outcome distribution chart">
             <ResponsiveContainer width="100%" height="100%" minWidth={0} debounce={50}>
@@ -471,16 +700,21 @@ export function RenewalDashboardClient({
                   innerRadius={55}
                   outerRadius={85}
                   paddingAngle={2}
+                  label={OutcomePieLabel}
+                  labelLine={false}
                 >
                   {outcomeData.map((entry) => (
                     <Cell key={entry.outcome} fill={entry.color} />
                   ))}
                 </Pie>
                 <Tooltip
-                  formatter={(value: number, name: string) => [
-                    `${value} accounts (${pct(value / metrics.accountsUpForRenewal, 0)})`,
-                    name,
-                  ]}
+                  formatter={(value, name) => {
+                    const n = typeof value === 'number' ? value : 0;
+                    return [
+                      `${n} accounts (${pct(n / Math.max(metrics.accountsUpForRenewal, 1), 0)})`,
+                      String(name ?? ''),
+                    ];
+                  }}
                 />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
               </PieChart>
@@ -493,7 +727,8 @@ export function RenewalDashboardClient({
                   href={drilldownHref(o.outcome)}
                   className="text-blue-700 hover:underline"
                 >
-                  {o.name} ({o.value})
+                  {o.name} ({o.value} ·{' '}
+                  {pct(o.value / Math.max(metrics.accountsUpForRenewal, 1), 0)})
                 </Link>
               </li>
             ))}
@@ -504,7 +739,9 @@ export function RenewalDashboardClient({
       {/* Revenue bridge + comparison — where losses come from */}
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-          <h3 className="text-sm font-semibold text-gray-900">Revenue bridge</h3>
+          <h3 className="text-sm font-semibold text-gray-900">
+            <LabelWithHint label="Revenue bridge" hint={RENEWAL_DASHBOARD_HINTS.revenueBridge} />
+          </h3>
           <p className="mt-0.5 text-xs text-gray-500">ATR → churn → downsell → expansion → renewed</p>
           <div className="mt-4 h-64 min-h-[256px] w-full min-w-0" role="img" aria-label="Revenue bridge waterfall">
             <ResponsiveContainer width="100%" height="100%" minWidth={0} debounce={50}>
@@ -512,7 +749,11 @@ export function RenewalDashboardClient({
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                 <XAxis type="number" tickFormatter={(v) => fmtCompact(Math.abs(v))} tick={{ fontSize: 11 }} />
                 <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={76} />
-                <Tooltip formatter={(v: number) => fmtCompact(Math.abs(v))} />
+                <Tooltip
+                  formatter={(value) =>
+                    fmtCompact(Math.abs(typeof value === 'number' ? value : 0))
+                  }
+                />
                 <Bar dataKey="value" radius={[0, 4, 4, 0]}>
                   {bridgeData.map((entry) => (
                     <Cell key={entry.name} fill={entry.fill} />
@@ -524,7 +765,12 @@ export function RenewalDashboardClient({
         </div>
 
         <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-          <h3 className="text-sm font-semibold text-gray-900">Portfolio snapshot</h3>
+          <h3 className="text-sm font-semibold text-gray-900">
+            <LabelWithHint
+              label="Portfolio snapshot"
+              hint={RENEWAL_DASHBOARD_HINTS.portfolioSnapshot}
+            />
+          </h3>
           <p className="mt-0.5 text-xs text-gray-500">Side-by-side ATR components for selected period</p>
           <div className="mt-4 h-64 min-h-[256px] w-full min-w-0" role="img" aria-label="ATR comparison chart">
             <ResponsiveContainer width="100%" height="100%" minWidth={0} debounce={50}>
@@ -532,7 +778,11 @@ export function RenewalDashboardClient({
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                 <YAxis tickFormatter={(v) => fmtCompact(v)} tick={{ fontSize: 11 }} width={56} />
-                <Tooltip formatter={(v: number) => fmtCompact(v)} />
+                <Tooltip
+                  formatter={(value) =>
+                    fmtCompact(typeof value === 'number' ? value : 0)
+                  }
+                />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="atr" name="ATR up" fill="#64748b" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="renewed" name="Renewed" fill="#059669" radius={[4, 4, 0, 0]} />
@@ -549,67 +799,138 @@ export function RenewalDashboardClient({
         <div className="rounded-xl border border-red-100 bg-white p-5 shadow-sm lg:col-span-2">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-sm font-semibold text-gray-900">Accounts needing attention</h3>
+              <h3 className="text-sm font-semibold text-gray-900">
+                <LabelWithHint
+                  label="Accounts needing attention"
+                  hint={RENEWAL_DASHBOARD_HINTS.attentionAccounts}
+                />
+              </h3>
               <p className="text-xs text-gray-500">
-                Highest ATR among churn, downsell, and pushed renewals
+                Highest ATR among churn, downsell, pushed, and open renewals
               </p>
             </div>
             <Link href={drilldownHref()} className="text-xs text-blue-700 hover:underline">
               View all →
             </Link>
           </div>
-          {attentionAccounts.length === 0 ? (
+          {sortedAttentionAccounts.length === 0 ? (
             <p className="mt-4 text-sm text-gray-500">No at-risk accounts in this period.</p>
           ) : (
-            <ul className="mt-4 divide-y divide-gray-100">
-              {attentionAccounts.slice(0, 8).map((a) => (
-                <li key={a.accountId} className="flex items-center gap-3 py-3">
-                  <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: OUTCOME_META[a.outcome].color }}
-                    title={OUTCOME_META[a.outcome].label}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <Link
-                      href={`/accounts/${a.accountId}`}
-                      className="truncate font-medium hover:underline"
-                    >
-                      {a.accountName}
-                    </Link>
-                    <p className="truncate text-xs text-gray-500">
-                      {a.cseName ?? 'No CSE'} · {OUTCOME_META[a.outcome].label}
-                      {a.reason ? ` · ${a.reason.slice(0, 60)}` : ''}
-                    </p>
-                  </div>
-                  <div className="text-right tabular-nums">
-                    <p className="text-sm font-medium">{fmtUSD(a.atrUSD)}</p>
-                    <p className="text-xs text-gray-500">ATR</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <div className="mt-4 overflow-x-auto rounded-lg border border-gray-100">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-xs uppercase text-gray-600">
+                  <tr>
+                    <TableHeader<AttentionSortField>
+                      {...attentionHeader}
+                      label="Account"
+                      field="account"
+                    />
+                    <TableHeader<AttentionSortField>
+                      {...attentionHeader}
+                      label="Opportunity"
+                      field="opportunity"
+                    />
+                    <th className="px-3 py-2 text-left font-normal">Risk / sentiment</th>
+                    <TableHeader<AttentionSortField>
+                      {...attentionHeader}
+                      label="ATR"
+                      field="atr"
+                      align="right"
+                    />
+                    <TableHeader<AttentionSortField>
+                      {...attentionHeader}
+                      label="Most likely"
+                      field="mostLikely"
+                      align="right"
+                    />
+                    <TableHeader<AttentionSortField>
+                      {...attentionHeader}
+                      label="Renewal date"
+                      field="renewalDate"
+                      align="right"
+                    />
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedAttentionAccounts.map((a) => {
+                    const opp = primaryOpp(a);
+                    const riskBand = a.healthBand ?? 'Unknown';
+                    const borderClass = RISK_ROW_BORDER[riskBand] ?? 'border-l-gray-300';
+                    return (
+                      <tr
+                        key={a.accountId}
+                        className={`border-t border-gray-100 border-l-4 ${borderClass}`}
+                      >
+                        <td className="px-3 py-2.5">
+                          <Link
+                            href={`/accounts/${a.accountId}`}
+                            className="font-medium hover:underline"
+                          >
+                            {a.accountName}
+                          </Link>
+                          <p className="text-xs text-gray-500">
+                            {a.cseName ?? 'No CSE'} · {OUTCOME_META[a.outcome].label}
+                          </p>
+                        </td>
+                        <td className="max-w-[12rem] px-3 py-2.5">
+                          {opp ? (
+                            <Link
+                              href={opportunityHref(opp.opportunityId)}
+                              className="block truncate text-blue-700 hover:underline"
+                              title={opp.opportunityName}
+                            >
+                              {opp.opportunityName}
+                            </Link>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {a.healthScore != null && a.healthBand ? (
+                              <RiskScoreBadge
+                                score={a.healthScore}
+                                band={a.healthBand as 'Low' | 'Medium' | 'High' | 'Critical'}
+                                confidence={a.riskScoreConfidence ?? 'low'}
+                              />
+                            ) : null}
+                            {a.cseSentiment ? (
+                              <SentimentBadge value={a.cseSentiment as CSESentiment} />
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums font-medium">
+                          {fmtUSD(a.atrUSD)}
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">
+                          {opp?.forecastMostLikelyUSD != null
+                            ? fmtSignedUSD(opp.forecastMostLikelyUSD)
+                            : '—'}
+                        </td>
+                        <td className="px-3 py-2.5 text-right text-gray-700">
+                          {fmtDate(a.renewalDate)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
 
         <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-          <h3 className="text-sm font-semibold text-gray-900">Upcoming renewal ATR</h3>
-          <p className="text-xs text-gray-500">Open pipeline by close window</p>
+          <h3 className="text-sm font-semibold text-gray-900">
+            <LabelWithHint
+              label="Upcoming renewal ATR"
+              hint={RENEWAL_DASHBOARD_HINTS.upcomingAtr}
+            />
+          </h3>
+          <p className="text-xs text-gray-500">Hover a bucket to see accounts · open pipeline by close window</p>
           <dl className="mt-4 space-y-4">
-            {[
-              { label: 'Next 30 days', rows: atRisk30, horizon: 30 },
-              { label: '31–60 days', rows: atRisk60, horizon: 60 },
-              { label: '61–90 days', rows: atRisk90, horizon: 90 },
-            ].map(({ label, rows, horizon }) => (
-              <div key={horizon}>
-                <dt className="text-xs font-medium uppercase text-gray-500">{label}</dt>
-                <dd className="mt-1 flex items-baseline justify-between">
-                  <span className="text-2xl font-semibold tabular-nums">
-                    {fmtCompact(rows.reduce((s, r) => s + r.atrUSD, 0))}
-                  </span>
-                  <span className="text-xs text-gray-500">{rows.length} accounts</span>
-                </dd>
-              </div>
-            ))}
+            <UpcomingAtrBucket label="Next 30 days" rows={atRisk30} />
+            <UpcomingAtrBucket label="31–60 days" rows={atRisk60} />
+            <UpcomingAtrBucket label="61–90 days" rows={atRisk90} />
           </dl>
         </div>
       </section>

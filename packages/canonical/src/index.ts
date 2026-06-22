@@ -202,6 +202,12 @@ export interface CanonicalOpportunity {
    * before 2026-06-16.
    */
   churnRisk?: string | null;
+  /**
+   * SFDC `Sub_type__c` on renewal opportunities (e.g. `Full Churn`, `Downsell`).
+   * When set to something other than Full Churn, a Confirmed Full Churn risk
+   * flag is not treated as operational full churn.
+   */
+  subType?: string | null;
   productLine: string | null;
 
   /**
@@ -237,9 +243,37 @@ export interface CanonicalOpportunity {
 /** SFDC Churn_Risk__c value for renewal opps excluded from saveable renewal metrics. */
 export const CONFIRMED_FULL_CHURN_RISK = 'Confirmed Full Churn';
 
+/** SFDC Sub_type__c value that corroborates operational full churn. */
+export const FULL_CHURN_SUB_TYPE = 'Full Churn';
+
 export function isConfirmedFullChurnRisk(churnRisk: string | null | undefined): boolean {
   return (
     String(churnRisk ?? '').trim().toLowerCase() === CONFIRMED_FULL_CHURN_RISK.toLowerCase()
+  );
+}
+
+/**
+ * Operational full churn on a renewal opportunity per SFDC hygiene:
+ * `Churn_Risk__c = Confirmed Full Churn`, usually with `Sub_type__c = Full Churn`.
+ * Churn-notice-submitted dates are intentionally excluded (related but separate).
+ */
+export function isOperationalFullChurnOpportunity(opp: {
+  churnRisk?: string | null;
+  subType?: string | null;
+}): boolean {
+  if (!isConfirmedFullChurnRisk(opp.churnRisk)) return false;
+  const sub = String(opp.subType ?? '').trim().toLowerCase();
+  if (sub && sub !== FULL_CHURN_SUB_TYPE.toLowerCase()) return false;
+  return true;
+}
+
+/** Churn notice workflow dates — related to full churn but not the operational marker. */
+export function hasChurnNoticeSubmitted(opp: {
+  fullChurnNotificationToOwnerDate?: string | null;
+  fullChurnFinalEmailSentDate?: string | null;
+}): boolean {
+  return !!(
+    opp.fullChurnNotificationToOwnerDate || opp.fullChurnFinalEmailSentDate
   );
 }
 
