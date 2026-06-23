@@ -256,7 +256,8 @@ function nextKeyFrom(asOfDate: string): string {
  * → ISO; safer than throwing because the trajectory loader is
  * non-critical and we'd rather skip a malformed row than 500.
  */
-function toIsoString(v: unknown): string {
+/** Coerce pg-hydrated Date or API string timestamps to ISO for day bucketing. */
+export function toIsoString(v: unknown): string {
   if (v instanceof Date) return v.toISOString();
   if (typeof v === 'string') {
     // Pass strings through when they're already ISO-like; otherwise
