@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountView, CanonicalAccount, CanonicalOpportunity } from '@mdas/canonical';
 import {
+  buildAtRiskPipeline,
   buildRenewalAccountRows,
   buildRenewalMetrics,
   buildRenewalOppRows,
+  buildRenewalQuarterTrend,
   classifyRenewalOutcome,
   deriveRenewedRevenueUSD,
   filterAtRiskByOverallAssessment,
@@ -474,5 +476,64 @@ describe('overall assessment at-risk filters', () => {
       row({ opportunityId: 'closed', closeDate: '2026-07-01', outcome: 'flat' }),
     ];
     expect(filterUpcomingRenewals(rows, 30, asOf).map((r) => r.opportunityId)).toEqual(['soon']);
+  });
+});
+
+describe('buildRenewalQuarterTrend', () => {
+  it('returns one trend point per requested quarter', () => {
+    const view = mkView(mkAccount(), [
+      mkOpp({ availableToRenewUSD: 100_000, forecastMostLikely: 0 }),
+    ]);
+    const trend = buildRenewalQuarterTrend(
+      [view],
+      ['2027-Q1', '2027-Q2'],
+      quarterKeyFn,
+      (k) => k.replace('-', ' '),
+      AS_OF,
+    );
+    expect(trend).toHaveLength(2);
+    expect(trend[0]!.quarterKey).toBe('2027-Q1');
+    expect(trend[0]!.quarterLabel).toBe('2027 Q1');
+    expect(trend[0]!.atrUpForRenewalUSD).toBe(100_000);
+    expect(trend[1]!.atrUpForRenewalUSD).toBe(0);
+  });
+});
+
+describe('buildAtRiskPipeline', () => {
+  it('includes pending renewals inside the horizon with risk signals', () => {
+    const closeIn30 = '2026-07-01';
+    const view = mkView(
+      mkAccount({ engagementMinutes30d: 5 }),
+      [mkOpp({ closeDate: closeIn30, forecastMostLikely: 0 })],
+      { daysToRenewal: 15, riskScore: { score: 72, band: 'High', signals: [] } },
+    );
+    const pipeline = buildAtRiskPipeline([view], 30, AS_OF);
+    expect(pipeline).toHaveLength(1);
+    expect(pipeline[0]!.accountId).toBe('A1');
+    expect(pipeline[0]!.outcome).toBe('pending');
+  });
+
+  it('excludes renewals outside the horizon', () => {
+    const view = mkView(
+      mkAccount(),
+      [mkOpp({ closeDate: '2026-12-01', forecastMostLikely: 0 })],
+      { daysToRenewal: 200, riskScore: { score: 80, band: 'High', signals: [] } },
+    );
+    expect(buildAtRiskPipeline([view], 30, AS_OF)).toHaveLength(0);
+  });
+
+  it('excludes healthy pending renewals with strong engagement and next steps', () => {
+    const view = mkView(
+      mkAccount({ engagementMinutes30d: 120 }),
+      [
+        mkOpp({
+          closeDate: '2026-07-01',
+          forecastMostLikely: 0,
+          scNextSteps: 'Exec QBR scheduled',
+        }),
+      ],
+      { daysToRenewal: 15, riskScore: { score: 20, band: 'Low', signals: [] } },
+    );
+    expect(buildAtRiskPipeline([view], 30, AS_OF)).toHaveLength(0);
   });
 });
