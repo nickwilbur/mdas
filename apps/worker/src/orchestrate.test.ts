@@ -131,7 +131,7 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks } from './orchestrate.js';
+import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks, mergeCerebroRisks } from './orchestrate.js';
 import { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
 
 // Helpers to keep tests focused. The fixture only carries the fields
@@ -334,6 +334,61 @@ describe('runRefresh — orchestrator', () => {
     }
   });
 
+  it('preserves cerebro-rest risk flags when cerebro-glean omits them (null)', async () => {
+    process.env.ADAPTER_CEREBRO = 'real';
+    try {
+      (fakeLocal.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        accounts: [accountFixture('A1')],
+        opportunities: [],
+      });
+      (fakeCerebroRest.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        accounts: [
+          {
+            accountId: 'A1',
+            cerebroRisks: {
+              utilizationRisk: true,
+              engagementRisk: null,
+              suiteRisk: null,
+              shareRisk: null,
+              legacyTechRisk: null,
+              expertiseRisk: null,
+              pricingRisk: null,
+            },
+          } as unknown as CanonicalAccount,
+        ],
+        opportunities: [],
+      });
+      (fakeCerebroGlean.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        accounts: [
+          {
+            accountId: 'A1',
+            cerebroRisks: {
+              utilizationRisk: null,
+              engagementRisk: true,
+              suiteRisk: null,
+              shareRisk: null,
+              legacyTechRisk: null,
+              expertiseRisk: null,
+              pricingRisk: null,
+            },
+          } as unknown as CanonicalAccount,
+        ],
+        opportunities: [],
+      });
+
+      await runRefresh({ actor: 'test' });
+
+      const persisted = replaceSnapshotAccounts.mock.calls.at(-1)?.[1] as
+        | CanonicalAccount[]
+        | undefined;
+      const a1 = persisted?.find((a) => a.accountId === 'A1');
+      expect(a1?.cerebroRisks?.utilizationRisk).toBe(true);
+      expect(a1?.cerebroRisks?.engagementRisk).toBe(true);
+    } finally {
+      delete process.env.ADAPTER_CEREBRO;
+    }
+  });
+
   it('reuses the priorRun prefetch instead of re-reading for the diff window', async () => {
     // Prefetch returns this run; diff-window query returns the SAME run.
     const priorRunId = 'prior-abc';
@@ -357,6 +412,44 @@ describe('runRefresh — orchestrator', () => {
     expect(readSnapshotAccounts).toHaveBeenCalledTimes(1);
     expect(readSnapshotOpportunities).toHaveBeenCalledTimes(1);
     expect(readSnapshotAccounts).toHaveBeenCalledWith(priorRunId);
+  });
+});
+
+describe('mergeCerebroRisks', () => {
+  const withUtilizationTrue = {
+    utilizationRisk: true as const,
+    engagementRisk: null,
+    suiteRisk: null,
+    shareRisk: null,
+    legacyTechRisk: null,
+    expertiseRisk: null,
+    pricingRisk: null,
+  };
+
+  it('preserves existing true flags when the patch omits signals (null)', () => {
+    const sparse = {
+      utilizationRisk: null,
+      engagementRisk: true as const,
+      suiteRisk: null,
+      shareRisk: null,
+      legacyTechRisk: null,
+      expertiseRisk: null,
+      pricingRisk: null,
+    };
+    expect(mergeCerebroRisks(withUtilizationTrue, sparse)).toEqual({
+      utilizationRisk: true,
+      engagementRisk: true,
+      suiteRisk: null,
+      shareRisk: null,
+      legacyTechRisk: null,
+      expertiseRisk: null,
+      pricingRisk: null,
+    });
+  });
+
+  it('allows explicit false to override a prior true', () => {
+    const cleared = { ...withUtilizationTrue, utilizationRisk: false as const };
+    expect(mergeCerebroRisks(withUtilizationTrue, cleared).utilizationRisk).toBe(false);
   });
 });
 
