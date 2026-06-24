@@ -1,5 +1,6 @@
 import type { CTAEngineConfig } from './config.js';
 import type { CTARecord, CTALogEntry } from './types.js';
+import { isCtaOpen, resolveRenewalOpportunityId } from './progress.js';
 import { dedupKey, isWithinDedupWindow } from './suppress.js';
 
 export interface DedupDecision {
@@ -17,15 +18,22 @@ export function decideDedup(
   config: CTAEngineConfig,
   now: number = Date.now(),
 ): DedupDecision {
-  const key = cta.dedup_key ?? dedupKey(cta.salesforce_account_id, cta.play_type);
+  const key =
+    cta.dedup_key ??
+    dedupKey(cta.salesforce_account_id, cta.play_type, cta.renewal_opportunity_id);
 
   // Find most recent open entry with same dedup key
   let latest: CTALogEntry | undefined;
   for (const entry of existingLog.values()) {
     const entryKey =
-      entry.dedup_key ?? dedupKey(entry.salesforce_account_id, entry.play_type);
+      entry.dedup_key ??
+      dedupKey(
+        entry.salesforce_account_id,
+        entry.play_type,
+        resolveRenewalOpportunityId(entry),
+      );
     if (entryKey !== key) continue;
-    if (entry.status !== 'open') continue;
+    if (!isCtaOpen(entry.status)) continue;
     if (!latest || entry.posted_at > latest.posted_at) latest = entry;
   }
 
@@ -55,6 +63,7 @@ export function mergeCTAUpdate(
   fresh: CTARecord,
   scanDate: string,
 ): CTALogEntry {
+  const now = new Date().toISOString();
   return {
     ...existing,
     ...fresh,
@@ -62,6 +71,12 @@ export function mergeCTAUpdate(
     posted_at: existing.posted_at,
     posted_to_channel: existing.posted_to_channel,
     status: existing.status,
+    assigned_owner: existing.assigned_owner ?? null,
+    due_date: existing.due_date ?? fresh.deadline ?? null,
+    progress_note: existing.progress_note ?? null,
+    created_at: existing.created_at ?? existing.posted_at,
+    updated_at: now,
+    completed_at: existing.completed_at ?? null,
     last_checked_at: `${scanDate}T${new Date().toISOString().slice(11)}`,
     escalation_message_id: existing.escalation_message_id,
   };

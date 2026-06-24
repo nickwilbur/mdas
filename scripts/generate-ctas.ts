@@ -31,6 +31,8 @@ import {
   generateCTAsForViews,
   filterExpand3Views,
   mergeConfig,
+  carryForwardCtaProgress,
+  indexCtaLogByDedupKey,
   type CTARecord,
   type CTALogEntry,
 } from '@mdas/cta-engine';
@@ -85,6 +87,7 @@ function readExistingLog(): Map<string, CTALogEntry> {
 }
 
 function toLogEntry(cta: CTARecord, scanDate: string): CTALogEntry {
+  const now = new Date().toISOString();
   return {
     ...cta,
     posted_at: `${scanDate}T${new Date().toISOString().slice(11)}`,
@@ -92,6 +95,13 @@ function toLogEntry(cta: CTARecord, scanDate: string): CTALogEntry {
     status: 'open',
     last_checked_at: null,
     escalation_message_id: null,
+    due_date: cta.deadline ?? null,
+    progress_note: null,
+    created_at: now,
+    updated_at: now,
+    completed_at: null,
+    closed_at: null,
+    assigned_owner: null,
   };
 }
 
@@ -100,13 +110,23 @@ function appendToLog(cta: CTARecord, scanDate: string): void {
 }
 
 /** Full-scan refresh: archive prior log and write only the current scan's CTAs. */
-function replaceLog(ctas: CTARecord[], scanDate: string): void {
+function replaceLog(
+  ctas: CTARecord[],
+  scanDate: string,
+  priorLog: Map<string, CTALogEntry> = new Map(),
+): void {
   const logPath = logFilePath();
   if (existsSync(logPath)) {
     const archivePath = join(PROJECT_ROOT, `expand3_cta_log.archive.${scanDate}.jsonl`);
     renameSync(logPath, archivePath);
   }
-  const body = ctas.map((cta) => JSON.stringify(toLogEntry(cta, scanDate))).join('\n');
+  const priorByDedup = indexCtaLogByDedupKey(priorLog.values());
+  const body = ctas
+    .map((cta) => {
+      const entry = toLogEntry(cta, scanDate);
+      return JSON.stringify(carryForwardCtaProgress(entry, priorByDedup));
+    })
+    .join('\n');
   writeFileSync(logPath, body ? body + '\n' : '', 'utf-8');
 }
 
@@ -363,7 +383,8 @@ export async function runScan(options: {
   const scanDate = new Date().toISOString().slice(0, 10);
   const isFullScan = !options.accountFilter;
   const refresh = options.refresh ?? isFullScan;
-  const existingLog = refresh ? new Map<string, CTALogEntry>() : readExistingLog();
+  const priorLog = readExistingLog();
+  const existingLog = refresh ? new Map<string, CTALogEntry>() : priorLog;
 
   emitProgress('init', 0, 3, 'Starting CTA scan');
 
@@ -399,7 +420,7 @@ export async function runScan(options: {
 
     if (refresh && isFullScan) {
       prunedScans = pruneOldScanFiles(scanDate);
-      replaceLog(ctas, scanDate);
+      replaceLog(ctas, scanDate, priorLog);
     } else {
       for (const cta of ctas) {
         if (!existingLog.has(cta.cta_id)) {

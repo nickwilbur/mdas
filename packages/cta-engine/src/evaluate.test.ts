@@ -92,6 +92,7 @@ describe('evaluateAccount Green sentiment', () => {
     const result = evaluateAccount(view, { now, scanDate: '2026-06-16' });
     expect(result.suppressed).toBe(false);
     expect(result.cta?.play_type).toBe('no_strategic_engagement');
+    expect(result.cta?.renewal_opportunity_id).toBe('opp-1');
   });
 
   it('suppresses data_quality_gap when Green account has no other risk signals', () => {

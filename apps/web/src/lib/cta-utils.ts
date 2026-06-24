@@ -16,6 +16,7 @@ export interface RichCTA {
   primary_owner: { name: string; slack_handle?: string; role: string } | string;
   cc_owners?: { name: string; slack_handle?: string; role: string }[];
   destination_slack_channel?: string | null;
+  renewal_opportunity_id?: string | null;
   renewal_opportunity_url?: string | null;
   drivers?: string[];
   requested_action?: string;

@@ -118,12 +118,40 @@ CTAs are generated from this book (optional intersection with the SFDC Expand 3 
 
 ## Deduplication & lifecycle
 
-- **Dedup key:** `{salesforceAccountId}:{play_type}`
+- **Dedup key:** `{renewalOpportunityId}:{play_type}` when a renewal opportunity is linked; otherwise `{salesforceAccountId}:{play_type}`
 - **Window:** 14 days — skip if open CTA exists with same key and unchanged signals
 - **Update:** refresh drivers/priority if signal worsens within window
 - **Cap:** max 50 CTAs per scan (by `priority_score`)
 - **Full scan refresh:** `npm run cta:generate` archives the prior JSONL to `expand3_cta_log.archive.<date>.jsonl`, replaces the log with the new scan only, and deletes older `expand3_cta_scan_*.md` files. The `/ctas` page reads the latest scan file only.
 - **Single-account runs:** `--account` appends without clearing prior CTAs
+
+## Renewal opportunity association & progress tracking
+
+Each Expand 3 CTA is linked to exactly one **renewal opportunity** via `renewal_opportunity_id` (set at generation from `nextFutureRenewalOpp()`). The account relationship is derived from that opportunity in the renewal pipeline — not stored as a separate source of truth.
+
+Progress fields on `expand3_cta_log.jsonl` entries:
+
+| Field | Purpose |
+|-------|---------|
+| `status` | `open`, `in_progress`, `blocked`, `done` (legacy `closed_done` → `done`, `stalled` → `blocked`) |
+| `assigned_owner` | Optional override of generated `primary_owner` |
+| `due_date` | Action due date (defaults to `deadline` at creation) |
+| `progress_note` | Latest progress update |
+| `created_at` / `updated_at` / `completed_at` | Timestamps |
+
+**API:** `PATCH /api/ctas/[ctaId]/progress` — update status, owner, due date, or note.
+
+**UI surfaces:**
+- `/ctas` — full board with progress controls; deep-link via `?cta=<cta_id>`
+- `/renewal-analysis` pipeline table — **CTA** column shows open play status per opportunity
+
+**Backfill legacy logs:**
+
+```bash
+npx tsx scripts/backfill-cta-opportunity-ids.ts
+```
+
+Parses `renewal_opportunity_id` from `renewal_opportunity_url` and rewrites opportunity-scoped `dedup_key` values.
 
 ## Adding a new CTA type
 

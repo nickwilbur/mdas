@@ -7,7 +7,7 @@ import { FiscalQuarterFilter } from '@/components/FiscalQuarterFilter';
 import { OverallAssessmentCell } from '@/components/OverallAssessmentCell';
 import { EngagementDaysCell } from '@/components/EngagementDaysCell';
 import { LabelWithHint, MetricHint } from '@/components/MetricHint';
-import { RenewalPipelineTable } from '@/components/RenewalPipelineTable';
+import { RenewalPipelineTable, type RenewalOppRowWithCta } from '@/components/RenewalPipelineTable';
 import { useLocalStorage } from '@/components/useLocalStorage';
 import {
   Card,
@@ -37,7 +37,10 @@ import {
   isClosedRenewalOutcome,
   isOpenRenewalOppRow,
   overallAssessmentSortRank,
-  prospectivePipelineStatus,
+  PIPELINE_STATUS_LABELS,
+  PIPELINE_STATUS_ORDER,
+  resolvePipelineStatus,
+  type PipelineStatusKey,
 } from '@mdas/renewal-metrics';
 
 const OUTCOME_LABELS: Record<RenewalOutcome, string> = {
@@ -86,6 +89,19 @@ const OVERALL_ASSESSMENT_LABELS: Record<string, string> = {
 };
 
 const OVERALL_ASSESSMENT_ORDER = ['Critical', 'High', 'Medium', 'Low', OVERALL_ASSESSMENT_NONE];
+
+const PIPELINE_STATUS_COLORS: Record<PipelineStatusKey, string> = {
+  forecast_full_churn: 'bg-red-600',
+  forecast_downsell: 'bg-amber-500',
+  forecast_expansion: 'bg-violet-500',
+  open: 'bg-blue-400',
+  pushed: 'bg-orange-400',
+  known_churn: 'bg-red-900',
+  full_churn: 'bg-red-700',
+  downsell: 'bg-amber-600',
+  flat: 'bg-emerald-500',
+  expanded: 'bg-violet-600',
+};
 
 type DrilldownView = 'atr' | 'renewal-date' | 'health';
 
@@ -308,6 +324,90 @@ function OverallAssessmentBreakdown({
   );
 }
 
+function PipelineStatusBreakdown({
+  counts,
+  activeFilters,
+  activeKnownChurn,
+  onStatusClick,
+}: {
+  counts: { key: PipelineStatusKey; count: number }[];
+  activeFilters: Set<PipelineStatusKey>;
+  activeKnownChurn: boolean;
+  onStatusClick: (key: PipelineStatusKey) => void;
+}) {
+  const total = counts.reduce((s, { count }) => s + count, 0) || 1;
+
+  if (counts.length === 0) {
+    return (
+      <p className="text-sm text-gray-500">
+        No renewal opportunities in scope. Adjust the fiscal quarter filter.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex h-6 w-full overflow-hidden rounded text-[10px] font-medium text-white">
+        {counts.map(({ key, count }) => {
+          const share = (count / total) * 100;
+          const label = PIPELINE_STATUS_LABELS[key];
+          return (
+            <button
+              key={key}
+              type="button"
+              className={`${PIPELINE_STATUS_COLORS[key]} flex items-center justify-center overflow-hidden px-0.5 transition-opacity ${
+                (activeFilters.size > 0 && !activeFilters.has(key) && !(key === 'known_churn' && activeKnownChurn)) ||
+                (activeKnownChurn && key !== 'known_churn' && activeFilters.size === 0)
+                  ? 'opacity-40'
+                  : 'opacity-100'
+              } ${activeFilters.has(key) || (key === 'known_churn' && activeKnownChurn) ? 'ring-2 ring-inset ring-gray-900/30' : ''}`}
+              style={{ width: `${share}%` }}
+              title={`${label}: ${count} (${pct(count / total, 0)})`}
+              onClick={() => onStatusClick(key)}
+            >
+              {share >= 14 ? (
+                <span className="truncate">
+                  {label} {pct(count / total, 0)}
+                </span>
+              ) : share >= 8 ? (
+                <span>{pct(count / total, 0)}</span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+      <ul className="grid grid-cols-2 gap-2 text-sm md:grid-cols-3">
+        {counts.map(({ key, count }) => {
+          const label = PIPELINE_STATUS_LABELS[key];
+          const active = activeFilters.has(key) || (key === 'known_churn' && activeKnownChurn);
+          return (
+            <li key={key}>
+              <button
+                type="button"
+                className={`flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors ${
+                  active ? 'bg-gray-100 ring-1 ring-gray-300' : 'hover:bg-gray-50'
+                } ${
+                  (activeFilters.size > 0 && !activeFilters.has(key) && !(key === 'known_churn' && activeKnownChurn)) ||
+                  (activeKnownChurn && key !== 'known_churn' && activeFilters.size === 0)
+                    ? 'opacity-50'
+                    : ''
+                }`}
+                onClick={() => onStatusClick(key)}
+              >
+                <span className={`inline-block h-2.5 w-2.5 rounded ${PIPELINE_STATUS_COLORS[key]}`} />
+                <span>{label}</span>
+                <span className="ml-auto tabular-nums text-gray-600">
+                  {count} ({pct(count / total, 0)})
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function OutcomeBreakdown({
   counts,
   retrospectiveOnly = true,
@@ -410,7 +510,7 @@ function ReasonTable({
 export interface RenewalAnalysisClientProps {
   metrics: RenewalMetricsSummary;
   accounts: RenewalAccountRow[];
-  oppRows: RenewalOppRow[];
+  oppRows: RenewalOppRowWithCta[];
   knownChurnRows: KnownChurnOppRow[];
   quarterLabel: string;
   initialView: 'pipeline' | 'quarter-close';
@@ -453,6 +553,7 @@ export function RenewalAnalysisClient({
   );
   const [cseFilter, setCseFilter] = useState<Set<string>>(new Set());
   const [overallAssessmentFilter, setOverallAssessmentFilter] = useState<Set<string>>(new Set());
+  const [pipelineStatusFilter, setPipelineStatusFilter] = useState<Set<PipelineStatusKey>>(new Set());
   const [drilldownView, setDrilldownView] = useState<DrilldownView>('atr');
   const [sort, setSort] = useLocalStorage(
     RENEWAL_WORKBENCH_SORT_KEY,
@@ -469,6 +570,7 @@ export function RenewalAnalysisClient({
     setKpiFilter('all');
     setOutcomeFilter(new Set());
     setOverallAssessmentFilter(new Set());
+    setPipelineStatusFilter(new Set());
     const bucket: FiscalQuarterBucket =
       next === 'quarter-close' ? 'retrospective' : 'prospective';
     const params = new URLSearchParams(searchParams.toString());
@@ -568,6 +670,10 @@ export function RenewalAnalysisClient({
       );
     }
 
+    if (pipelineStatusFilter.size > 0) {
+      rows = rows.filter((o) => pipelineStatusFilter.has(resolvePipelineStatus(o).key));
+    }
+
     const dir = sortDirection === 'asc' ? 1 : -1;
     return [...rows].sort((a, b) => {
       const cmp = (x: number | string | null, y: number | string | null) => {
@@ -611,7 +717,7 @@ export function RenewalAnalysisClient({
           return cmp(a.atrUSD, b.atrUSD);
       }
     });
-  }, [pipelineOpps, kpiFilter, cseFilter, overallAssessmentFilter, sortField, sortDirection, atRiskOpps, upcoming30Opps]);
+  }, [pipelineOpps, kpiFilter, cseFilter, overallAssessmentFilter, pipelineStatusFilter, sortField, sortDirection, atRiskOpps, upcoming30Opps]);
 
   const pipelineAccounts = useMemo(
     () => accounts.filter((a) => !isClosedRenewalOutcome(a.outcome)),
@@ -629,11 +735,41 @@ export function RenewalAnalysisClient({
     );
   }, [pipelineOpps]);
 
+  const pipelineStatusCounts = useMemo(() => {
+    const map = new Map<PipelineStatusKey, number>();
+    for (const opp of pipelineOpps) {
+      const { key } = resolvePipelineStatus(opp);
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    if (knownChurnRows.length > 0) {
+      map.set('known_churn', knownChurnRows.length);
+    }
+    return PIPELINE_STATUS_ORDER.filter((key) => (map.get(key) ?? 0) > 0).map((key) => ({
+      key,
+      count: map.get(key)!,
+    }));
+  }, [pipelineOpps, knownChurnRows]);
+
   const toggleOverallAssessmentCategory = (category: string) => {
     setOverallAssessmentFilter((prev) => {
       const next = new Set(prev);
       if (next.has(category)) next.delete(category);
       else next.add(category);
+      return next;
+    });
+  };
+
+  const togglePipelineStatus = (key: PipelineStatusKey) => {
+    if (key === 'known_churn') {
+      setKpiFilter((prev) => (prev === 'known_churn' ? 'all' : 'known_churn'));
+      setPipelineStatusFilter(new Set());
+      return;
+    }
+    setKpiFilter('all');
+    setPipelineStatusFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
@@ -817,30 +953,47 @@ export function RenewalAnalysisClient({
       ) : null}
 
       {isPipeline && oppRows.length > 0 ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center text-sm font-semibold text-gray-900">
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center text-sm font-semibold text-gray-900">
+                <LabelWithHint
+                  label="Pipeline status"
+                  hint={RENEWAL_METRIC_HINTS.pipelineStatusBreakdown}
+                />
+              </div>
+              <ShowClosedRenewalsToggle
+                checked={showClosedRenewals}
+                onChange={setShowClosedRenewals}
+              />
+            </div>
+            <p className="mb-3 text-xs text-gray-500">{overallAssessmentScopeLabel}</p>
+            <PipelineStatusBreakdown
+              counts={pipelineStatusCounts}
+              activeFilters={pipelineStatusFilter}
+              activeKnownChurn={kpiFilter === 'known_churn'}
+              onStatusClick={togglePipelineStatus}
+            />
+          </div>
+          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+            <div className="mb-3 flex items-center text-sm font-semibold text-gray-900">
               <LabelWithHint
                 label="Overall Assessment"
                 hint={RENEWAL_METRIC_HINTS.overallAssessmentBreakdown}
               />
             </div>
-            <ShowClosedRenewalsToggle
-              checked={showClosedRenewals}
-              onChange={setShowClosedRenewals}
+            <p className="mb-3 text-xs text-gray-500">
+              {overallAssessmentScopeLabel}
+              {notSyncedAssessmentCount > 0
+                ? ` · ${notSyncedAssessmentCount} awaiting Cerebro sync`
+                : ''}
+            </p>
+            <OverallAssessmentBreakdown
+              counts={overallAssessmentCounts}
+              activeFilters={overallAssessmentFilter}
+              onCategoryClick={toggleOverallAssessmentCategory}
             />
           </div>
-          <p className="mb-3 text-xs text-gray-500">
-            {overallAssessmentScopeLabel}
-            {notSyncedAssessmentCount > 0
-              ? ` · ${notSyncedAssessmentCount} awaiting Cerebro sync`
-              : ''}
-          </p>
-          <OverallAssessmentBreakdown
-            counts={overallAssessmentCounts}
-            activeFilters={overallAssessmentFilter}
-            onCategoryClick={toggleOverallAssessmentCategory}
-          />
         </div>
       ) : null}
 
@@ -1204,11 +1357,20 @@ export function RenewalAnalysisClient({
                     <td className="px-2 py-2 tabular-nums">{a.renewalDate ?? '—'}</td>
                     <td className="px-2 py-2">
                       {isPipeline ? (
-                        <span
-                          className={`rounded px-2 py-0.5 text-xs ${a.outcome === 'pushed' ? 'bg-orange-100 text-orange-800' : 'bg-blue-50 text-blue-800'}`}
-                        >
-                          {prospectivePipelineStatus(a.outcome)}
-                        </span>
+                        (() => {
+                          const status = resolvePipelineStatus(a);
+                          const tone =
+                            status.key === 'forecast_full_churn' || status.key === 'full_churn'
+                              ? 'bg-red-100 text-red-800'
+                              : status.key === 'forecast_downsell' || status.key === 'downsell'
+                                ? 'bg-amber-100 text-amber-800'
+                                : status.key === 'pushed'
+                                  ? 'bg-orange-100 text-orange-800'
+                                  : 'bg-blue-50 text-blue-800';
+                          return (
+                            <span className={`rounded px-2 py-0.5 text-xs ${tone}`}>{status.label}</span>
+                          );
+                        })()
                       ) : (
                         <button
                           type="button"

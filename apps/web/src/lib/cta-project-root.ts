@@ -13,5 +13,8 @@ export function ctaProjectRoot(): string {
 }
 
 export function ctaLogPath(): string {
+  if (process.env.MDAS_CTA_LOG_PATH) {
+    return process.env.MDAS_CTA_LOG_PATH;
+  }
   return resolve(ctaProjectRoot(), 'expand3_cta_log.jsonl');
 }

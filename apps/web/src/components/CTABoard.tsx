@@ -11,6 +11,12 @@ import {
 import { correctCseOwner, resolveMentionTarget } from '@/lib/cta-utils';
 import { SentimentBadge } from '@/components/ui';
 import type { CSESentiment } from '@mdas/canonical';
+import {
+  CTA_PROGRESS_STATUSES,
+  CTA_PROGRESS_STATUS_LABELS,
+  isCtaOpen,
+  type CTAProgressStatus,
+} from '@mdas/cta-engine';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -51,6 +57,15 @@ export interface CTAEntry {
   last_checked_at: string | null;
   escalation_message_id: string | null;
   renewal_opportunity_url?: string | null;
+  renewal_opportunity_id?: string | null;
+  renewal_opportunity_name?: string | null;
+  assigned_owner?: CTAOwner | string | null;
+  due_date?: string | null;
+  progress_note?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+  owner_display?: string;
   slack_message?: string;
   data_gaps?: string[];
   ae?: CTAOwner | null;
@@ -63,10 +78,7 @@ export interface CTAEntry {
   situation_read?: string | null;
   point_of_view?: string | null;
   atr_at_risk_usd?: number | null;
-  renewal_opportunity_name?: string | null;
 }
-
-// ── Helpers ────────────────────────────────────────────────────────────────
 
 const PLAY_TYPE_LABELS: Record<string, string> = {
   surprise_churn_watch: 'Surprise Churn Watch',
@@ -285,16 +297,28 @@ function CTACard({
   accountContext,
   onMarkDone,
   onReopen,
+  onProgressUpdate,
   statusBusy,
+  focused = false,
 }: {
   cta: CTAEntry;
   slackMessage: string;
   accountContext: CTAAccountHoverContext | null;
   onMarkDone?: () => void;
   onReopen?: () => void;
+  onProgressUpdate?: (patch: {
+    status?: CTAProgressStatus;
+    assigned_owner?: string | null;
+    progress_note?: string | null;
+  }) => void;
   statusBusy?: boolean;
+  focused?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(focused);
+  const [noteDraft, setNoteDraft] = useState(cta.progress_note ?? '');
+  const [ownerDraft, setOwnerDraft] = useState(
+    cta.owner_display ?? ownerName(cta.primary_owner),
+  );
   const playLabel = PLAY_TYPE_LABELS[cta.play_type] ?? cta.play_type;
   const playColor = PLAY_TYPE_COLORS[cta.play_type] ?? 'bg-gray-100 text-gray-800 ring-gray-300';
   const riskEmoji =
@@ -315,7 +339,14 @@ function CTACard({
     : null;
 
   return (
-    <div className={clsx('rounded-lg border border-gray-200 border-l-4 bg-white shadow-sm', borderColor)}>
+    <div
+      id={`cta-card-${cta.cta_id}`}
+      className={clsx(
+        'rounded-lg border border-gray-200 border-l-4 bg-white shadow-sm',
+        borderColor,
+        focused && 'ring-2 ring-blue-400 ring-offset-1',
+      )}
+    >
       {/* Compact header row */}
       <div className="flex items-center justify-between gap-3 px-4 py-2.5">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
@@ -422,7 +453,7 @@ function CTACard({
             </a>
           </>
         ) : null}
-        {cta.status === 'open' && onMarkDone && (
+        {isCtaOpen(cta.status) && onMarkDone && (
           <>
             <span className="text-gray-300">|</span>
             <button
@@ -436,7 +467,7 @@ function CTACard({
             </button>
           </>
         )}
-        {cta.status === 'closed_done' && onReopen && (
+        {!isCtaOpen(cta.status) && onReopen && (
           <>
             <span className="text-gray-300">|</span>
             <button
@@ -453,20 +484,90 @@ function CTACard({
         <span
           className={clsx(
             'ml-auto rounded px-1.5 py-0.5 text-[10px] uppercase font-medium',
-            cta.status === 'open'
-              ? 'bg-blue-50 text-blue-700'
-              : cta.status === 'closed_done'
-                ? 'bg-green-50 text-green-700'
-                : 'bg-gray-100 text-gray-600',
+            cta.status === 'done'
+              ? 'bg-green-50 text-green-700'
+              : cta.status === 'blocked'
+                ? 'bg-red-50 text-red-700'
+                : cta.status === 'in_progress'
+                  ? 'bg-amber-50 text-amber-800'
+                  : 'bg-blue-50 text-blue-700',
           )}
         >
-          {cta.status.replace('_', ' ')}
+          {CTA_PROGRESS_STATUS_LABELS[cta.status as CTAProgressStatus] ?? cta.status}
         </span>
       </div>
 
       {/* Expanded Details */}
       {expanded && (
         <div className="space-y-3 border-t border-gray-100 px-4 py-3 text-xs">
+          {/* Progress tracking */}
+          {onProgressUpdate && (
+            <div className="rounded border border-gray-200 bg-gray-50 p-2.5 space-y-2">
+              <p className="font-medium uppercase tracking-wide text-gray-500">Progress</p>
+              <div className="flex flex-wrap gap-3">
+                <label className="flex flex-col gap-1 text-gray-600">
+                  <span className="text-[10px] font-medium uppercase">Status</span>
+                  <select
+                    value={cta.status}
+                    disabled={statusBusy}
+                    onChange={(e) =>
+                      onProgressUpdate({ status: e.target.value as CTAProgressStatus })
+                    }
+                    className="rounded border border-gray-300 bg-white px-2 py-1 text-xs"
+                  >
+                    {CTA_PROGRESS_STATUSES.map((s) => (
+                      <option key={s} value={s}>
+                        {CTA_PROGRESS_STATUS_LABELS[s]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex min-w-[10rem] flex-1 flex-col gap-1 text-gray-600">
+                  <span className="text-[10px] font-medium uppercase">Owner</span>
+                  <input
+                    type="text"
+                    value={ownerDraft}
+                    disabled={statusBusy}
+                    onChange={(e) => setOwnerDraft(e.target.value)}
+                    onBlur={() => {
+                      const trimmed = ownerDraft.trim();
+                      if (trimmed && trimmed !== (cta.owner_display ?? ownerName(cta.primary_owner))) {
+                        onProgressUpdate({ assigned_owner: trimmed });
+                      }
+                    }}
+                    className="rounded border border-gray-300 bg-white px-2 py-1 text-xs"
+                  />
+                </label>
+              </div>
+              <label className="flex flex-col gap-1 text-gray-600">
+                <span className="text-[10px] font-medium uppercase">Latest update</span>
+                <textarea
+                  value={noteDraft}
+                  disabled={statusBusy}
+                  onChange={(e) => setNoteDraft(e.target.value)}
+                  onBlur={() => {
+                    if (noteDraft !== (cta.progress_note ?? '')) {
+                      onProgressUpdate({ progress_note: noteDraft });
+                    }
+                  }}
+                  rows={2}
+                  placeholder="Add a progress note…"
+                  className="rounded border border-gray-300 bg-white px-2 py-1 text-xs"
+                />
+              </label>
+              {cta.renewal_opportunity_name && (
+                <p className="text-gray-500">
+                  <span className="font-medium">Renewal opp:</span> {cta.renewal_opportunity_name}
+                </p>
+              )}
+              {cta.updated_at && (
+                <p className="text-[10px] text-gray-400">
+                  Updated {cta.updated_at.slice(0, 16).replace('T', ' ')}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* v2 Reasoning Audit — Situation Read + POV (private, not posted) */}
           {(cta.situation_read || cta.point_of_view) && (
             <div className="rounded bg-blue-50 p-2.5">
@@ -585,39 +686,87 @@ interface CTABoardProps {
   ctas: CTAEntry[];
   slackMessages: Record<string, string>;
   accountContexts?: Record<string, CTAAccountHoverContext>;
+  focusCtaId?: string | null;
 }
 
 type RiskFilter = 'all' | '🔴' | '🟡' | '🟢';
 type BoardView = 'open' | 'done';
 
-export function CTABoard({ ctas: initialCtas, slackMessages, accountContexts = {} }: CTABoardProps) {
+export function CTABoard({
+  ctas: initialCtas,
+  slackMessages,
+  accountContexts = {},
+  focusCtaId = null,
+}: CTABoardProps) {
+  const focusTarget = focusCtaId
+    ? initialCtas.find((c) => c.cta_id === focusCtaId)
+    : null;
   const [ctas, setCtas] = useState(initialCtas);
-  const [boardView, setBoardView] = useState<BoardView>('open');
+  const [boardView, setBoardView] = useState<BoardView>(
+    focusTarget && !isCtaOpen(focusTarget.status) ? 'done' : 'open',
+  );
   const [riskFilter, setRiskFilter] = useState<RiskFilter>('all');
   const [ownerFilter, setOwnerFilter] = useState<string>('all');
   const [showFilters, setShowFilters] = useState(false);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
 
-  const updateCtaStatus = useCallback(async (ctaId: string, status: 'open' | 'closed_done') => {
-    setStatusBusyId(ctaId);
-    try {
-      const res = await fetch(`/api/ctas/${encodeURIComponent(ctaId)}/status`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
-      });
-      if (!res.ok) return;
-      setCtas((prev) =>
-        prev.map((c) =>
-          c.cta_id === ctaId
-            ? { ...c, status, last_checked_at: new Date().toISOString() }
-            : c,
-        ),
-      );
-    } finally {
-      setStatusBusyId(null);
-    }
-  }, []);
+  const updateCtaProgress = useCallback(
+    async (
+      ctaId: string,
+      patch: {
+        status?: CTAProgressStatus;
+        assigned_owner?: string | null;
+        progress_note?: string | null;
+      },
+    ) => {
+      setStatusBusyId(ctaId);
+      try {
+        const res = await fetch(`/api/ctas/${encodeURIComponent(ctaId)}/progress`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch),
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { entry: Record<string, unknown> };
+        setCtas((prev) =>
+          prev.map((c) =>
+            c.cta_id === ctaId
+              ? {
+                  ...c,
+                  status: (data.entry.status as string) ?? c.status,
+                  assigned_owner:
+                    (data.entry.assigned_owner as CTAEntry['assigned_owner']) ??
+                    c.assigned_owner,
+                  progress_note:
+                    (data.entry.progress_note as string | null) ?? c.progress_note,
+                  owner_display:
+                    typeof data.entry.assigned_owner === 'string'
+                      ? data.entry.assigned_owner
+                      : c.owner_display,
+                  updated_at: (data.entry.updated_at as string) ?? new Date().toISOString(),
+                  completed_at: (data.entry.completed_at as string | null) ?? c.completed_at,
+                  last_checked_at:
+                    (data.entry.last_checked_at as string) ?? new Date().toISOString(),
+                }
+              : c,
+          ),
+        );
+      } finally {
+        setStatusBusyId(null);
+      }
+    },
+    [],
+  );
+
+  const markDone = useCallback(
+    (ctaId: string) => updateCtaProgress(ctaId, { status: 'done' }),
+    [updateCtaProgress],
+  );
+
+  const reopen = useCallback(
+    (ctaId: string) => updateCtaProgress(ctaId, { status: 'open' }),
+    [updateCtaProgress],
+  );
 
   const owners = Array.from(new Set(ctas.map((c) => ownerName(c.primary_owner)))).sort();
 
@@ -625,20 +774,29 @@ export function CTABoard({ ctas: initialCtas, slackMessages, accountContexts = {
   const isYellow = (c: CTAEntry) => c.risk_color === '🟡' || c.risk_color === 'Yellow';
 
   const filtered = ctas.filter((c) => {
-    if (boardView === 'open' && c.status === 'closed_done') return false;
-    if (boardView === 'done' && c.status !== 'closed_done') return false;
+    const open = isCtaOpen(c.status);
+    if (boardView === 'open' && !open) return false;
+    if (boardView === 'done' && open) return false;
     if (riskFilter === '🔴' && !isRed(c)) return false;
     if (riskFilter === '🟡' && !isYellow(c)) return false;
     if (ownerFilter !== 'all' && ownerName(c.primary_owner) !== ownerFilter) return false;
     return true;
   });
 
-  const redCount = ctas.filter((c) => c.status !== 'closed_done' && isRed(c)).length;
-  const yellowCount = ctas.filter((c) => c.status !== 'closed_done' && isYellow(c)).length;
-  const openCount = ctas.filter((c) => c.status !== 'closed_done').length;
-  const doneCount = ctas.filter((c) => c.status === 'closed_done').length;
+  useEffect(() => {
+    if (!focusCtaId) return;
+    const el = document.getElementById(`cta-card-${focusCtaId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [focusCtaId, boardView, filtered.length]);
+
+  const redCount = ctas.filter((c) => isCtaOpen(c.status) && isRed(c)).length;
+  const yellowCount = ctas.filter((c) => isCtaOpen(c.status) && isYellow(c)).length;
+  const openCount = ctas.filter((c) => isCtaOpen(c.status)).length;
+  const doneCount = ctas.filter((c) => !isCtaOpen(c.status)).length;
   const overdueCount = ctas.filter(
-    (c) => c.status !== 'closed_done' && daysUntil(c.deadline) < 0,
+    (c) => isCtaOpen(c.status) && daysUntil(c.deadline) < 0,
   ).length;
 
   const copyAll = useCallback(async () => {
@@ -800,15 +958,17 @@ export function CTABoard({ ctas: initialCtas, slackMessages, accountContexts = {
               slackMessage={slackMessages[cta.cta_id] ?? ''}
               accountContext={lookupAccountHoverContext(accountContexts, cta)}
               onMarkDone={
-                boardView === 'open'
-                  ? () => updateCtaStatus(cta.cta_id, 'closed_done')
+                boardView === 'open' && isCtaOpen(cta.status)
+                  ? () => markDone(cta.cta_id)
                   : undefined
               }
               onReopen={
-                boardView === 'done'
-                  ? () => updateCtaStatus(cta.cta_id, 'open')
+                boardView === 'done' && !isCtaOpen(cta.status)
+                  ? () => reopen(cta.cta_id)
                   : undefined
               }
+              onProgressUpdate={(patch) => updateCtaProgress(cta.cta_id, patch)}
+              focused={focusCtaId === cta.cta_id}
               statusBusy={statusBusyId === cta.cta_id}
             />
           ))

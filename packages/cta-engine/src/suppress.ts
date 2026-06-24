@@ -79,7 +79,14 @@ export function shouldSuppress(
   return { suppressed: false };
 }
 
-export function dedupKey(salesforceAccountId: string | null, playType: string): string {
+export function dedupKey(
+  salesforceAccountId: string | null,
+  playType: string,
+  renewalOpportunityId?: string | null,
+): string {
+  if (renewalOpportunityId) {
+    return `${renewalOpportunityId}:${playType}`;
+  }
   return `${salesforceAccountId ?? 'unknown'}:${playType}`;
 }
 

@@ -18,29 +18,24 @@ import {
   type PipelineColumnId,
   type PipelineColumnLayout,
 } from '@/lib/renewal-pipeline-columns';
-import type { RenewalOppRow, RenewalOutcome } from '@mdas/renewal-metrics';
-import { isOpenRenewalOppRow, prospectivePipelineStatus } from '@mdas/renewal-metrics';
+import type { RenewalWorkbenchSortField } from '@/lib/renewal-workbench-sort';
+import type { RenewalOppRow } from '@mdas/renewal-metrics';
+import { resolvePipelineStatus } from '@mdas/renewal-metrics';
+import {
+  CTA_PROGRESS_STATUS_LABELS,
+  type CtaOppSummary,
+} from '@mdas/cta-engine';
 import { fmtUSD } from '@/components/ui';
 
-export type PipelineSortField =
-  | 'account'
-  | 'opportunity'
-  | 'cse'
-  | 'renewalDate'
-  | 'stage'
-  | 'atr'
-  | 'renewed'
-  | 'downsell'
-  | 'overallAssessment'
-  | 'slackUpdate'
-  | 'customerEngagement';
+export type RenewalOppRowWithCta = RenewalOppRow & { cta: CtaOppSummary | null };
 
-const COLUMN_SORT: Partial<Record<PipelineColumnId, PipelineSortField>> = {
+const COLUMN_SORT: Partial<Record<PipelineColumnId, RenewalWorkbenchSortField>> = {
   account: 'account',
   opportunity: 'opportunity',
   cse: 'cse',
   closeDate: 'renewalDate',
   stage: 'stage',
+  cta: 'opportunity',
   atr: 'atr',
   forecast: 'renewed',
   downsell: 'downsell',
@@ -56,6 +51,7 @@ const COLUMN_LABELS: Record<PipelineColumnId, string> = {
   closeDate: 'Close date',
   stage: 'Stage',
   status: 'Status',
+  cta: 'CTA',
   atr: 'ATR',
   forecast: 'Forecast',
   downsell: 'Downsell',
@@ -67,7 +63,8 @@ const COLUMN_LABELS: Record<PipelineColumnId, string> = {
 
 const COLUMN_HINTS: Partial<Record<PipelineColumnId, string>> = {
   status:
-    'Open = renewal not yet closed. Pushed = past close date, still open. Forecast downsell shows when ML is below ATR.',
+    'Open = renewal not yet closed. Full churn = forecast loss equals all ATR. Partial forecast downsell when ML retains some revenue. Pushed = past close date, still open.',
+  cta: 'Open manager CTA linked to this renewal opportunity (Expand 3 churn-risk plays).',
   overallAssessment: RENEWAL_METRIC_HINTS.overallAssessment,
   slackUpdate: RENEWAL_METRIC_HINTS.daysSinceSlackUpdate,
   customerEngagement: RENEWAL_METRIC_HINTS.daysSinceCustomerEngagement,
@@ -83,15 +80,6 @@ const RIGHT_ALIGN: Set<PipelineColumnId> = new Set([
 
 const CENTER_ALIGN: Set<PipelineColumnId> = new Set(['overallAssessment']);
 
-const OUTCOME_LABELS: Record<RenewalOutcome, string> = {
-  flat: 'Renewed flat',
-  downsell: 'Downsell',
-  full_churn: 'Full churn',
-  expanded: 'Expanded',
-  pending: 'Open',
-  pushed: 'Pushed',
-};
-
 function HeaderLabel({ columnId }: { columnId: PipelineColumnId }) {
   const hint = COLUMN_HINTS[columnId];
   return (
@@ -103,10 +91,10 @@ function HeaderLabel({ columnId }: { columnId: PipelineColumnId }) {
 }
 
 export interface RenewalPipelineTableProps {
-  rows: RenewalOppRow[];
-  sortField: PipelineSortField;
+  rows: RenewalOppRowWithCta[];
+  sortField: RenewalWorkbenchSortField;
   sortDirection: SortDirection;
-  onSort: (field: PipelineSortField) => void;
+  onSort: (field: RenewalWorkbenchSortField) => void;
   cseOptions: { value: string; label: string }[];
   cseFilter: Set<string>;
   onCseFilterChange: (selected: Set<string>) => void;
@@ -223,25 +211,45 @@ export function RenewalPipelineTable({
             {row.stageName}
           </span>
         );
-      case 'status':
-        return isOpenRenewalOppRow(row) ? (
-          <span
-            className={`inline-block rounded px-2 py-0.5 text-xs ${
-              row.outcome === 'pushed'
-                ? 'bg-orange-100 text-orange-800'
-                : 'bg-blue-50 text-blue-800'
-            }`}
-          >
-            {prospectivePipelineStatus(row.outcome, {
-              atrUSD: row.atrUSD,
-              renewedRevenueUSD: row.renewedRevenueUSD,
-            })}
-          </span>
-        ) : (
-          <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
-            {OUTCOME_LABELS[row.outcome]}
-          </span>
+      case 'status': {
+        const status = resolvePipelineStatus(row);
+        const tone =
+          status.key === 'forecast_full_churn' || status.key === 'full_churn'
+            ? 'bg-red-100 text-red-800'
+            : status.key === 'forecast_downsell' || status.key === 'downsell'
+              ? 'bg-amber-100 text-amber-800'
+              : status.key === 'forecast_expansion' || status.key === 'expanded'
+                ? 'bg-violet-100 text-violet-800'
+                : status.key === 'pushed'
+                  ? 'bg-orange-100 text-orange-800'
+                  : status.key === 'flat'
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-blue-50 text-blue-800';
+        return (
+          <span className={`inline-block rounded px-2 py-0.5 text-xs ${tone}`}>{status.label}</span>
         );
+      }
+      case 'cta': {
+        const cta = (row as RenewalOppRowWithCta).cta;
+        if (!cta) {
+          return <span className="text-gray-400">—</span>;
+        }
+        const tone =
+          cta.status === 'blocked'
+            ? 'bg-red-100 text-red-800'
+            : cta.status === 'in_progress'
+              ? 'bg-amber-100 text-amber-800'
+              : 'bg-blue-50 text-blue-800';
+        return (
+          <Link
+            href={`/ctas?cta=${encodeURIComponent(cta.ctaId)}`}
+            className={`inline-block rounded px-2 py-0.5 text-xs hover:underline ${tone}`}
+            title={[cta.playType, cta.ownerName, cta.progressNote].filter(Boolean).join(' · ')}
+          >
+            {CTA_PROGRESS_STATUS_LABELS[cta.status]}
+          </Link>
+        );
+      }
       case 'atr':
         return <span className="tabular-nums">{fmtUSD(row.atrUSD)}</span>;
       case 'forecast':
@@ -427,7 +435,7 @@ export function RenewalPipelineTable({
                       startResize(columnId, e.clientX);
                     }}
                     onClick={(e) => e.stopPropagation()}
-                    onDragStart={(e) => e.preventPropagation()}
+                    onDragStart={(e) => e.stopPropagation()}
                   />
                 </th>
               );

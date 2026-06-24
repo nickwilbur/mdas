@@ -43,6 +43,9 @@ export interface CTASourceSignal {
   observedAt?: string;
 }
 
+/** Canonical progress statuses for MDAS CTA tracking. */
+export type CTAProgressStatus = 'open' | 'in_progress' | 'blocked' | 'done';
+
 export interface CTARecord {
   cta_id: string;
   account_name: string;
@@ -52,6 +55,8 @@ export interface CTARecord {
   primary_owner: CTAOwner | string;
   cc_owners?: CTAOwner[];
   destination_slack_channel?: string | null;
+  /** Stable SFDC opportunity id — primary association for this CTA. */
+  renewal_opportunity_id?: string | null;
   renewal_opportunity_url?: string | null;
   drivers?: string[];
   requested_action?: string;
@@ -84,6 +89,16 @@ export interface CTALogEntry extends CTARecord {
   status: string;
   last_checked_at: string | null;
   escalation_message_id: string | null;
+  /** Explicit owner override for progress tracking. */
+  assigned_owner?: CTAOwner | string | null;
+  /** Due date for actioning — defaults to deadline at creation. */
+  due_date?: string | null;
+  /** Latest progress note or update. */
+  progress_note?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+  closed_at?: string | null;
 }
 
 export interface CTAEvaluationResult {

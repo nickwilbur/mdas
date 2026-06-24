@@ -18,6 +18,8 @@ import {
   buildRenewalOppRows,
   asOfDateForQuarter,
 } from '@mdas/renewal-metrics';
+import { attachCtasToRenewalRows } from '@mdas/cta-engine';
+import { loadCTAData } from '@/lib/cta-data';
 import { RenewalAnalysisClient } from './RenewalAnalysisClient';
 
 export const dynamic = 'force-dynamic';
@@ -84,6 +86,8 @@ export default async function RenewalAnalysisPage({
   });
 
   const oppRows = buildRenewalOppRows(allViews, selectedQuarters, quarterKeyFn, metricsAsOf);
+  const { logEntries } = loadCTAData();
+  const oppRowsWithCtas = attachCtasToRenewalRows(oppRows, logEntries);
   const knownChurnRows = buildKnownChurnOppRows(allViews, selectedQuarters, quarterKeyFn);
   const accounts = buildRenewalAccountRows(oppRows, metricsAsOf);
 
@@ -105,7 +109,7 @@ export default async function RenewalAnalysisPage({
       <RenewalAnalysisClient
         metrics={metrics}
         accounts={accounts}
-        oppRows={oppRows}
+        oppRows={oppRowsWithCtas}
         knownChurnRows={knownChurnRows}
         quarterLabel={quarterLabel}
         initialView={analysisView}

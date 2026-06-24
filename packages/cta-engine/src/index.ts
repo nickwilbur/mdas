@@ -16,6 +16,7 @@ import type {
 export type { CTARecord, CTALogEntry, CTAPlayType } from './types.js';
 export { DEFAULT_CTA_CONFIG, mergeConfig } from './config.js';
 export { assessDarkAccount, findSimpleDarkAccounts } from './dark-account.js';
+export type { SimpleDarkAccount } from './dark-account.js';
 export { evaluatePlayCandidates, pickBestPlay } from './rules.js';
 export { buildCTARecord } from './build.js';
 export { decideDedup, capCtas, mergeCTAUpdate } from './dedup.js';
@@ -33,6 +34,28 @@ export { computeCtaDeadline } from './deadline.js';
 export { resolveCseSlackOwner } from './slack-owners.js';
 export { accountNeedsCtaAttention, isRiskOrDarkPlay } from './health.js';
 export { fiscalYearFromDate, fiscalQuarterFromDate } from './fiscal.js';
+export {
+  attachCtasToRenewalRows,
+  deriveCtaAccountId,
+  effectiveCtaDueDate,
+  effectiveCtaOwner,
+  enrichCtaLogEntry,
+  extractOpportunityIdFromSalesforceUrl,
+  indexCtasByOpportunityId,
+  isCtaOpen,
+  normalizeCtaStatus,
+  ownerDisplayName,
+  carryForwardCtaProgress,
+  indexCtaLogByDedupKey,
+  resolveRenewalOpportunityId,
+  CTA_PROGRESS_STATUSES,
+  CTA_PROGRESS_STATUS_LABELS,
+} from './progress.js';
+export type {
+  CTAProgressStatus,
+  CtaOppSummary,
+  OpportunityAccountLookup,
+} from './progress.js';
 
 export interface GenerateCTAsOptions {
   config?: Partial<CTAEngineConfig>;

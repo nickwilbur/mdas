@@ -7,6 +7,7 @@ export type PipelineColumnId =
   | 'closeDate'
   | 'stage'
   | 'status'
+  | 'cta'
   | 'atr'
   | 'forecast'
   | 'downsell'
@@ -24,6 +25,7 @@ export const DEFAULT_PIPELINE_COLUMN_ORDER: PipelineColumnId[] = [
   'closeDate',
   'stage',
   'status',
+  'cta',
   'atr',
   'forecast',
   'downsell',
@@ -40,6 +42,7 @@ export const DEFAULT_PIPELINE_COLUMN_WIDTHS: Record<PipelineColumnId, number> = 
   closeDate: 108,
   stage: 120,
   status: 140,
+  cta: 120,
   atr: 96,
   forecast: 96,
   downsell: 96,
