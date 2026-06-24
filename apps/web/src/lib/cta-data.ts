@@ -40,7 +40,28 @@ export function loadCTAData(): LoadedCtaData {
         const entry = JSON.parse(line) as Record<string, unknown>;
         statusMap.set(entry.cta_id as string, entry);
         if (entry.account_name && !richMap.has(entry.cta_id as string)) {
-          richMap.set(entry.cta_id as string, entry as unknown as RichCTA);
+          const candidateKey = enrichCtaLogEntry({
+            renewal_opportunity_id: (entry.renewal_opportunity_id as string | null) ?? null,
+            renewal_opportunity_url:
+              (entry.renewal_opportunity_url as string | null | undefined) ?? null,
+            salesforce_account_id:
+              (entry.salesforce_account_id as string | null | undefined) ?? null,
+            play_type: (entry.play_type as string | undefined) ?? 'unknown',
+            dedup_key: entry.dedup_key as string | undefined,
+          }).dedup_key;
+          const scanCoversDedup = [...richMap.values()].some((rich) => {
+            const richKey = enrichCtaLogEntry({
+              renewal_opportunity_id: rich.renewal_opportunity_id ?? null,
+              renewal_opportunity_url: rich.renewal_opportunity_url ?? null,
+              salesforce_account_id: rich.salesforce_account_id,
+              play_type: rich.play_type,
+              dedup_key: (rich as { dedup_key?: string }).dedup_key,
+            }).dedup_key;
+            return richKey === candidateKey;
+          });
+          if (!scanCoversDedup) {
+            richMap.set(entry.cta_id as string, entry as unknown as RichCTA);
+          }
         }
       } catch {
         continue;

@@ -54,4 +54,18 @@ test.describe('smoke', () => {
     expect(response?.status()).toBe(200);
     await expect(page.getByRole('heading').first()).toBeVisible();
   });
+
+  test('/ctas renders the CTA board or empty state', async ({ page }) => {
+    const response = await page.goto('/ctas');
+    expect(response?.status()).toBe(200);
+    await expect(
+      page.getByRole('heading', { name: /churn-risk ctas/i }),
+    ).toBeVisible();
+  });
+
+  test('/renewal-analysis renders the renewal pipeline', async ({ page }) => {
+    const response = await page.goto('/renewal-analysis');
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole('heading', { name: /renewals/i }).first()).toBeVisible();
+  });
 });

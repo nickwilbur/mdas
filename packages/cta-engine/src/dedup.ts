@@ -20,7 +20,11 @@ export function decideDedup(
 ): DedupDecision {
   const key =
     cta.dedup_key ??
-    dedupKey(cta.salesforce_account_id, cta.play_type, cta.renewal_opportunity_id);
+    dedupKey(
+      cta.salesforce_account_id,
+      cta.play_type,
+      resolveRenewalOpportunityId(cta),
+    );
 
   // Find most recent open entry with same dedup key
   let latest: CTALogEntry | undefined;

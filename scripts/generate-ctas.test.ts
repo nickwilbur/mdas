@@ -154,8 +154,6 @@ describe('scan markdown output format', () => {
   });
 });
 
-// ── Tests for progress event format ────────────────────────────────────────
-
 describe('progress event format', () => {
   it('matches expected shape', () => {
     const event = { type: 'progress', phase: 'init', current: 0, total: 5, label: 'Starting' };
@@ -178,5 +176,39 @@ describe('progress event format', () => {
     expect(typeof event.ctaCount).toBe('number');
     expect(event.scanFilePath).toContain('.md');
     expect(event.logFilePath).toContain('.jsonl');
+  });
+});
+
+import { carryForwardCtaProgress, indexCtaLogByDedupKey, type CTALogEntry } from '@mdas/cta-engine';
+
+describe('full scan progress carry-forward', () => {
+  it('preserves in-progress status when cta_id changes but dedup_key matches', () => {
+    const prior: CTALogEntry = {
+      cta_id: 'expand3-2026-06-16-acme-dark_account',
+      account_name: 'Acme',
+      salesforce_account_id: '001',
+      play_type: 'dark_account',
+      risk_color: 'Red',
+      primary_owner: { name: 'CSE', role: 'CSE' },
+      deadline: '2026-07-01',
+      renewal_opportunity_id: '006Po00000RENEWAL1',
+      dedup_key: '006Po00000RENEWAL1:dark_account',
+      posted_at: '2026-06-16T12:00:00Z',
+      posted_to_channel: '#expand3-risk-signals',
+      status: 'blocked',
+      progress_note: 'Waiting on legal',
+      last_checked_at: '2026-06-18T12:00:00Z',
+      escalation_message_id: null,
+    };
+    const fresh: CTALogEntry = {
+      ...prior,
+      cta_id: 'expand3-2026-06-24-acme-dark_account',
+      status: 'open',
+      progress_note: null,
+      posted_at: '2026-06-24T12:00:00Z',
+    };
+    const merged = carryForwardCtaProgress(fresh, indexCtaLogByDedupKey([prior]));
+    expect(merged.status).toBe('blocked');
+    expect(merged.progress_note).toBe('Waiting on legal');
   });
 });
