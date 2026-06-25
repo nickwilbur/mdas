@@ -28,10 +28,12 @@ export const RENEWAL_METRIC_HINTS = {
     'Cerebro Overall Assessment category from Glean/Cerebro health indexing. Hover for the narrative assessment and contributing risk signals.',
   overallAssessmentBreakdown:
     'Renewal opportunities grouped by synced Cerebro Overall Assessment category. Open opps only by default; use Show closed to include closed renewals in the chart and pipeline table.',
+  pipelineStatusBreakdown:
+    'Open renewals grouped by pipeline status. Known churn (SFDC Confirmed Full Churn) is shown separately from forecast full churn and closed full churn. Click a segment to filter the table.',
   daysSinceSlackUpdate:
-    'Days since the internal customer Slack channel last appeared in indexed Glean evidence. Blank when no channel activity is indexed yet.',
+    'Days since the last real-person post in the mapped internal customer Slack channel (excludes bot joins and app notifications). Blank when no human Slack activity is indexed.',
   daysSinceCustomerEngagement:
-    'Days since the most recent customer-facing touch — calendar meetings, workshops, or CSE sentiment updates on the account.',
+    'Days since the most recent documented customer touch — email, logged call, meeting, conference, or workshop. Excludes Slack, marketing mail, and CSE sentiment field updates.',
   outcomeBreakdown:
     'Final renewal outcomes for closed deals only. Open renewals do not have an outcome until they close.',
   churnReasons:

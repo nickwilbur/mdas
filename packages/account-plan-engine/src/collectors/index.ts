@@ -1,7 +1,7 @@
 import type { CanonicalOpportunity } from '@mdas/canonical';
 import { nextFutureRenewalOpp } from '@mdas/cta-engine';
 import type { AccountView } from '@mdas/canonical';
-import type { CollectorInput, CollectorOutput } from '../types.js';
+import type { CollectorInput, CollectorOutput, AccountPlanSignal } from '../types.js';
 import {
   classifyFreshness,
   confidenceFromFreshness,
@@ -23,7 +23,7 @@ export function collectSalesforceSignals(input: CollectorInput): CollectorOutput
   const { view, now } = input;
   const a = view.account;
   const collectedAt = new Date(now).toISOString();
-  const signals = [];
+  const signals: AccountPlanSignal[] = [];
   const renewal = nextFutureRenewalOpp(view, now);
 
   const push = (
@@ -98,7 +98,7 @@ export function collectCseSentimentSignals(input: CollectorInput): CollectorOutp
   const { view, now } = input;
   const a = view.account;
   const collectedAt = new Date(now).toISOString();
-  const signals = [];
+  const signals: AccountPlanSignal[] = [];
 
   const commentaryFreshness = classifyFreshness(a.cseSentimentCommentaryLastUpdated, now);
   const sentimentFreshness = classifyFreshness(a.cseSentimentLastUpdated, now);
@@ -162,7 +162,7 @@ export function collectCerebroSupportSignals(input: CollectorInput): CollectorOu
   const { view, now, cerebroIntel } = input;
   const a = view.account;
   const collectedAt = new Date(now).toISOString();
-  const signals = [];
+  const signals: AccountPlanSignal[] = [];
   let status: CollectorOutput['run']['status'] = 'success';
 
   const cerebroFreshness = classifyFreshness(a.lastFetchedFromSource?.cerebro, now);
@@ -262,7 +262,7 @@ export function collectCerebroUsageSignals(input: CollectorInput): CollectorOutp
   const { view, now } = input;
   const a = view.account;
   const collectedAt = new Date(now).toISOString();
-  const signals = [];
+  const signals: AccountPlanSignal[] = [];
   const cerebroFreshness = classifyFreshness(a.lastFetchedFromSource?.cerebro, now);
 
   const subMetrics = a.cerebroSubMetrics ?? {};
@@ -345,7 +345,7 @@ export function collectGleanSignals(input: CollectorInput): CollectorOutput {
   const { view, now, gleanContext } = input;
   const a = view.account;
   const collectedAt = new Date(now).toISOString();
-  const signals = [];
+  const signals: AccountPlanSignal[] = [];
 
   const localLinks = a.accountPlanLinks ?? [];
   for (const [i, link] of localLinks.slice(0, 5).entries()) {
@@ -405,7 +405,7 @@ export function collectSlackSignals(input: CollectorInput): CollectorOutput {
   const { view, now, slackContext } = input;
   const a = view.account;
   const collectedAt = new Date(now).toISOString();
-  const signals = [];
+  const signals: AccountPlanSignal[] = [];
 
   const channelUrl = slackContext?.channelUrl ?? a.salesforceSlackChannelUrl ?? null;
   if (channelUrl) {

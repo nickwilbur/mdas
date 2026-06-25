@@ -12,7 +12,8 @@ import {
 // Friendly display names for adapter sources
 const ADAPTER_LABELS: Record<string, string> = {
   'local-snapshots': 'Snapshot baseline',
-  'cerebro-glean': 'Cerebro (risk data)',
+  'cerebro-rest': 'Cerebro (REST)',
+  'cerebro-glean': 'Cerebro (Glean fallback)',
   gainsight: 'Gainsight (CTAs)',
   'glean-mcp': 'Glean (meetings/plans)',
   'zuora-mcp': 'Zuora (billing)',

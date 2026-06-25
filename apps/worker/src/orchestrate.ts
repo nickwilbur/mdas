@@ -10,7 +10,7 @@ import type {
   RefreshContext,
   SourceLink,
 } from '@mdas/canonical';
-import { filterExpand3Snapshot, dedupeSourceLinksByUrl } from '@mdas/canonical';
+import { filterExpand3Snapshot, dedupeSourceLinksByUrl, mergeRecentMeetings } from '@mdas/canonical';
 import {
   attachRefreshRunToJob,
   audit,
@@ -38,12 +38,13 @@ import {
 import { log } from './logger.js';
 import { ProgressTracker } from './progress-tracker.js';
 import { salesforceAdapter } from '@mdas/adapter-salesforce';
-import { cerebroRestAdapter } from '@mdas/adapter-cerebro-rest';
+import { cerebroRestAdapter, shouldRunCerebroGleanFallback } from '@mdas/adapter-cerebro-rest';
 import { cerebroGleanAdapter } from '@mdas/adapter-cerebro-glean';
 import { gainsightAdapter } from '@mdas/adapter-gainsight';
 import { staircaseGmailAdapter } from '@mdas/adapter-staircase-gmail';
 import { zuoraMcpAdapter } from '@mdas/adapter-zuora-mcp';
 import { gleanMcpAdapter } from '@mdas/adapter-glean-mcp';
+import { GleanClient, readGleanCredsFromEnv } from '@mdas/adapter-glean-mcp';
 import { localSnapshotsAdapter } from '@mdas/adapter-local-snapshots';
 import { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
 
@@ -86,9 +87,9 @@ const REAL_ADAPTERS: ReadonlyArray<readonly [string, ReadAdapter]> = [
 export function selectActiveAdapters(): ReadAdapter[] {
   const adapters: ReadAdapter[] = [localSnapshotsAdapter];
   for (const [envKey, real] of REAL_ADAPTERS) {
-    if ((process.env[envKey] ?? '').toLowerCase() === 'real') {
-      adapters.push(real);
-    }
+    if ((process.env[envKey] ?? '').toLowerCase() !== 'real') continue;
+    if (real.name === 'cerebro-glean' && !shouldRunCerebroGleanFallback()) continue;
+    adapters.push(real);
   }
   return adapters;
 }
@@ -123,16 +124,40 @@ const DEFERRED_GLEAN_SOURCES = new Set(['glean-mcp']);
 /** Split adapters for phased fetch; exported for unit tests. */
 export function partitionAdaptersForFetch(adapters: ReadAdapter[]): {
   immediate: ReadAdapter[];
+  /** cerebro-glean runs after cerebro-rest when both are active. */
+  deferredCerebroGlean: ReadAdapter[];
   deferred: ReadAdapter[];
 } {
+  const hasCerebroRest = adapters.some((a) => a.name === 'cerebro-rest');
   const immediate: ReadAdapter[] = [];
+  const deferredCerebroGlean: ReadAdapter[] = [];
   const deferred: ReadAdapter[] = [];
   for (const a of adapters) {
     const source = a.source ?? a.name;
-    if (DEFERRED_GLEAN_SOURCES.has(source)) deferred.push(a);
-    else immediate.push(a);
+    if (DEFERRED_GLEAN_SOURCES.has(source)) {
+      deferred.push(a);
+    } else if (a.name === 'cerebro-glean' && hasCerebroRest) {
+      deferredCerebroGlean.push(a);
+    } else {
+      immediate.push(a);
+    }
   }
-  return { immediate, deferred };
+  return { immediate, deferredCerebroGlean, deferred };
+}
+
+/** Build Glean-fallback skip list from cerebro-rest results this refresh. */
+export function buildCerebroRestCoverage(
+  restResult: Partial<MergedData> | undefined,
+  restAttempted: boolean,
+): RefreshContext['cerebroRestCoverage'] | undefined {
+  if (!restAttempted) return undefined;
+  const enrichedAccountIds: string[] = [];
+  for (const a of restResult?.accounts ?? []) {
+    if (a.cerebroRiskCategory || a.cerebroRiskAnalysis?.trim()) {
+      enrichedAccountIds.push(a.accountId);
+    }
+  }
+  return { restAttempted: true, enrichedAccountIds };
 }
 
 function adapterTimeoutMs(source: string): number {
@@ -272,6 +297,7 @@ function mergeAccount(
       ...(next.sourceErrors ?? {}),
     },
     sourceLinks: mergeSourceLinks(existing.sourceLinks, next.sourceLinks),
+    recentMeetings: mergeRecentMeetings(existing.recentMeetings, next.recentMeetings ?? []),
   };
 }
 
@@ -434,6 +460,11 @@ export async function runRefresh(
     }
   }
   const ctx = buildRefreshContext(refreshId, startedAt, options.requestId);
+  const gleanCreds = readGleanCredsFromEnv();
+  const sharedGleanClient = gleanCreds ? new GleanClient(gleanCreds) : undefined;
+  if (sharedGleanClient) {
+    (ctx as RefreshContext & { gleanClient?: GleanClient }).gleanClient = sharedGleanClient;
+  }
   const progress = new ProgressTracker(refreshId, sourceNames);
 
   // Per-adapter outcome buffer. Populated by the parallel fetch loop and
@@ -463,6 +494,7 @@ export async function runRefresh(
     // abort the refresh (adapters will just fall back to their own
     // lookup, preserving old behavior).
     let priorRun: RefreshContext['priorRun'];
+    const prefetchStart = Date.now();
     const priorMeta = await baselineRunForWindow(refreshId, 0).catch(() => null);
     if (priorMeta) {
       const [priorAccounts, priorOpps] = await Promise.all([
@@ -480,27 +512,33 @@ export async function runRefresh(
         priorRunId: priorMeta.id,
         accounts: priorAccounts.length,
         opportunities: priorOpps.length,
+        durationMs: Date.now() - prefetchStart,
       });
     }
+
+    const prefetchMs = Date.now() - prefetchStart;
 
     // Phase 1: Fetch with isolated failures. Non-glean-mcp adapters run
     // in parallel; glean-mcp is deferred to Phase 1b so it does not
     // compete with cerebro/gainsight for Glean rate-limit budget.
     const succeeded: string[] = [];
     const errorLog: { source: string; error: string }[] = [];
-    const { immediate, deferred } = partitionAdaptersForFetch(adapters);
+    const fetchPhaseStart = Date.now();
+    const { immediate, deferredCerebroGlean, deferred } = partitionAdaptersForFetch(adapters);
 
     async function fetchOneAdapter(
       a: ReadAdapter,
+      adapterCtxOverride?: RefreshContext,
     ): Promise<Partial<MergedData>> {
       const source = a.source ?? a.name;
       const adapterStart = Date.now();
       const timeoutMs = adapterTimeoutMs(source);
-      const adapterCtx: RefreshContext = {
+      const adapterCtx: RefreshContext = adapterCtxOverride ?? {
         ...ctx,
         reportProgress: (current, total, label) =>
           progress.report(a.name, current, total, label),
         ...(priorRun ? { priorRun } : {}),
+        ...(sharedGleanClient ? { gleanClient: sharedGleanClient } : {}),
       };
       progress.markRunning(a.name, 0);
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -572,9 +610,35 @@ export async function runRefresh(
         fetchResults.set(a.name, immediateResults[i]!);
       });
     }
+    if (deferredCerebroGlean.length > 0) {
+      const restResult = fetchResults.get('cerebro-rest');
+      const restAttempted = adapters.some((a) => a.name === 'cerebro-rest');
+      const cerebroRestCoverage = buildCerebroRestCoverage(restResult, restAttempted);
+      ctx.logger.info('refresh.cerebroGlean.deferred', {
+        waitingFor: immediate.map((a) => a.name),
+        restEnriched: cerebroRestCoverage?.enrichedAccountIds.length ?? 0,
+      });
+      for (const a of deferredCerebroGlean) {
+        const adapterCtx: RefreshContext = {
+          ...ctx,
+          reportProgress: (current, total, label) =>
+            progress.report(a.name, current, total, label),
+          ...(priorRun ? { priorRun } : {}),
+          ...(sharedGleanClient ? { gleanClient: sharedGleanClient } : {}),
+          ...(cerebroRestCoverage ? { cerebroRestCoverage } : {}),
+        };
+        fetchResults.set(
+          a.name,
+          await fetchOneAdapter(a, adapterCtx),
+        );
+      }
+    }
     if (deferred.length > 0) {
       ctx.logger.info('refresh.gleanMcp.deferred', {
-        waitingFor: immediate.map((a) => a.name),
+        waitingFor: [
+          ...immediate.map((a) => a.name),
+          ...deferredCerebroGlean.map((a) => a.name),
+        ],
         deferred: deferred.map((a) => a.name),
       });
       for (const a of deferred) {
@@ -584,12 +648,14 @@ export async function runRefresh(
     const fetched = adapters.map(
       (a) => fetchResults.get(a.name) ?? ({} as Partial<MergedData>),
     );
+    const fetchMs = Date.now() - fetchPhaseStart;
 
   // Final progress flush before merge/score phase.
   progress.stopFlushing();
   await progress.flush();
 
   // Phase 2: Normalize / merge.
+  const mergeStart = Date.now();
   let merged: MergedData = options.injected ?? mergeAdapterResults(fetched);
   if (!options.injected) {
     const sfResult = fetchResults.get('salesforce');
@@ -625,6 +691,7 @@ export async function runRefresh(
   });
   const sourceLinkStats = summarizeSourceLinkCounts(merged);
   ctx.logger.info('refresh.merge.sourceLinks', sourceLinkStats);
+  const mergeMs = Date.now() - mergeStart;
 
   // Phase 3 + 4 prep — parallelize three independent I/Os.
   //
@@ -668,6 +735,9 @@ export async function runRefresh(
     opportunities: merged.opportunities.length,
     reusedPriorRun: priorRun != null && prevRun != null && priorRun.id === prevRun.id,
   });
+  const persistMs = Date.now() - persistStart;
+
+  const scoreStart = Date.now();
 
   const events: ChangeEvent[] = diffAll(
     prevRun ? { accounts: prevAccounts, opportunities: prevOpps } : null,
@@ -691,9 +761,12 @@ export async function runRefresh(
     }),
   );
   const ranked = rankAccountViews(views);
+  const scoreMs = Date.now() - scoreStart;
 
   // Phase 6: Publish.
+  const publishStart = Date.now();
   await replaceAccountViews(refreshId, ranked);
+  const publishMs = Date.now() - publishStart;
 
   const status: 'success' | 'partial' | 'failed' =
     succeeded.length === 0 ? 'failed' : succeeded.length === adapters.length ? 'success' : 'partial';
@@ -735,6 +808,40 @@ export async function runRefresh(
     },
   });
 
+  const totalDurationMs = Date.now() - start;
+  ctx.logger.info('refresh.summary', {
+    refreshId,
+    status,
+    durationMs: totalDurationMs,
+    phases: {
+      prefetchMs,
+      fetchMs,
+      mergeMs,
+      persistMs,
+      scoreMs,
+      publishMs,
+    },
+    rowCounts: {
+      accounts: merged.accounts.length,
+      opportunities: merged.opportunities.length,
+      account_views: ranked.length,
+      change_events: events.length,
+    },
+    adapters: sections.map((s) => ({
+      source: s.source,
+      status: s.status,
+      durationMs: s.durationMs,
+      accounts: s.accounts,
+      opportunities: s.opportunities,
+      error: s.error,
+    })),
+    slowestAdapter: sections.reduce(
+      (best, s) => (s.durationMs > (best?.durationMs ?? 0) ? s : best),
+      sections[0],
+    ),
+    glean: sharedGleanClient?.searchCacheStats(),
+  });
+
   // Retain most-recent 12; prune older.
   const pruned = await pruneOldRuns(12);
   if (pruned > 0) {
@@ -749,7 +856,7 @@ export async function runRefresh(
       opportunities: merged.opportunities.length,
       change_events: events.length,
     },
-    durationMs: Date.now() - start,
+    durationMs: totalDurationMs,
     sections,
   };
   } finally {

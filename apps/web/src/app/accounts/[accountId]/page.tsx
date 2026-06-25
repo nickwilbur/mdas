@@ -1,6 +1,9 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { ExternalLink } from 'lucide-react';
+import { slugifyAccountName } from '@mdas/slack-send';
 import { getAccount, DEFAULT_WINDOW_DAYS } from '@/lib/read-model';
+import { safeHttpUrl, isLikelySfdcId } from '@/lib/url-safety';
 import {
   BucketBadge,
   Card,
@@ -73,6 +76,14 @@ export default async function AccountPage({
   const initialAccountPlan = accountPlanEnabled
     ? await getPersistedAccountPlan(params.accountId)
     : null;
+  const slackChannelUrl = safeHttpUrl(a.salesforceSlackChannelUrl);
+  const slackChannelLabel = slugifyAccountName(a.accountName);
+  const sfSourceLink = a.sourceLinks?.find((l) => l.source === 'salesforce');
+  const sfdcAccountUrl =
+    safeHttpUrl(sfSourceLink?.url) ??
+    (isLikelySfdcId(a.salesforceAccountId)
+      ? `https://zuora.lightning.force.com/lightning/r/Account/${a.salesforceAccountId}/view`
+      : null);
 
   return (
     <div className="space-y-6">
@@ -116,11 +127,35 @@ export default async function AccountPage({
               <AccountGleanButton accountName={a.accountName} />
             )}
           </div>
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
             <BucketBadge bucket={v.bucket} />
             <RiskBadge level={v.risk.level} source={v.risk.source} />
             <SentimentBadge value={a.cseSentiment} />
             <UpsellBandBadge band={v.upsell.band} score={v.upsell.score} />
+            {!isExec && sfdcAccountUrl ? (
+              <a
+                href={sfdcAccountUrl}
+                className="inline-flex items-center gap-1 rounded bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-600 ring-1 ring-blue-200 hover:bg-blue-100"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open Salesforce account"
+              >
+                <ExternalLink className="h-3 w-3 shrink-0" aria-hidden />
+                SFDC
+              </a>
+            ) : null}
+            {!isExec && slackChannelUrl ? (
+              <a
+                href={slackChannelUrl}
+                className="inline-flex items-center gap-1 rounded bg-purple-50 px-2 py-0.5 text-xs font-medium text-purple-700 ring-1 ring-purple-200 hover:bg-purple-100"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open internal customer Slack channel"
+              >
+                <ExternalLink className="h-3 w-3 shrink-0" aria-hidden />
+                {slackChannelLabel ? `#${slackChannelLabel}` : 'Slack channel'}
+              </a>
+            ) : null}
           </div>
           <FreshnessRow
             freshness={a.lastFetchedFromSource}

@@ -1444,7 +1444,7 @@ function formatMlMismatchRollupHeadline(
   accountName: string,
   enr: MlOverrideMismatchEnrichment,
 ): string | null {
-  let headline = enr.headline?.replace(/\s+/g, ' ').trim();
+  let headline: string | null = enr.headline?.replace(/\s+/g, ' ').trim() ?? null;
   if (!headline || enr.unavailableReason) return null;
 
   if (

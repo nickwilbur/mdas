@@ -1,4 +1,4 @@
-import type { AccountView, CanonicalOpportunity } from '@mdas/canonical';
+import type { AccountView, CanonicalAccount, CanonicalOpportunity } from '@mdas/canonical';
 import { isOperationalFullChurnOpportunity, CONFIRMED_FULL_CHURN_RISK } from '@mdas/canonical';
 import {
   daysSinceLastCustomerEngagement,
@@ -80,18 +80,122 @@ export function isOpenRenewalOppRow(row: RenewalOppRow): boolean {
   return row.outcome === 'pending' || row.outcome === 'pushed';
 }
 
+/** Pipeline status keys for workbench summary + table filters. */
+export type PipelineStatusKey =
+  | 'open'
+  | 'forecast_downsell'
+  | 'forecast_full_churn'
+  | 'forecast_expansion'
+  | 'pushed'
+  | 'known_churn'
+  | 'flat'
+  | 'downsell'
+  | 'full_churn'
+  | 'expanded';
+
+export const PIPELINE_STATUS_ORDER: PipelineStatusKey[] = [
+  'known_churn',
+  'forecast_full_churn',
+  'forecast_downsell',
+  'forecast_expansion',
+  'open',
+  'pushed',
+  'full_churn',
+  'downsell',
+  'flat',
+  'expanded',
+];
+
+export const PIPELINE_STATUS_LABELS: Record<PipelineStatusKey, string> = {
+  open: 'Open',
+  forecast_downsell: 'Forecast downsell',
+  forecast_full_churn: 'Forecast full churn',
+  forecast_expansion: 'Forecast expansion',
+  pushed: 'Pushed / delayed',
+  known_churn: 'Known churn',
+  flat: 'Renewed flat',
+  downsell: 'Downsell',
+  full_churn: 'Full churn',
+  expanded: 'Expanded',
+};
+
+/** Display CSE on workbench rows — Digital coverage when no named CSE is assigned. */
+export function resolveDisplayCseName(
+  account: Pick<CanonicalAccount, 'assignedCSE' | 'csCoverage'>,
+): string | null {
+  if (account.assignedCSE?.name) return account.assignedCSE.name;
+  if (account.csCoverage === 'Digital') return 'Digital';
+  return null;
+}
+
+/** True when forecasted loss equals all ATR (logo-level churn on an open renewal). */
+export function isFullChurnForecast(row: {
+  atrUSD: number;
+  downsellAmountUSD: number;
+  renewedRevenueUSD: number;
+}): boolean {
+  const { atrUSD: atr, downsellAmountUSD: downsell, renewedRevenueUSD: renewed } = row;
+  if (atr <= EPSILON) return false;
+  if (downsell >= atr - EPSILON) return true;
+  return renewed <= EPSILON;
+}
+
+export function resolvePipelineStatus(row: {
+  outcome: RenewalOutcome;
+  atrUSD: number;
+  renewedRevenueUSD: number;
+  downsellAmountUSD: number;
+}): { key: PipelineStatusKey; label: string } {
+  if (row.outcome === 'pushed') {
+    return { key: 'pushed', label: PIPELINE_STATUS_LABELS.pushed };
+  }
+
+  if (row.outcome === 'pending') {
+    if (isFullChurnForecast(row)) {
+      return { key: 'forecast_full_churn', label: PIPELINE_STATUS_LABELS.forecast_full_churn };
+    }
+    const { atrUSD: atr, renewedRevenueUSD: renewed } = row;
+    if (atr > 0 && renewed > atr + EPSILON) {
+      return { key: 'forecast_expansion', label: PIPELINE_STATUS_LABELS.forecast_expansion };
+    }
+    if (atr > 0 && renewed + EPSILON < atr) {
+      return { key: 'forecast_downsell', label: PIPELINE_STATUS_LABELS.forecast_downsell };
+    }
+    return { key: 'open', label: PIPELINE_STATUS_LABELS.open };
+  }
+
+  if (
+    row.outcome === 'flat' ||
+    row.outcome === 'downsell' ||
+    row.outcome === 'full_churn' ||
+    row.outcome === 'expanded'
+  ) {
+    return { key: row.outcome, label: PIPELINE_STATUS_LABELS[row.outcome] };
+  }
+
+  return { key: 'open', label: PIPELINE_STATUS_LABELS.open };
+}
+
 /** Human label for prospective pipeline status (open renewals). */
 export function prospectivePipelineStatus(
   outcome: RenewalOutcome,
-  opts?: { atrUSD?: number; renewedRevenueUSD?: number },
+  opts?: { atrUSD?: number; renewedRevenueUSD?: number; downsellAmountUSD?: number },
 ): string {
-  if (outcome === 'pushed') return 'Pushed / delayed';
-  if (outcome === 'pending') {
+  if (outcome === 'pushed' || outcome === 'pending') {
     const atr = opts?.atrUSD ?? 0;
     const renewed = opts?.renewedRevenueUSD ?? 0;
-    if (atr > 0 && renewed + EPSILON < atr) return 'Open · forecast downsell';
-    if (atr > 0 && renewed > atr + EPSILON) return 'Open · forecast expansion';
-    return 'Open';
+    const downsell =
+      opts?.downsellAmountUSD ??
+      (atr > 0 && renewed + EPSILON < atr ? Math.max(0, atr - renewed) : 0);
+    return resolvePipelineStatus({
+      outcome,
+      atrUSD: atr,
+      renewedRevenueUSD: renewed,
+      downsellAmountUSD: downsell,
+    }).label;
+  }
+  if (outcome === 'flat' || outcome === 'downsell' || outcome === 'full_churn' || outcome === 'expanded') {
+    return PIPELINE_STATUS_LABELS[outcome];
   }
   return 'Closed';
 }
@@ -259,13 +363,7 @@ export interface RenewalMetricsSummary {
   /** Known churn (Churn Risk = Confirmed Full Churn) — tracked separately from saveable renewal metrics. */
   knownChurn: KnownChurnSummary;
   /** Prior-period snapshot when exactly one fiscal quarter is selected. */
-  priorPeriod: Omit<
-    RenewalMetricsSummary,
-    | 'priorPeriod'
-    | 'topChurnReasonsByAtr'
-    | 'topDownsellReasonsByAtr'
-    | 'topChurnReasonsByCount'
-  > | null;
+  priorPeriod: Omit<RenewalMetricsSummary, 'priorPeriod'> | null;
 }
 
 export interface BuildRenewalMetricsOpts {
@@ -622,7 +720,7 @@ export function buildKnownChurnOppRows(
         opportunityName: opp.opportunityName,
         accountId: view.account.accountId,
         accountName: view.account.accountName,
-        cseName: view.account.assignedCSE?.name ?? null,
+        cseName: resolveDisplayCseName(view.account),
         accountOwner: view.account.accountOwner?.name ?? null,
         closeDate: opp.closeDate,
         stageName: opp.stageName,
@@ -681,7 +779,7 @@ export function buildRenewalOppRows(
         opportunityName: opp.opportunityName,
         accountId: view.account.accountId,
         accountName: view.account.accountName,
-        cseName: view.account.assignedCSE?.name ?? null,
+        cseName: resolveDisplayCseName(view.account),
         accountOwner: view.account.accountOwner?.name ?? null,
         cseSentiment: view.account.cseSentiment ?? null,
         closeDate: opp.closeDate,
@@ -938,23 +1036,10 @@ export function buildRenewalMetrics(
     );
     const priorAccounts = buildRenewalAccountRows(priorOppRows, priorAsOf);
     const prior = aggregateFromAccounts(priorAccounts);
+    const { priorPeriod: _priorNested, ...priorSnapshot } = prior;
     summary.priorPeriod = {
-      atrUpForRenewalUSD: prior.atrUpForRenewalUSD,
-      renewedRevenueUSD: prior.renewedRevenueUSD,
-      atrChurnedUSD: prior.atrChurnedUSD,
-      downsellAmountUSD: prior.downsellAmountUSD,
-      fullLogoChurnRate: prior.fullLogoChurnRate,
-      fullChurnAccountCount: prior.fullChurnAccountCount,
-      downsellAccountRate: prior.downsellAccountRate,
-      downsellAccountCount: prior.downsellAccountCount,
-      grossRevenueRetentionPct: prior.grossRevenueRetentionPct,
-      accountsUpForRenewal: prior.accountsUpForRenewal,
-      outcomeCounts: prior.outcomeCounts,
-      bridge: prior.bridge,
+      ...priorSnapshot,
       knownChurn: summarizeKnownChurn(priorKnownChurnRows),
-      topChurnReasonsByAtr: prior.topChurnReasonsByAtr,
-      topDownsellReasonsByAtr: prior.topDownsellReasonsByAtr,
-      topChurnReasonsByCount: prior.topChurnReasonsByCount,
     };
   }
 

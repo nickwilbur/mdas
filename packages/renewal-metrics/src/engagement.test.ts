@@ -189,4 +189,65 @@ describe('lastHumanCustomerEngagement', () => {
     expect(daysSinceLastCustomerEngagement(account, AS_OF)).toBe(6);
     expect(lastHumanCustomerEngagement(account, AS_OF)?.title).toBe('Acme — FY27 EBR');
   });
+
+  it('excludes CSE sentiment updates from engagement', () => {
+    const account = mkAccount({
+      cseSentimentLastUpdated: '2026-06-15T00:00:00.000Z',
+      cseSentiment: 'Yellow',
+      recentMeetings: [
+        {
+          source: 'calendar',
+          title: 'Acme — FY27 EBR',
+          startTime: '2026-06-10T00:00:00.000Z',
+          attendees: ['ae@zuora.com'],
+          summary: 'Executive business review with customer leadership.',
+          url: 'https://calendar.google.com/event/1',
+        },
+      ],
+    });
+    expect(daysSinceLastCustomerEngagement(account, AS_OF)).toBe(6);
+    expect(lastHumanCustomerEngagement(account, AS_OF)?.title).toBe('Acme — FY27 EBR');
+  });
+
+  it('counts logged calls and conferences as engagement', () => {
+    const account = mkAccount({
+      recentMeetings: [
+        {
+          source: 'calendar',
+          title: 'Logged call with Leafly billing lead',
+          startTime: '2026-06-14T00:00:00.000Z',
+          attendees: [],
+          summary: 'Discussed renewal timeline.',
+          url: 'https://zuora.lightning.force.com/lightning/r/Task/abc/view',
+        },
+      ],
+    });
+    expect(lastHumanCustomerEngagement(account, AS_OF)?.title).toContain('Logged call');
+  });
+
+  it('matches Slack posts strictly to the mapped channel id', () => {
+    const account = mkAccount({
+      salesforceSlackChannelUrl: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6',
+      recentMeetings: [
+        {
+          source: 'calendar',
+          title: 'Human post in cust-leafly',
+          startTime: '2026-06-11T00:00:00.000Z',
+          attendees: [],
+          summary: 'Renewal check-in from AE.',
+          url: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6/p123',
+        },
+        {
+          source: 'calendar',
+          title: 'Noise in other channel',
+          startTime: '2026-06-14T00:00:00.000Z',
+          attendees: [],
+          summary: 'Mentioned cust-leafly in passing.',
+          url: 'https://zuora.enterprise.slack.com/archives/COTHER/p999',
+        },
+      ],
+    });
+    expect(lastHumanSlackPost(account, AS_OF)?.daysSince).toBe(5);
+    expect(lastHumanSlackPost(account, AS_OF)?.summary).toContain('Renewal check-in');
+  });
 });

@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mergeRecentMeetings } from '@mdas/canonical';
 import {
   applyContextAndEvidenceToAccount,
+  buildSlackSearchQueries,
   docMatchesAccount,
   fetchAccountEvidence,
-  mergeRecentMeetings,
+  fetchSlackChannelDocs,
 } from './evidence.js';
 import type { CanonicalAccount } from '@mdas/canonical';
 import type { GleanClient, GleanDocument } from '../../_shared/src/glean.js';
@@ -171,28 +173,29 @@ describe('fetchAccountEvidence', () => {
     expect(new Set(sources)).toEqual(new Set(['calendar', 'slack', 'gmail']));
   });
 
-  it('searches Slack by cust- channel slug and rejects cross-account staircase noise', async () => {
-    const search = vi.fn(async ({ query }: { query: string }) => {
-      if (query === 'cust-kustomer') {
-        return {
-          results: [
-            {
-              title: 'Dominic Varner in cust-kustomer',
-              url: 'https://zuora.enterprise.slack.com/archives/C06JHCM76PK/p1',
-              updateTime: RECENT,
-              snippets: ['Notes ahead of meeting with Mike tomorrow — CPQ testing in SBX.'],
-              datasource: 'slack',
-            },
-            {
-              title: 'Account Pulse APP joined #cust-kustomer',
-              url: 'https://zuora.enterprise.slack.com/archives/C06JHCM76PK/p2',
-              updateTime: RECENT,
-              snippets: ['Account Pulse APP joined #cust-kustomer'],
-              datasource: 'slack',
-            },
-          ],
-        };
+  it('searches Slack via paginated searchAll on channel id and rejects cross-account staircase noise', async () => {
+    const searchAll = vi.fn(async ({ query }: { query: string }) => {
+      if (query === 'C06JHCM76PK') {
+        return [
+          {
+            title: 'Dominic Varner in cust-kustomer',
+            url: 'https://zuora.enterprise.slack.com/archives/C06JHCM76PK/p1',
+            updateTime: RECENT,
+            snippets: ['Notes ahead of meeting with Mike tomorrow — CPQ testing in SBX.'],
+            datasource: 'slack',
+          },
+          {
+            title: 'Account Pulse APP joined #cust-kustomer',
+            url: 'https://zuora.enterprise.slack.com/archives/C06JHCM76PK/p2',
+            updateTime: RECENT,
+            snippets: ['Account Pulse APP joined #cust-kustomer'],
+            datasource: 'slack',
+          },
+        ];
       }
+      return [];
+    });
+    const search = vi.fn(async ({ query }: { query: string }) => {
       if (query.includes('staircase')) {
         return {
           results: [
@@ -213,7 +216,7 @@ describe('fetchAccountEvidence', () => {
       }
       return { results: [] };
     });
-    const client = { search, searchAll: vi.fn(), getDocuments: vi.fn(), healthCheck: vi.fn() } as unknown as GleanClient;
+    const client = { search, searchAll, getDocuments: vi.fn(), healthCheck: vi.fn() } as unknown as GleanClient;
 
     const out = await fetchAccountEvidence(
       client,
@@ -225,11 +228,110 @@ describe('fetchAccountEvidence', () => {
       { recencyDays: 30 },
     );
 
-    expect(search).toHaveBeenCalledWith(expect.objectContaining({ query: 'cust-kustomer' }));
+    expect(searchAll).toHaveBeenCalledWith(expect.objectContaining({ query: 'C06JHCM76PK' }), expect.any(Number));
     const titles = out.recentMeetings.map((m) => m.title);
     expect(titles).toContain('Dominic Varner in cust-kustomer');
+    expect(titles).not.toContain('Account Pulse APP joined #cust-kustomer');
     expect(titles).not.toContain('Meeting summary - Leafly, LLC (Jun-17)');
     expect(titles).toContain('Meeting summary - Kustomer, LLC (Jun-05)');
+  });
+
+  it('merges Slack hits from multiple queries (channel id + slug)', async () => {
+    const searchAll = vi.fn(async ({ query }: { query: string }) => {
+      if (query === 'C03ULQFE6V6') {
+        return [
+          {
+            title: 'Dominic Varner in cust-leafly',
+            url: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6/p1',
+            updateTime: RECENT,
+            snippets: ['Renewal timeline follow-up.'],
+            datasource: 'slack',
+          },
+        ];
+      }
+      if (query === 'cust-leafly' || query === 'leafly') {
+        return [
+          {
+            title: 'CSE note in cust-leafly',
+            url: 'https://app.slack.com/client/T123/C03ULQFE6V6/thread/abc',
+            updateTime: RECENT,
+            snippets: ['Customer confirmed SBX testing window.'],
+            datasource: 'slack',
+          },
+        ];
+      }
+      return [];
+    });
+    const client = {
+      search: vi.fn(async () => ({ results: [] })),
+      searchAll,
+      getDocuments: vi.fn(),
+      healthCheck: vi.fn(),
+    } as unknown as GleanClient;
+
+    const docs = await fetchSlackChannelDocs(
+      client,
+      {
+        accountId: 'leafly',
+        accountName: 'Leafly, LLC',
+        salesforceSlackChannelUrl: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6',
+      },
+      90,
+      50,
+    );
+    expect(searchAll).toHaveBeenCalled();
+    expect(docs.map((d) => d.title)).toEqual(
+      expect.arrayContaining(['Dominic Varner in cust-leafly', 'CSE note in cust-leafly']),
+    );
+  });
+
+  it('keeps human Slack posts and drops join noise at ingest', async () => {
+    const june11 = new Date(NOW.getTime() - 11 * 24 * 60 * 60 * 1000).toISOString();
+    const searchAll = vi.fn(async () => [
+      {
+        title: 'Alice joined #cust-leafly',
+        url: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6/p-join',
+        updateTime: RECENT,
+        snippets: ['Alice joined #cust-leafly'],
+        datasource: 'slack',
+      },
+      {
+        title: 'Dominic Varner in cust-leafly',
+        url: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6/p-human',
+        updateTime: june11,
+        snippets: ['Following up on renewal timeline with customer.'],
+        datasource: 'slack',
+      },
+    ]);
+    const client = {
+      search: vi.fn(async () => ({ results: [] })),
+      searchAll,
+      getDocuments: vi.fn(),
+      healthCheck: vi.fn(),
+    } as unknown as GleanClient;
+    const out = await fetchAccountEvidence(
+      client,
+      {
+        accountId: 'leafly',
+        accountName: 'Leafly, LLC',
+        salesforceSlackChannelUrl: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6',
+      },
+      { recencyDays: 30, topNPerSource: 3 },
+    );
+    const slackTitles = out.recentMeetings.map((m) => m.title);
+    expect(slackTitles).toContain('Dominic Varner in cust-leafly');
+    expect(slackTitles).not.toContain('Alice joined #cust-leafly');
+  });
+});
+
+describe('buildSlackSearchQueries', () => {
+  it('includes channel id, slug variants, and slack keyword token', () => {
+    const queries = buildSlackSearchQueries({
+      accountId: '1',
+      accountName: 'Leafly, LLC',
+      salesforceSlackChannelUrl: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6',
+    });
+    expect(queries).toEqual(expect.arrayContaining(['C03ULQFE6V6', 'cust-leafly', 'leafly', 'leafly slack']));
   });
 });
 

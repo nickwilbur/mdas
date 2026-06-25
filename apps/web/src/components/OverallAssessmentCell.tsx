@@ -13,6 +13,9 @@ const SOURCE_TONE: Record<string, string> = {
   derived: 'bg-gray-50 text-gray-700 border-gray-200',
 };
 
+const TOOLTIP_MAX_WIDTH = 672;
+const VIEWPORT_GUTTER = 12;
+
 export function OverallAssessmentCell({
   category,
   detail,
@@ -31,13 +34,18 @@ export function OverallAssessmentCell({
   const id = useId();
   const btnRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState({ top: 0, left: 0 });
+  const [coords, setCoords] = useState({ top: 0, left: 0, width: TOOLTIP_MAX_WIDTH });
 
   const updateCoords = useCallback(() => {
     const el = btnRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    setCoords({ top: rect.bottom + 8, left: Math.max(8, rect.right - 320) });
+    const width = Math.min(TOOLTIP_MAX_WIDTH, window.innerWidth - VIEWPORT_GUTTER * 2);
+    const left = Math.max(
+      VIEWPORT_GUTTER,
+      Math.min(rect.left, window.innerWidth - width - VIEWPORT_GUTTER),
+    );
+    setCoords({ top: rect.bottom + 8, left, width });
   }, []);
 
   useEffect(() => {
@@ -72,17 +80,22 @@ export function OverallAssessmentCell({
           <div
             id={tooltipId}
             role="tooltip"
-            className="pointer-events-none fixed z-[100] w-80 rounded-lg border border-gray-200 bg-white p-3 text-left shadow-lg"
-            style={{ top: coords.top, left: coords.left }}
+            className="pointer-events-none fixed z-[100] rounded-lg border border-gray-200 bg-white p-4 text-left shadow-lg"
+            style={{
+              top: coords.top,
+              left: coords.left,
+              width: coords.width,
+              maxWidth: `calc(100vw - ${VIEWPORT_GUTTER * 2}px)`,
+            }}
           >
             <p className="text-xs font-semibold text-gray-900">Overall Assessment</p>
             <p className="mt-1 text-[10px] uppercase tracking-wide text-gray-500">
               Source: {sourceLabel}
             </p>
             {detail ? (
-              <p className="mt-2 text-xs leading-relaxed text-gray-700">{detail}</p>
+              <p className="mt-2 text-sm leading-relaxed text-gray-700">{detail}</p>
             ) : (
-              <p className="mt-2 text-xs text-gray-500">
+              <p className="mt-2 text-sm text-gray-500">
                 {signals.length > 0
                   ? 'Cerebro narrative not synced — signals below reflect the overall assessment index.'
                   : 'No Cerebro overall assessment on file. Refresh data to pull account details.'}
@@ -97,7 +110,7 @@ export function OverallAssessmentCell({
               </p>
             ) : null}
             {signals.length > 0 ? (
-              <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto border-t border-gray-100 pt-2">
+              <ul className="mt-2 max-h-48 space-y-1.5 overflow-y-auto border-t border-gray-100 pt-2">
                 {signals.slice(0, 8).map((s, i) => (
                   <li key={`${s.label}-${i}`} className="flex items-start gap-2 text-xs">
                     <span
@@ -105,8 +118,8 @@ export function OverallAssessmentCell({
                     >
                       {s.source}
                     </span>
-                    <span className="flex-1 text-gray-700">{s.label}</span>
-                    <span className="tabular-nums font-medium text-gray-900">
+                    <span className="min-w-0 flex-1 text-gray-700">{s.label}</span>
+                    <span className="shrink-0 tabular-nums font-medium text-gray-900">
                       {s.points > 0 ? `+${s.points}` : s.points}
                     </span>
                   </li>

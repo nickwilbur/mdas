@@ -298,24 +298,39 @@ export async function pruneOldRuns(retain = 12): Promise<number> {
 
 // ---------- Snapshots ----------
 
+/** Chunk size for multi-row INSERT statements (avoids param/query size spikes). */
+const SNAPSHOT_WRITE_CHUNK = Number(process.env.SNAPSHOT_WRITE_CHUNK) || 100;
+
+async function insertInChunks<T>(
+  items: T[],
+  chunkSize: number,
+  writeChunk: (chunk: T[]) => Promise<void>,
+): Promise<void> {
+  for (let i = 0; i < items.length; i += chunkSize) {
+    await writeChunk(items.slice(i, i + chunkSize));
+  }
+}
+
 export async function writeSnapshotAccounts(
   refreshId: string,
   accounts: CanonicalAccount[],
 ): Promise<void> {
   if (accounts.length === 0) return;
-  const values: string[] = [];
-  const params: unknown[] = [];
-  accounts.forEach((a, i) => {
-    const o = i * 4;
-    values.push(`($${o + 1}, $${o + 2}, $${o + 3}::jsonb, $${o + 4})`);
-    params.push(refreshId, a.accountId, JSON.stringify(a), a.lastUpdated);
+  await insertInChunks(accounts, SNAPSHOT_WRITE_CHUNK, async (chunk) => {
+    const values: string[] = [];
+    const params: unknown[] = [];
+    chunk.forEach((a, i) => {
+      const o = i * 4;
+      values.push(`($${o + 1}, $${o + 2}, $${o + 3}::jsonb, $${o + 4})`);
+      params.push(refreshId, a.accountId, JSON.stringify(a), a.lastUpdated);
+    });
+    await query(
+      `INSERT INTO snapshot_account (refresh_id, account_id, payload, captured_at)
+       VALUES ${values.join(',')}
+       ON CONFLICT (refresh_id, account_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      params,
+    );
   });
-  await query(
-    `INSERT INTO snapshot_account (refresh_id, account_id, payload, captured_at)
-     VALUES ${values.join(',')}
-     ON CONFLICT (refresh_id, account_id) DO UPDATE SET payload = EXCLUDED.payload`,
-    params,
-  );
 }
 
 /** Replace the full account snapshot for a refresh (drops rows not in `accounts`). */
@@ -332,21 +347,23 @@ export async function writeSnapshotOpportunities(
   opps: CanonicalOpportunity[],
 ): Promise<void> {
   if (opps.length === 0) return;
-  const values: string[] = [];
-  const params: unknown[] = [];
-  opps.forEach((o, i) => {
-    const off = i * 5;
-    values.push(
-      `($${off + 1}, $${off + 2}, $${off + 3}, $${off + 4}::jsonb, $${off + 5})`,
+  await insertInChunks(opps, SNAPSHOT_WRITE_CHUNK, async (chunk) => {
+    const values: string[] = [];
+    const params: unknown[] = [];
+    chunk.forEach((o, i) => {
+      const off = i * 5;
+      values.push(
+        `($${off + 1}, $${off + 2}, $${off + 3}, $${off + 4}::jsonb, $${off + 5})`,
+      );
+      params.push(refreshId, o.opportunityId, o.accountId, JSON.stringify(o), o.lastUpdated);
+    });
+    await query(
+      `INSERT INTO snapshot_opportunity (refresh_id, opportunity_id, account_id, payload, captured_at)
+       VALUES ${values.join(',')}
+       ON CONFLICT (refresh_id, opportunity_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      params,
     );
-    params.push(refreshId, o.opportunityId, o.accountId, JSON.stringify(o), o.lastUpdated);
   });
-  await query(
-    `INSERT INTO snapshot_opportunity (refresh_id, opportunity_id, account_id, payload, captured_at)
-     VALUES ${values.join(',')}
-     ON CONFLICT (refresh_id, opportunity_id) DO UPDATE SET payload = EXCLUDED.payload`,
-    params,
-  );
 }
 
 /** Replace the full opportunity snapshot for a refresh (drops rows not in `opps`). */
@@ -385,19 +402,21 @@ export async function writeAccountViews(
   views: AccountView[],
 ): Promise<void> {
   if (views.length === 0) return;
-  const values: string[] = [];
-  const params: unknown[] = [];
-  views.forEach((v, i) => {
-    const o = i * 3;
-    values.push(`($${o + 1}, $${o + 2}, $${o + 3}::jsonb)`);
-    params.push(refreshId, v.account.accountId, JSON.stringify(v));
+  await insertInChunks(views, SNAPSHOT_WRITE_CHUNK, async (chunk) => {
+    const values: string[] = [];
+    const params: unknown[] = [];
+    chunk.forEach((v, i) => {
+      const o = i * 3;
+      values.push(`($${o + 1}, $${o + 2}, $${o + 3}::jsonb)`);
+      params.push(refreshId, v.account.accountId, JSON.stringify(v));
+    });
+    await query(
+      `INSERT INTO account_view (refresh_id, account_id, view_payload)
+       VALUES ${values.join(',')}
+       ON CONFLICT (refresh_id, account_id) DO UPDATE SET view_payload = EXCLUDED.view_payload`,
+      params,
+    );
   });
-  await query(
-    `INSERT INTO account_view (refresh_id, account_id, view_payload)
-     VALUES ${values.join(',')}
-     ON CONFLICT (refresh_id, account_id) DO UPDATE SET view_payload = EXCLUDED.view_payload`,
-    params,
-  );
 }
 
 /** Replace all account views for a refresh (drops rows not in `views`). */

@@ -352,6 +352,24 @@ export interface RefreshContext {
     accounts: CanonicalAccount[];
     opportunities: CanonicalOpportunity[];
   };
+  /**
+   * Populated by the orchestrator when `cerebro-glean` runs after
+   * `cerebro-rest`. Lets the Glean fallback skip accounts REST already
+   * enriched this refresh (Risk Category + narrative), avoiding hundreds
+   * of redundant per-account Glean searches.
+   */
+  cerebroRestCoverage?: {
+    /** True when cerebro-rest ran with credentials this refresh. */
+    restAttempted: boolean;
+    /** Account IDs that received narrative from REST in this refresh. */
+    enrichedAccountIds: string[];
+  };
+  /**
+   * Orchestrator-scoped shared Glean MCP client (one session + search
+   * cache per refresh). Adapters should use `resolveGleanClient()` rather
+   * than constructing their own instance.
+   */
+  gleanClient?: unknown;
 }
 
 /**
@@ -461,3 +479,4 @@ export {
   type Expand3SnapshotData,
 } from './expand3.js';
 export { dedupeSourceLinksByUrl } from './source-links.js';
+export { mergeRecentMeetings, MAX_RECENT_MEETINGS } from './recent-meetings.js';

@@ -25,12 +25,17 @@ const nextConfig = {
   output: 'standalone',
   experimental: { typedRoutes: false },
   transpilePackages: [
+    '@mdas/account-plan-engine',
+    '@mdas/adapter-cerebro-rest',
+    '@mdas/adapter-glean-mcp',
     '@mdas/adapter-shared',
     '@mdas/canonical',
     '@mdas/cta-engine',
     '@mdas/db',
-    '@mdas/scoring',
     '@mdas/forecast-generator',
+    '@mdas/renewal-metrics',
+    '@mdas/scoring',
+    '@mdas/slack-send',
   ],
   // Resolve ESM-style `.js` import suffixes against their `.ts` source.
   //

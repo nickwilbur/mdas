@@ -16,8 +16,7 @@
 //
 // Per-refresh behavior:
 //   - Read GLEAN_MCP_* env. Return empty if missing.
-//   - One paginated Glean search across `app:gainsight` filtered to
-//     `type:calltoaction`. Single sweep, no per-account loop.
+//   - Franchise-wide paginated Glean sweep (not per-account loop).
 //   - Map → GainsightCtaMapped, group by normalized account name.
 //   - Read prior snapshot Account list, build name → accountId index.
 //   - Emit Account partials with gainsightTasks set, plus a SourceLink
@@ -31,12 +30,13 @@ import type {
 } from '@mdas/canonical';
 import { latestSuccessfulRun, readSnapshotAccounts } from '@mdas/db';
 import {
-  GleanClient,
   isFreshEnoughToSkip,
   readGleanCredsFromEnv,
+  resolveGleanClient,
   resolveGleanEnrichLimit,
 } from '../../_shared/src/glean.js';
 import { mapGainsightCta, normalizeName, type GainsightCtaMapped } from './mapper.js';
+import { fetchGainsightCtaDocuments } from './sweep.js';
 
 export const isReadOnly: true = true;
 
@@ -49,14 +49,12 @@ export const gainsightAdapter: ReadAdapter = {
     ctx?: RefreshContext,
   ): Promise<Partial<AdapterFetchResult>> {
     const creds = readGleanCredsFromEnv();
-    if (!creds) return { accounts: [], opportunities: [] };
+    const client = resolveGleanClient(ctx, creds);
+    if (!client) return { accounts: [], opportunities: [] };
 
     const refreshAt = ctx?.asOf ?? new Date();
     const log = ctx?.logger;
 
-    // Build a normalized-name → accountId lookup from the prior snapshot.
-    // Reuse the orchestrator's shared prefetch when available (avoids a
-    // redundant JSONB read shared with cerebro / glean-mcp).
     let allAccounts: CanonicalAccount[];
     if (ctx?.priorRun) {
       allAccounts = ctx.priorRun.accounts;
@@ -68,31 +66,17 @@ export const gainsightAdapter: ReadAdapter = {
       }
       allAccounts = await readSnapshotAccounts(prior.id);
     }
-    // Enrichment scope: by default cover **every** account so downstream
-    // never sees "no Gainsight CTAs" rationales just because an account
-    // fell past an arbitrary cap. Cerebro adopted this policy in May 2026;
-    // glean-mcp + gainsight previously kept a `|| 50` default that
-    // additionally silently ignored `GLEAN_ENRICH_LIMIT=0` due to
-    // JS-truthiness. resolveGleanEnrichLimit() centralizes the policy.
-    //
-    // Per-account freshness skip: if `lastFetchedFromSource.gainsight`
-    // is < GLEAN_FRESHNESS_HOURS (default 24h) old, skip the search for
-    // that account. This makes the 2nd+ refresh of the day a near-no-op
-    // on the slow Glean-backed adapters. Bypass: FORCE_REFRESH=1.
+
     const limit = resolveGleanEnrichLimit();
     const scoped = limit > 0 ? allAccounts.slice(0, limit) : allAccounts;
-    const priorAccounts = scoped.filter(
+    const needsRefresh = scoped.filter(
       (a) => !isFreshEnoughToSkip(a.lastFetchedFromSource?.gainsight),
     );
-    const skippedFresh = scoped.length - priorAccounts.length;
+    const skippedFresh = scoped.length - needsRefresh.length;
+    const needsRefreshIds = new Set(needsRefresh.map((a) => a.accountId));
+
     const nameToAccountId = new Map<string, string>();
     for (const a of scoped) {
-      // Note: index uses `scoped`, not `priorAccounts` — accounts skipped
-      // for freshness still need to map their stale CTAs through if we
-      // later decide to merge with cached data. Today we just keep them
-      // off the search loop entirely; the prior-snapshot record already
-      // carries their last-known gainsightTasks via the orchestrator's
-      // last-write-wins merge.
       if (!a.accountName) continue;
       nameToAccountId.set(normalizeName(a.accountName), a.accountId);
     }
@@ -100,7 +84,7 @@ export const gainsightAdapter: ReadAdapter = {
       log?.info('gainsight.skip', { reason: 'prior snapshot had no accounts' });
       return { accounts: [], opportunities: [] };
     }
-    if (priorAccounts.length === 0) {
+    if (needsRefresh.length === 0) {
       log?.info('gainsight.skip', {
         reason: 'all accounts within freshness window',
         scopedAccounts: scoped.length,
@@ -109,86 +93,25 @@ export const gainsightAdapter: ReadAdapter = {
       return { accounts: [], opportunities: [] };
     }
 
-    const client = new GleanClient(creds);
-    // Concurrency 2 to share Glean's rate-limit budget with cerebro +
-    // glean-mcp. See GleanClient's retry-with-backoff for the upstream
-    // safety net.
-    // Use `||` not `??` because docker-compose forwards unset host env
-    // vars as empty strings; Number("") is 0 → zero workers → no-op.
-    const concurrency = Number(process.env.GAINSIGHT_CONCURRENCY) || 2;
-
-    // MCP search ignores datasources / facetFilters — those are
-    // admin-scoped REST args. Per-account keyword search is the only
-    // path that surfaces Gainsight CTAs; we then filter to the
-    // gainsight datasource via the matchingFilters / datasource
-    // fields embedded in each result.
     log?.info('gainsight.start', {
-      accountCount: priorAccounts.length,
+      mode: 'franchise-sweep',
+      accountsNeedingRefresh: needsRefresh.length,
       scopedAccounts: scoped.length,
       skippedFresh,
-      concurrency,
     });
     const startedAt = Date.now();
-    let searchFailures = 0;
-    const docsAccum: Awaited<ReturnType<typeof client.search>>['documents'] = [];
+    ctx?.reportProgress?.(0, 1, 'Gainsight CTA sweep');
 
-    const perAccount = await Promise.all(
-      // Bounded concurrency via simple promise-array slicing — gainsight
-      // adapter doesn't import the helper from glean-mcp; this is small
-      // enough to inline.
-      (() => {
-        const results: Promise<void>[] = [];
-        let cursor = 0;
-        const work = async (): Promise<void> => {
-          while (cursor < priorAccounts.length) {
-            const i = cursor++;
-            const account = priorAccounts[i]!;
-            ctx?.reportProgress?.(i + 1, priorAccounts.length, account.accountName);
-            try {
-              const resp = await client.search({
-                query: `gainsight CTA ${account.accountName}`,
-              });
-              const found = (resp.documents ?? resp.results ?? []).filter(
-                (d) =>
-                  d.datasource === 'gainsight' ||
-                  d.matchingFilters?.app?.includes('gainsight') === true ||
-                  (d.url ?? '').includes('gainsight'),
-              );
-              docsAccum.push(...found);
-            } catch (err) {
-              searchFailures += 1;
-              log?.warn('gainsight.search.account.failed', {
-                accountId: account.accountId,
-                error: (err as Error).message,
-              });
-            }
-          }
-        };
-        for (let w = 0; w < Math.min(concurrency, priorAccounts.length); w++) {
-          results.push(work());
-        }
-        return results;
-      })(),
-    );
-    void perAccount;
+    const { docs, searchCalls } = await fetchGainsightCtaDocuments(client);
+    ctx?.reportProgress?.(1, 1, 'Gainsight CTA sweep');
 
-    // Dedupe by URL — overlapping per-account searches surface the same
-    // CTA more than once.
-    const seenUrls = new Set<string>();
-    const docs = docsAccum.filter((d) => {
-      if (!d.url) return true;
-      if (seenUrls.has(d.url)) return false;
-      seenUrls.add(d.url);
-      return true;
-    });
     log?.info('gainsight.search.complete', {
-      searchedAccounts: priorAccounts.length,
-      searchFailures,
+      mode: 'franchise-sweep',
+      searchCalls,
       docCount: docs.length,
       durationMs: Date.now() - startedAt,
     });
 
-    // Bucket CTAs by normalized account name.
     const ctasByAccountName = new Map<string, GainsightCtaMapped[]>();
     let unmappable = 0;
     for (const doc of docs) {
@@ -202,7 +125,6 @@ export const gainsightAdapter: ReadAdapter = {
       else ctasByAccountName.set(mapped.normalizedName, [mapped]);
     }
 
-    // Match buckets to canonical accountIds and emit partials.
     const accounts: Partial<CanonicalAccount>[] = [];
     let matched = 0;
     let unmatched = 0;
@@ -212,9 +134,9 @@ export const gainsightAdapter: ReadAdapter = {
         unmatched += 1;
         continue;
       }
+      if (!needsRefreshIds.has(accountId)) continue;
+
       matched += 1;
-      // Sort: open first, then by due date ascending (nulls last). Cap
-      // at 25 per account so a noisy company doesn't blow out canonical.
       const sorted = ctas.slice().sort((a, b) => {
         if (a.isOpen !== b.isOpen) return a.isOpen ? -1 : 1;
         const ad = a.task.dueDate ?? '9999';
@@ -254,7 +176,8 @@ export const gainsightAdapter: ReadAdapter = {
   async healthCheck(_ctx?: RefreshContext): Promise<{ ok: boolean; details: string }> {
     const creds = readGleanCredsFromEnv();
     if (!creds) return { ok: false, details: 'GLEAN_MCP_TOKEN / GLEAN_MCP_BASE_URL not set' };
-    return new GleanClient(creds).healthCheck();
+    const client = resolveGleanClient(undefined, creds);
+    return client!.healthCheck();
   },
 };
 

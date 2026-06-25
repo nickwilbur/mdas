@@ -11,6 +11,8 @@ export type { ParsedSlackUrl } from './parse.js';
 
 export { slugifyAccountName } from './slug.js';
 
+export { isAutomatedSlackMessage } from './slack-message.js';
+
 export {
   computeMappingStatus,
   type MappingStatus,

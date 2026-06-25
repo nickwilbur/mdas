@@ -41,6 +41,7 @@ import {
   GleanClient,
   isFreshEnoughToSkip,
   readGleanCredsFromEnv,
+  resolveGleanClient,
   resolveGleanEnrichLimit,
   type GleanDocument,
 } from '../../_shared/src/glean.js';
@@ -98,7 +99,8 @@ export const cerebroGleanAdapter: ReadAdapter = {
     ctx?: RefreshContext,
   ): Promise<Partial<AdapterFetchResult>> {
     const creds = readGleanCredsFromEnv();
-    if (!creds) return { accounts: [], opportunities: [] };
+    const client = resolveGleanClient(ctx, creds);
+    if (!client) return { accounts: [], opportunities: [] };
 
     const refreshAt = ctx?.asOf ?? new Date();
     const log = ctx?.logger;
@@ -161,21 +163,30 @@ export const cerebroGleanAdapter: ReadAdapter = {
     const priorAccounts = scoped.filter(
       (a) => !isFreshEnoughToSkip(a.lastFetchedFromSource?.cerebro),
     );
+    const restCoverage = new Set(ctx?.cerebroRestCoverage?.enrichedAccountIds ?? []);
+    const restAttempted = ctx?.cerebroRestCoverage?.restAttempted ?? false;
+    const skippedRestCovered = priorAccounts.filter((a) => restCoverage.has(a.accountId)).length;
+    const toSearch = priorAccounts.filter((a) => !restCoverage.has(a.accountId));
     const skippedFresh = scoped.length - priorAccounts.length;
-    if (priorAccounts.length === 0) {
+    if (toSearch.length === 0) {
       log?.info('cerebro.skip', {
-        reason: 'all accounts within freshness window',
+        reason: restAttempted
+          ? 'cerebro-rest covered all accounts needing enrichment'
+          : 'all accounts within freshness window',
         scopedAccounts: scoped.length,
         skippedFresh,
+        skippedRestCovered,
+        restAttempted,
       });
       return { accounts: [], opportunities: [] };
     }
 
-    const client = new GleanClient(creds);
     log?.info('cerebro.start', {
-      accountCount: priorAccounts.length,
+      accountCount: toSearch.length,
       scopedAccounts: scoped.length,
       skippedFresh,
+      skippedRestCovered,
+      restAttempted,
       concurrency,
     });
     const startedAt = Date.now();
@@ -188,10 +199,10 @@ export const cerebroGleanAdapter: ReadAdapter = {
     const allDocs: GleanDocument[] = [];
     let cerebroProcessed = 0;
     const perAccount = await mapWithConcurrency(
-      priorAccounts,
+      toSearch,
       concurrency,
       async (account: CanonicalAccount): Promise<GleanDocument[]> => {
-        ctx?.reportProgress?.(++cerebroProcessed, priorAccounts.length, account.accountName);
+        ctx?.reportProgress?.(++cerebroProcessed, toSearch.length, account.accountName);
         try {
           const resp = await client.search({
             // SHORT keywords per Glean MCP tool guidance — no quotes,
@@ -218,7 +229,7 @@ export const cerebroGleanAdapter: ReadAdapter = {
     for (const docs of perAccount) allDocs.push(...docs);
 
     log?.info('cerebro.search.complete', {
-      searchedAccounts: priorAccounts.length,
+      searchedAccounts: toSearch.length,
       searchFailures,
       docCount: allDocs.length,
       durationMs: Date.now() - startedSearches,
@@ -271,8 +282,8 @@ export const cerebroGleanAdapter: ReadAdapter = {
   async healthCheck(_ctx?: RefreshContext): Promise<{ ok: boolean; details: string }> {
     const creds = readGleanCredsFromEnv();
     if (!creds) return { ok: false, details: 'GLEAN_MCP_TOKEN / GLEAN_MCP_BASE_URL not set' };
-    const client = new GleanClient(creds);
-    return client.healthCheck();
+    const client = resolveGleanClient(undefined, creds);
+    return client!.healthCheck();
   },
 };
 

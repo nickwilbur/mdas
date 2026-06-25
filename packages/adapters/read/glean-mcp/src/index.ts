@@ -28,6 +28,7 @@ import {
   GleanClient,
   isFreshEnoughToSkip,
   readGleanCredsFromEnv,
+  resolveGleanClient,
   resolveGleanEnrichLimit,
 } from '../../_shared/src/glean.js';
 import { fetchAccountContext } from './account-context.js';
@@ -73,7 +74,8 @@ export const gleanMcpAdapter: ReadAdapter = {
     ctx?: RefreshContext,
   ): Promise<Partial<AdapterFetchResult>> {
     const creds = readGleanCredsFromEnv();
-    if (!creds) return { accounts: [], opportunities: [] };
+    const client = resolveGleanClient(ctx, creds);
+    if (!client) return { accounts: [], opportunities: [] };
 
     const refreshAt = ctx?.asOf ?? new Date();
     const log = ctx?.logger;
@@ -118,11 +120,11 @@ export const gleanMcpAdapter: ReadAdapter = {
     // the orchestrator's last-write-wins merge keeps the prior snapshot's
     // data intact for skipped accounts. Bypass: FORCE_REFRESH=1.
     //
-    // Cost shape: each account = ~4 Glean searches (1 plan-context after
-    // the secondary-query removal in this same change + 3 evidence
-    // sources). At the new rate-limiter ceiling of ~10 req/s aggregate
-    // shared with cerebro+gainsight, a cold-cache run of 347 accounts
-    // ≈ 140s for glean-mcp alone; a warm-cache run is near-zero.
+    // Cost shape: each account = ~2 Glean searches (calendar + gmail) plus
+    // ~3–4 paginated Slack queries (channel id, slug, token). At the rate-
+    // limiter ceiling of ~10 req/s aggregate shared with cerebro+gainsight,
+    // a cold-cache run of 347 accounts ≈ 140s+ for glean-mcp alone; a
+    // warm-cache run is near-zero.
     const limit = resolveGleanEnrichLimit();
     const scoped = limit > 0 ? allAccounts.slice(0, limit) : allAccounts;
     const priorAccounts = scoped.filter(
@@ -138,7 +140,6 @@ export const gleanMcpAdapter: ReadAdapter = {
       return { accounts: [], opportunities: [] };
     }
 
-    const client = new GleanClient(creds);
     log?.info('glean-mcp.start', {
       accountCount: priorAccounts.length,
       scopedAccounts: scoped.length,
@@ -203,10 +204,22 @@ export const gleanMcpAdapter: ReadAdapter = {
   async healthCheck(_ctx?: RefreshContext): Promise<{ ok: boolean; details: string }> {
     const creds = readGleanCredsFromEnv();
     if (!creds) return { ok: false, details: 'GLEAN_MCP_TOKEN / GLEAN_MCP_BASE_URL not set' };
-    return new GleanClient(creds).healthCheck();
+    const client = resolveGleanClient(undefined, creds);
+    return client!.healthCheck();
   },
 };
 
 export { fetchAccountContext } from './account-context.js';
-export { fetchAccountEvidence, applyContextAndEvidenceToAccount } from './evidence.js';
+export {
+  fetchAccountEvidence,
+  applyContextAndEvidenceToAccount,
+  buildSlackSearchQueries,
+  fetchSlackChannelDocs,
+} from './evidence.js';
+export { mergeRecentMeetings } from '@mdas/canonical';
+export {
+  GleanClient,
+  readGleanCredsFromEnv,
+  resolveGleanClient,
+} from '../../_shared/src/glean.js';
 export default gleanMcpAdapter;

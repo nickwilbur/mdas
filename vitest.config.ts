@@ -9,6 +9,11 @@ export default defineConfig({
       'scripts/**/*.test.ts',
       'scripts/**/*.test.mts',
     ],
+    coverage: {
+      provider: 'v8',
+      include: ['packages/**/src/**/*.ts', 'apps/**/src/**/*.ts'],
+      exclude: ['**/*.test.ts', '**/*.d.ts', '**/node_modules/**'],
+    },
   },
   resolve: {
     // Prefer TypeScript over emitted `.js` in `packages/*/src/` so stale

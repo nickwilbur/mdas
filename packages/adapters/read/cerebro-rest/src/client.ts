@@ -54,6 +54,8 @@ export function isRetryableNetworkError(err: unknown): boolean {
 export interface CerebroRestClientOptions {
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  /** Optional per-refresh collector for structured observability. */
+  stats?: import('./stats.js').CerebroRestStatsCollector;
 }
 
 export class CerebroRestClient {
@@ -61,12 +63,14 @@ export class CerebroRestClient {
   private readonly token: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly stats?: import('./stats.js').CerebroRestStatsCollector;
 
   constructor(creds: CerebroRestCredentials, opts: CerebroRestClientOptions = {}) {
     this.baseUrl = creds.baseUrl.replace(/\/$/, '');
     this.token = creds.token;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.stats = opts.stats;
   }
 
   private headers(): Record<string, string> {
@@ -109,14 +113,17 @@ export class CerebroRestClient {
         if (resp.ok) {
           const text = await resp.text();
           const data = text ? (JSON.parse(text) as T) : ({} as T);
+          this.stats?.record(intent, meta.durationMs);
           return { data, meta };
         }
         const errBody = await resp.text().catch(() => '');
         const err = classifyHttpError(resp.status, errBody);
         if (RETRYABLE_STATUSES.has(resp.status) && attempt < MAX_RETRIES - 1) {
+          this.stats?.record(intent, Date.now() - started, { retry: true });
           await sleep(backoffMs(attempt));
           continue;
         }
+        this.stats?.record(intent, Date.now() - started, { error: true });
         throw err;
       } catch (err) {
         clearTimeout(timer);
@@ -130,8 +137,12 @@ export class CerebroRestClient {
         // them ~30% of account-details batches were silently dropped and
         // the workbench showed "Cerebro narrative not synced".
         if (isRetryableNetworkError(err) && attempt < MAX_RETRIES - 1) {
+          this.stats?.record(intent, Date.now() - started, { retry: true });
           await sleep(backoffMs(attempt));
           continue;
+        }
+        if (!(err instanceof ApiError)) {
+          this.stats?.record(intent, Date.now() - started, { error: true });
         }
         throw err;
       }

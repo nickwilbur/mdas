@@ -12,12 +12,15 @@
 // returned (which Glean has access-checked at index time).
 //
 // Strategy:
-//   - One search per source per account, scoped via datasourcesFilter.
-//   - Each result is normalized into a MeetingSummary entry.
-//   - Top-N per source (default 3), so a noisy account doesn't blow out
-//     the canonical record.
+//   - Calendar + Gmail: one search each, client-side datasource filter.
+//   - Slack: multiple keyword queries (channel id, slug, name token)
+//     with paginated searchAll — Glean MCP search is cross-datasource
+//     and a single query often buries Slack hits below unrelated docs.
+//   - Bot/join noise filtered at ingest so human posts aren't displaced
+//     by the per-source cap.
 import type { CanonicalAccount, MeetingSummary, SourceLink } from '@mdas/canonical';
-import { slugifyAccountName } from '@mdas/slack-send';
+import { mergeRecentMeetings } from '@mdas/canonical';
+import { isAutomatedSlackMessage, parseSlackUrl, slugifyAccountName } from '@mdas/slack-send';
 import type { GleanClient, GleanDocument } from '../../_shared/src/glean.js';
 
 export interface EvidenceInput {
@@ -33,15 +36,24 @@ export interface EvidenceOutput {
 }
 
 export interface EvidenceOptions {
-  /** Per-source top-N. Default 3. */
+  /** Per-source top-N for calendar/gmail. Default 3. */
   topNPerSource?: number;
-  /** Days back to consider "recent". Default 30. */
+  /** Days back to consider "recent" for calendar/gmail. Default 30. */
   recencyDays?: number;
+  /** Slack uses a longer window — channels are checked less often in UI. Default 90. */
+  slackRecencyDays?: number;
+  /** Max human Slack posts retained after multi-query fetch. Default 50. */
+  maxSlackHumanPosts?: number;
 }
 
 const SLACK_PREFIX = 'slack';
 const CAL_PREFIX = 'calendar';
 const STAIRCASE_PREFIX = 'staircase';
+
+const DEFAULT_SLACK_RECENCY_DAYS = 90;
+const DEFAULT_MAX_SLACK_HUMAN_POSTS = 50;
+/** Pages per Slack query — each page is one Glean MCP search call. */
+const SLACK_SEARCH_MAX_PAGES = 5;
 
 interface SourceConfig {
   /** Glean datasource id. */
@@ -54,10 +66,8 @@ interface SourceConfig {
   buildQuery: (input: EvidenceInput) => string;
 }
 
-function parseSlackChannelIdFromUrl(url: string | null | undefined): string | null {
-  if (!url) return null;
-  const match = url.match(/\/archives\/([CGD][A-Z0-9]+)/i);
-  return match?.[1] ?? null;
+function mappedSlackChannelId(input: EvidenceInput): string | null {
+  return parseSlackUrl(input.salesforceSlackChannelUrl ?? null)?.channelId ?? null;
 }
 
 /** Primary slug token for matching Glean hits to an account (e.g. kustomer). */
@@ -82,11 +92,15 @@ export function docMatchesAccount(
   datasource: string,
 ): boolean {
   const blob = docBlob(doc);
-  const channelId = parseSlackChannelIdFromUrl(input.salesforceSlackChannelUrl ?? null);
+  const channelId = mappedSlackChannelId(input);
   const channelSlug = slugifyAccountName(input.accountName);
 
   if (datasource === 'slack') {
-    if (channelId && (doc.url ?? '').includes(channelId)) return true;
+    if (channelId) {
+      const docChannelId = parseSlackUrl(doc.url ?? null)?.channelId;
+      if (docChannelId === channelId) return true;
+      if ((doc.url ?? '').includes(channelId)) return true;
+    }
     if (channelSlug && blob.includes(channelSlug)) return true;
     return false;
   }
@@ -102,12 +116,10 @@ export function docMatchesAccount(
  * we use the snippet returned by search but never call getDocument()
  * on the underlying message. This is the privacy guard for accounts the
  * current user doesn't own.
+ *
+ * Slack is handled separately via fetchSlackChannelDocs() — see above.
  */
-// Glean's MCP `search` tool requires SHORT keyword queries — no quotes,
-// no boolean operators, no advanced filters like `from:`. Per Glean's
-// tool description. We use plain keyword combinations and rely on
-// downstream datasource-filtering of returned docs.
-const SOURCES: SourceConfig[] = [
+const NON_SLACK_SOURCES: SourceConfig[] = [
   {
     datasource: 'googlecalendar',
     bucket: 'calendar',
@@ -115,19 +127,6 @@ const SOURCES: SourceConfig[] = [
     buildQuery: (input) => {
       const token = primaryAccountToken(input.accountName) ?? input.accountName;
       return `${token} renewal QBR review`;
-    },
-  },
-  {
-    datasource: 'slack',
-    bucket: 'calendar', // Slack mentions surface as evidence; logical bucket "calendar" is closest in the canonical type's union.
-    fullDoc: false,
-    buildQuery: (input) => {
-      const slug = slugifyAccountName(input.accountName);
-      if (slug) return slug;
-      const channelId = parseSlackChannelIdFromUrl(input.salesforceSlackChannelUrl ?? null);
-      if (channelId) return channelId;
-      const token = primaryAccountToken(input.accountName);
-      return token ? `${token} slack` : `${input.accountName} slack`;
     },
   },
   {
@@ -140,6 +139,20 @@ const SOURCES: SourceConfig[] = [
     },
   },
 ];
+
+const SLACK_SOURCE: SourceConfig = {
+  datasource: 'slack',
+  bucket: 'calendar', // Slack mentions surface as evidence; logical bucket "calendar" is closest in the canonical type's union.
+  fullDoc: false,
+  buildQuery: (input) => {
+    const channelId = mappedSlackChannelId(input);
+    if (channelId) return channelId;
+    const slug = slugifyAccountName(input.accountName);
+    if (slug) return slug;
+    const token = primaryAccountToken(input.accountName);
+    return token ? `${token} slack` : `${input.accountName} slack`;
+  },
+};
 
 function normalizeStartTime(doc: GleanDocument): string {
   return doc.updateTime ?? doc.createTime ?? new Date().toISOString();
@@ -199,27 +212,113 @@ function isRecent(doc: GleanDocument, recencyDays: number): boolean {
   return age <= recencyDays * 24 * 60 * 60 * 1000;
 }
 
-/** Merge prior + new meetings, deduped by URL, newest first. */
-export function mergeRecentMeetings(
-  prior: MeetingSummary[] | undefined,
-  next: MeetingSummary[],
-): MeetingSummary[] {
-  const byUrl = new Map<string, MeetingSummary>();
-  for (const meeting of prior ?? []) {
-    if (meeting.url) byUrl.set(meeting.url, meeting);
+function docRecencyMs(doc: GleanDocument): number {
+  const ts = doc.updateTime ?? doc.createTime;
+  return ts ? Date.parse(ts) : 0;
+}
+
+function docIsSlackSource(doc: GleanDocument): boolean {
+  if (doc.datasource === 'slack') return true;
+  const apps = doc.matchingFilters?.app ?? [];
+  return apps.some((a) => a === 'slack');
+}
+
+function isAutomatedSlackDoc(doc: GleanDocument): boolean {
+  const title = doc.title ?? '';
+  const summary = doc.snippets?.[0] ?? null;
+  return isAutomatedSlackMessage(title, summary);
+}
+
+/** Distinct Slack search queries — channel id first when mapped. */
+export function buildSlackSearchQueries(input: EvidenceInput): string[] {
+  const queries: string[] = [];
+  const seen = new Set<string>();
+  const add = (q: string | null | undefined) => {
+    const trimmed = q?.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    queries.push(trimmed);
+  };
+
+  const channelId = mappedSlackChannelId(input);
+  add(channelId);
+  const slug = slugifyAccountName(input.accountName);
+  if (slug) {
+    add(slug);
+    add(slug.replace(/^cust-/, ''));
   }
-  for (const meeting of next) {
-    if (meeting.url) byUrl.set(meeting.url, meeting);
-  }
-  return [...byUrl.values()].sort(
-    (a, b) => Date.parse(b.startTime ?? '') - Date.parse(a.startTime ?? ''),
+  const token = primaryAccountToken(input.accountName);
+  if (token && token.length >= 3) add(`${token} slack`);
+  if (queries.length === 0) add(SLACK_SOURCE.buildQuery(input));
+  return queries;
+}
+
+/**
+ * Paginated, multi-query Slack fetch. Glean MCP search is cross-datasource
+ * and single-query retrieval routinely misses indexed channel posts.
+ */
+export async function fetchSlackChannelDocs(
+  client: GleanClient,
+  input: EvidenceInput,
+  recencyDays: number,
+  maxHumanPosts: number,
+): Promise<GleanDocument[]> {
+  const byUrl = new Map<string, GleanDocument>();
+  const queries = buildSlackSearchQueries(input);
+
+  await Promise.all(
+    queries.map(async (query) => {
+      try {
+        const docs = await client.searchAll({ query }, SLACK_SEARCH_MAX_PAGES);
+        for (const doc of docs) {
+          if (!doc.url || byUrl.has(doc.url)) continue;
+          if (!docIsSlackSource(doc)) continue;
+          if (!isRecent(doc, recencyDays)) continue;
+          if (!docMatchesAccount(doc, input, 'slack')) continue;
+          if (isAutomatedSlackDoc(doc)) continue;
+          byUrl.set(doc.url, doc);
+        }
+      } catch {
+        // Per-query failure is non-fatal — other queries may succeed.
+      }
+    }),
   );
+
+  return [...byUrl.values()]
+    .sort((a, b) => docRecencyMs(b) - docRecencyMs(a))
+    .slice(0, maxHumanPosts);
+}
+
+async function fetchNonSlackSourceDocs(
+  client: GleanClient,
+  source: SourceConfig,
+  input: EvidenceInput,
+  recencyDays: number,
+  topN: number,
+): Promise<GleanDocument[]> {
+  try {
+    const resp = await client.search({
+      query: source.buildQuery(input),
+    });
+    const docs = resp.documents ?? resp.results ?? [];
+    const inSource = docs.filter((d) => {
+      if (d.datasource === source.datasource) return true;
+      const apps = d.matchingFilters?.app ?? [];
+      return apps.some((a) => a === source.datasource);
+    });
+    return inSource
+      .filter((d) => isRecent(d, recencyDays))
+      .filter((d) => docMatchesAccount(d, input, source.datasource))
+      .sort((a, b) => docRecencyMs(b) - docRecencyMs(a))
+      .slice(0, topN);
+  } catch {
+    return [];
+  }
 }
 
 /**
  * Fetch cross-source evidence (calendar, slack, staircase) for one account.
- * Issues SOURCES.length parallel searches and stitches the results into
- * a single recentMeetings array bounded by topNPerSource.
+ * Slack uses dedicated multi-query pagination; other sources use one search each.
  */
 export async function fetchAccountEvidence(
   client: GleanClient,
@@ -228,33 +327,23 @@ export async function fetchAccountEvidence(
 ): Promise<EvidenceOutput> {
   const topN = opts.topNPerSource ?? 3;
   const recencyDays = opts.recencyDays ?? 30;
+  const slackRecencyDays = opts.slackRecencyDays ?? Math.max(recencyDays, DEFAULT_SLACK_RECENCY_DAYS);
+  const maxSlackHumanPosts = opts.maxSlackHumanPosts ?? DEFAULT_MAX_SLACK_HUMAN_POSTS;
 
-  const perSource = await Promise.all(
-    SOURCES.map(async (source) => {
-      try {
-        const resp = await client.search({
-          query: source.buildQuery(input),
-        });
-        const docs = resp.documents ?? resp.results ?? [];
-        // MCP search returns cross-datasource results — filter to the
-        // intended source. Datasource is reported on the top-level
-        // `datasource` field for each doc; some Glean builds also
-        // populate matchingFilters.app.
-        const inSource = docs.filter((d) => {
-          if (d.datasource === source.datasource) return true;
-          const apps = d.matchingFilters?.app ?? [];
-          return apps.some((a) => a === source.datasource);
-        });
-        const fresh = inSource
-          .filter((d) => isRecent(d, recencyDays))
-          .filter((d) => docMatchesAccount(d, input, source.datasource))
-          .slice(0, topN);
-        return { source, docs: fresh };
-      } catch {
-        return { source, docs: [] as GleanDocument[] };
-      }
-    }),
-  );
+  const [slackDocs, ...otherSourceDocs] = await Promise.all([
+    fetchSlackChannelDocs(client, input, slackRecencyDays, maxSlackHumanPosts),
+    ...NON_SLACK_SOURCES.map((source) =>
+      fetchNonSlackSourceDocs(client, source, input, recencyDays, topN),
+    ),
+  ]);
+
+  const perSource: { source: SourceConfig; docs: GleanDocument[] }[] = [
+    { source: SLACK_SOURCE, docs: slackDocs },
+    ...NON_SLACK_SOURCES.map((source, i) => ({
+      source,
+      docs: otherSourceDocs[i] ?? [],
+    })),
+  ];
 
   const recentMeetings: MeetingSummary[] = [];
   const sourceLinks: SourceLink[] = [];

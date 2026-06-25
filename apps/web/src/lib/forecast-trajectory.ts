@@ -33,6 +33,7 @@ import {
   selectLatestClariForecastValue,
   supplementViewsWithDroppedQuarterChurnOpps,
   timeframeMatchesFiscalQuarter,
+  type QuarterKpiSnapshot,
 } from '@mdas/forecast-generator';
 import type { AccountView, CanonicalAccount, CanonicalOpportunity } from '@mdas/canonical';
 import { loadChurnOpportunitySupplementFromRecentRefreshes } from '@/lib/read-model';

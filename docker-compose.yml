@@ -102,6 +102,8 @@ services:
       # Concurrency overrides for the Glean-using adapters. Lower =
       # gentler on Glean's rate limit at the cost of refresh duration.
       CEREBRO_CONCURRENCY: ${CEREBRO_CONCURRENCY-}
+      CEREBRO_REST_CONCURRENCY: ${CEREBRO_REST_CONCURRENCY-}
+      CEREBRO_BATCH_SIZE: ${CEREBRO_BATCH_SIZE-}
       GAINSIGHT_CONCURRENCY: ${GAINSIGHT_CONCURRENCY-}
       GLEAN_CONCURRENCY: ${GLEAN_CONCURRENCY-}
       # Cap how many accounts each Glean adapter enriches per refresh.

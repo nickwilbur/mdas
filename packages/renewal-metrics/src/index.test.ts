@@ -10,8 +10,10 @@ import {
   filterUpcomingRenewals,
   isKnownChurnOpportunity,
   isOverallAssessmentAtRisk,
+  resolveDisplayCseName,
+  resolvePipelineStatus,
   type RenewalOppRow,
-} from './index.js';
+} from '@mdas/renewal-metrics';
 
 const AS_OF = '2026-06-16';
 
@@ -223,10 +225,16 @@ describe('classifyRenewalOutcome', () => {
     expect(classifyRenewalOutcome(opp, view, AS_OF)).toBe('pending');
   });
 
-  it('classifies open 100% loss forecast as pending not full churn', () => {
+  it('classifies open 100% loss forecast as pending with full churn pipeline status', () => {
     const opp = mkOpp({ forecastMostLikely: -100_000, closeDate: '2026-08-01' });
     const view = mkView(mkAccount(), [opp]);
     expect(classifyRenewalOutcome(opp, view, AS_OF)).toBe('pending');
+    const rows = buildRenewalOppRows([view], null, () => null, AS_OF);
+    expect(rows[0]!.downsellAmountUSD).toBe(100_000);
+    expect(rows[0]!.atrUSD).toBe(100_000);
+    const status = resolvePipelineStatus(rows[0]!);
+    expect(status.key).toBe('forecast_full_churn');
+    expect(status.label).toBe('Forecast full churn');
   });
 
   it('does not classify churn notice alone as full churn on open opp', () => {
@@ -411,6 +419,26 @@ describe('buildRenewalMetrics', () => {
   it('accepts Confirmed Full Churn with Full Churn sub-type', () => {
     const opp = mkOpp({ churnRisk: 'Confirmed Full Churn', subType: 'Full Churn' });
     expect(isKnownChurnOpportunity(opp)).toBe(true);
+  });
+});
+
+describe('resolveDisplayCseName', () => {
+  it('shows Digital when CS Coverage is Digital and no assigned CSE', () => {
+    expect(
+      resolveDisplayCseName({
+        assignedCSE: null,
+        csCoverage: 'Digital',
+      }),
+    ).toBe('Digital');
+  });
+
+  it('prefers assigned CSE name over Digital coverage', () => {
+    expect(
+      resolveDisplayCseName({
+        assignedCSE: { id: 'U1', name: 'Pat CSE' },
+        csCoverage: 'Digital',
+      }),
+    ).toBe('Pat CSE');
   });
 });
 

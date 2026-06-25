@@ -263,6 +263,11 @@ export class GleanClient {
   /** Per-refresh response cache keyed by URL. Avoids re-fetching the same
    *  document when multiple adapter codepaths reference it. */
   private readonly docCache = new Map<string, GleanDocument>();
+  /** Per-refresh search cache keyed by query+cursor. Dedupes identical
+   *  searches across cerebro-glean, gainsight, and glean-mcp. */
+  private readonly searchCache = new Map<string, GleanSearchResponse>();
+  private searchCacheHits = 0;
+  private searchCacheMisses = 0;
 
   /** MCP endpoint URL — used as-is for JSON-RPC POSTs. */
   private readonly mcpUrl: string;
@@ -515,9 +520,27 @@ export class GleanClient {
    * them optional. To avoid `unknown field` errors we keep the arg set
    * minimal. */
   async search(opts: GleanSearchOptions): Promise<GleanSearchResponse> {
+    const cacheKey = `${opts.query}\0${opts.cursor ?? ''}`;
+    const cached = this.searchCache.get(cacheKey);
+    if (cached) {
+      this.searchCacheHits += 1;
+      return cached;
+    }
+    this.searchCacheMisses += 1;
     const args: Record<string, unknown> = { query: opts.query };
     const result = await this.callTool('search', args);
-    return parseSearchResult(result);
+    const parsed = parseSearchResult(result);
+    this.searchCache.set(cacheKey, parsed);
+    return parsed;
+  }
+
+  /** Search cache stats for refresh observability. */
+  searchCacheStats(): { hits: number; misses: number; size: number } {
+    return {
+      hits: this.searchCacheHits,
+      misses: this.searchCacheMisses,
+      size: this.searchCache.size,
+    };
   }
 
   /** Auto-paginate a search across cursors. Glean's MCP `search` tool
@@ -1000,6 +1023,16 @@ export function readGleanCredsFromEnv(): GleanCredentials | null {
   const e = process.env;
   if (!e.GLEAN_MCP_TOKEN || !e.GLEAN_MCP_BASE_URL) return null;
   return { token: e.GLEAN_MCP_TOKEN, baseUrl: e.GLEAN_MCP_BASE_URL };
+}
+
+/** Prefer orchestrator-injected client; otherwise construct a new one. */
+export function resolveGleanClient(
+  ctx: { gleanClient?: GleanClient } | undefined,
+  creds: GleanCredentials | null,
+): GleanClient | null {
+  if (ctx?.gleanClient) return ctx.gleanClient;
+  if (!creds) return null;
+  return new GleanClient(creds);
 }
 
 /**

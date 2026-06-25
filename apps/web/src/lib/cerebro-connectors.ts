@@ -3,6 +3,7 @@
 
 import { readCerebroCredsFromEnv, runCerebroConnectionTest } from '@mdas/adapter-cerebro-rest';
 import { readGleanCredsFromEnv, GleanClient } from '@mdas/adapter-shared/glean';
+import type { CerebroRisks } from '@mdas/canonical';
 
 export type ConnectorState = 'ready' | 'misconfigured' | 'disabled' | 'error';
 
@@ -195,7 +196,7 @@ export function summarizeCerebroSnapshotQuality(
   accounts: Array<{
     allTimeARR: number | null;
     cerebroRiskCategory: string | null;
-    cerebroRisks?: Record<string, boolean | null> | null;
+    cerebroRisks?: CerebroRisks | null;
     lastFetchedFromSource?: Partial<Record<string, string>>;
   }>,
 ): CerebroSnapshotQuality {

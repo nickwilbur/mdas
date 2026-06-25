@@ -106,7 +106,15 @@ const { fakeCerebroRest, fakeCerebroGlean } = vi.hoisted(() => ({
     fetch: vi.fn(async () => ({ accounts: [], opportunities: [] })),
   } as ReadAdapter,
 }));
-vi.mock('@mdas/adapter-cerebro-rest', () => ({ cerebroRestAdapter: fakeCerebroRest }));
+vi.mock('@mdas/adapter-cerebro-rest', async () => {
+  const actual = await vi.importActual<typeof import('@mdas/adapter-cerebro-rest')>(
+    '@mdas/adapter-cerebro-rest',
+  );
+  return {
+    ...actual,
+    cerebroRestAdapter: fakeCerebroRest,
+  };
+});
 vi.mock('@mdas/adapter-cerebro-glean', () => ({ cerebroGleanAdapter: fakeCerebroGlean }));
 vi.mock('@mdas/adapter-gainsight', () => ({ gainsightAdapter: { name: 'gs', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-staircase-gmail', () => ({ staircaseGmailAdapter: { name: 'sg', isReadOnly: true, fetch: vi.fn() } }));
@@ -131,7 +139,7 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks } from './orchestrate.js';
+import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks, buildCerebroRestCoverage } from './orchestrate.js';
 import { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
 
 // Helpers to keep tests focused. The fixture only carries the fields
@@ -264,20 +272,33 @@ describe('runRefresh — orchestrator', () => {
       ({ name, source, isReadOnly: true, fetch: vi.fn() }) as ReadAdapter;
     const adapters = [
       mk('local-snapshots', 'local-snapshots'),
+      mk('cerebro-rest', 'cerebro'),
       mk('cerebro-glean', 'cerebro'),
       mk('gainsight', 'gainsight'),
       mk('glean-mcp', 'glean-mcp'),
       mk('salesforce', 'salesforce'),
     ];
-    const { immediate, deferred } = partitionAdaptersForFetch(adapters);
+    const { immediate, deferredCerebroGlean, deferred } = partitionAdaptersForFetch(adapters);
     expect(immediate.map((a) => a.name)).toEqual([
       'local-snapshots',
-      'cerebro-glean',
+      'cerebro-rest',
       'gainsight',
       'salesforce',
     ]);
+    expect(deferredCerebroGlean.map((a) => a.name)).toEqual(['cerebro-glean']);
     expect(deferred.map((a) => a.name)).toEqual(['glean-mcp']);
   });
+
+  it('keeps cerebro-glean in immediate phase when cerebro-rest is absent', () => {
+    const mk = (name: string, source: string): ReadAdapter =>
+      ({ name, source, isReadOnly: true, fetch: vi.fn() }) as ReadAdapter;
+    const adapters = [mk('cerebro-glean', 'cerebro')];
+    const { immediate, deferredCerebroGlean } = partitionAdaptersForFetch(adapters);
+    expect(immediate.map((a) => a.name)).toEqual(['cerebro-glean']);
+    expect(deferredCerebroGlean).toHaveLength(0);
+  });
+
+  // cerebro-glean inclusion policy is covered in cerebro-glean-policy.test.ts.
 
   it('keeps results from two adapters that share a source (cerebro-rest + cerebro-glean)', async () => {
     // Regression: fetchResults was keyed by `source`, so cerebro-glean
@@ -285,6 +306,7 @@ describe('runRefresh — orchestrator', () => {
     // (also source 'cerebro'), silently dropping Risk Category +
     // narrative from every snapshot. Keying by adapter NAME fixes it.
     process.env.ADAPTER_CEREBRO = 'real';
+    process.env.CEREBRO_GLEAN_FALLBACK = '1';
     try {
       (fakeLocal.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         accounts: [accountFixture('A1')],
@@ -331,6 +353,7 @@ describe('runRefresh — orchestrator', () => {
       expect(a1?.cerebroRisks?.utilizationRisk).toBe(true);
     } finally {
       delete process.env.ADAPTER_CEREBRO;
+      delete process.env.CEREBRO_GLEAN_FALLBACK;
     }
   });
 
@@ -357,6 +380,27 @@ describe('runRefresh — orchestrator', () => {
     expect(readSnapshotAccounts).toHaveBeenCalledTimes(1);
     expect(readSnapshotOpportunities).toHaveBeenCalledTimes(1);
     expect(readSnapshotAccounts).toHaveBeenCalledWith(priorRunId);
+  });
+});
+
+describe('buildCerebroRestCoverage', () => {
+  it('lists account IDs with narrative from REST results', () => {
+    const coverage = buildCerebroRestCoverage(
+      {
+        accounts: [
+          { accountId: 'A1', cerebroRiskCategory: 'High' } as CanonicalAccount,
+          { accountId: 'A2', cerebroRiskAnalysis: 'Stable.' } as CanonicalAccount,
+          { accountId: 'A3' } as CanonicalAccount,
+        ],
+      },
+      true,
+    );
+    expect(coverage?.enrichedAccountIds.sort()).toEqual(['A1', 'A2']);
+    expect(coverage?.restAttempted).toBe(true);
+  });
+
+  it('returns undefined when REST was not attempted', () => {
+    expect(buildCerebroRestCoverage({ accounts: [] }, false)).toBeUndefined();
   });
 });
 

@@ -175,16 +175,16 @@ export function scoreExpansionPotential(
   let score = 0;
 
   const upsell = view.upsell;
-  if (upsell.band === 'High') {
+  if (upsell.band === 'Hot') {
     score += 2;
     hypotheses.push({
-      title: 'High upsell band',
-      detail: `MDAS upsell assessment is High (score ${upsell.score}).`,
+      title: 'Hot upsell band',
+      detail: `MDAS upsell assessment is Hot (score ${upsell.score}).`,
       confidence: 'high',
       impact: 'high',
       sourceSignalIds: [],
     });
-  } else if (upsell.band === 'Medium') {
+  } else if (upsell.band === 'Active' || upsell.band === 'Qualified') {
     score += 1;
   }
 
@@ -234,7 +234,7 @@ export function scoreExpansionPotential(
   let potential: ExpansionPotential = 'unknown';
   if (score >= 3) potential = 'high';
   else if (score >= 1) potential = 'medium';
-  else if (score <= 0 && upsell.band === 'Low') potential = 'low';
+  else if (score <= 0 && upsell.band === 'Watch') potential = 'low';
 
   return { potential, hypotheses, score };
 }

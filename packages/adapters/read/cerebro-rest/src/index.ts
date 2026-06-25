@@ -21,11 +21,27 @@ import { readCerebroCredsFromEnv } from './config.js';
 import { runCerebroConnectionTest } from './connection-test.js';
 import { mapAccountDetailsItem } from './mapper.js';
 import type { CerebroRestMappedRecord } from './mapper.js';
+import { createCerebroRestStatsCollector } from './stats.js';
 
 export const isReadOnly: true = true;
 
-const DEFAULT_CONCURRENCY = 4;
-const ACCOUNT_DETAILS_BATCH_SIZE = 10;
+const DEFAULT_REST_CONCURRENCY = 4;
+const DEFAULT_BATCH_SIZE = 10;
+const MAX_BATCH_SIZE = 10;
+
+function resolveRestConcurrency(): number {
+  const restOnly = Number(process.env.CEREBRO_REST_CONCURRENCY);
+  if (Number.isFinite(restOnly) && restOnly > 0) return restOnly;
+  const legacy = Number(process.env.CEREBRO_CONCURRENCY);
+  if (Number.isFinite(legacy) && legacy > 0) return legacy;
+  return DEFAULT_REST_CONCURRENCY;
+}
+
+function resolveBatchSize(): number {
+  const n = Number(process.env.CEREBRO_BATCH_SIZE);
+  if (Number.isFinite(n) && n > 0) return Math.min(MAX_BATCH_SIZE, Math.floor(n));
+  return DEFAULT_BATCH_SIZE;
+}
 
 function chunk<T>(items: T[], size: number): T[][] {
   const batches: T[][] = [];
@@ -75,8 +91,8 @@ export const cerebroRestAdapter: ReadAdapter = {
 
     const refreshAt = ctx?.asOf ?? new Date();
     const log = ctx?.logger;
-    const concurrency =
-      Number(process.env.CEREBRO_CONCURRENCY) || DEFAULT_CONCURRENCY;
+    const concurrency = resolveRestConcurrency();
+    const batchSize = resolveBatchSize();
 
     let allAccounts: CanonicalAccount[];
     if (ctx?.priorRun) {
@@ -114,9 +130,12 @@ export const cerebroRestAdapter: ReadAdapter = {
       return { accounts: [], opportunities: [] };
     }
 
-    const client = new CerebroRestClient(creds);
+    const stats = createCerebroRestStatsCollector();
+    const client = new CerebroRestClient(creds, { stats });
     log?.info('cerebro-rest.start', {
       accountCount: toFetch.length,
+      batchSize,
+      batchCount: Math.ceil(toFetch.length / batchSize),
       concurrency,
       baseUrl: creds.baseUrl,
     });
@@ -124,20 +143,20 @@ export const cerebroRestAdapter: ReadAdapter = {
     const startedAt = Date.now();
     let failures = 0;
     let processed = 0;
-    const batches = chunk(toFetch, ACCOUNT_DETAILS_BATCH_SIZE);
+    const batches = chunk(toFetch, batchSize);
     const mappedRecords: Array<CerebroRestMappedRecord | null> = [];
 
     await mapWithConcurrency(batches, concurrency, async (batch) => {
       const ids = batch.map(
         (a) => a.salesforceAccountId || a.accountId,
       );
-      for (const account of batch) {
-        ctx?.reportProgress?.(++processed, toFetch.length, account.accountName);
-      }
       try {
         const { data } = await client.postAccountDetails(ids);
         for (const item of data.items) {
           mappedRecords.push(mapAccountDetailsItem(item, { refreshAt }));
+        }
+        for (const account of batch) {
+          ctx?.reportProgress?.(++processed, toFetch.length, account.accountName);
         }
       } catch (err) {
         failures += batch.length;
@@ -164,7 +183,10 @@ export const cerebroRestAdapter: ReadAdapter = {
     log?.info('cerebro-rest.complete', {
       mapped: byAccount.size,
       failures,
+      skippedFresh: scoped.length - toFetch.length,
+      batchCount: batches.length,
       durationMs: Date.now() - startedAt,
+      http: stats.snapshot(),
     });
 
     return { accounts: Array.from(byAccount.values()), opportunities: [] };
@@ -191,5 +213,6 @@ export const cerebroRestAdapter: ReadAdapter = {
 export default cerebroRestAdapter;
 
 export { CerebroRestClient, readCerebroCredsFromEnv, runCerebroConnectionTest };
+export { shouldRunCerebroGleanFallback } from './fallback.js';
 export { mapCerebroHealthRecord, mapAccountDetailsItem } from './mapper.js';
 export { mapCerebroCapabilities } from './capabilities.js';

@@ -9,7 +9,8 @@
 import type { CanonicalAccount } from '@mdas/canonical';
 import { isFreshEnoughToSkip } from '../../_shared/src/glean.js';
 
-function hasCerebroNarrative(account: CanonicalAccount): boolean {
+/** True when the account carries REST-grade Cerebro narrative fields. */
+export function hasCerebroNarrative(account: CanonicalAccount): boolean {
   if (account.cerebroRiskCategory) return true;
   const analysis = account.cerebroRiskAnalysis?.trim();
   return !!analysis;
