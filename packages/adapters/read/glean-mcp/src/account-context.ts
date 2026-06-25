@@ -4,10 +4,8 @@
 // "Account Plans & Docs" section.
 //
 // Strategy:
-//   - One Glean search per account, scoped to gdrive, query =
-//     `"<accountName>" (account plan OR QBR OR business review OR plan)`.
-//     This narrows to docs that mention the account by name AND are
-//     plan-shaped (vs. invoices, contracts, generic spreadsheets).
+//   - One Glean search per account (two when cold: combined plan+QBR query;
+//     warm accounts with ≥2 prior links use primary query only).
 //   - Take the top N results (default 5) sorted by Glean's relevance score.
 //   - Each result becomes an `accountPlanLinks` entry with title, url,
 //     lastModified.
@@ -46,10 +44,11 @@ export interface AccountContextOptions {
 // no boolean operators, no full sentences. Per Glean's tool description.
 // Two queries cover the common doc shapes; we run both per account and
 // dedupe by URL downstream.
+// Combined cold query replaces separate primary + secondary when bootstrapping.
 const DEFAULT_QUERY = (accountName: string): string =>
   `${accountName} account plan`;
-const SECONDARY_QUERY = (accountName: string): string =>
-  `${accountName} QBR business review`;
+const COMBINED_COLD_QUERY = (accountName: string): string =>
+  `${accountName} account plan QBR review`;
 
 const PLAN_KEYWORDS = [
   'account plan',
@@ -98,24 +97,14 @@ export async function fetchAccountContext(
   const topN = opts.topN ?? 5;
   const buildQuery = opts.buildQuery ?? DEFAULT_QUERY;
 
-  // Run two queries per account (plan-shaped + QBR/review-shaped) and
-  // merge results. MCP search ignores datasource filters, so we get
-  // cross-source results and rely on the title-keyword filter
-  // downstream to scope to plan docs.
-  //
-  // Optimization: skip the secondary QBR/business-review query when the
-  // account already has ≥2 plan links in the prior snapshot. The primary
-  // query alone is enough to refresh metadata on existing links; the
-  // secondary is only needed to bootstrap coverage on cold accounts.
-  // Cuts glean-mcp's Glean-call count by ~20% on warm refreshes without
-  // losing coverage on accounts that lack data.
+  // Cold accounts: one combined plan+QBR query. Warm accounts (≥2 prior
+  // plan links): primary query only — enough to refresh metadata on links.
   const SECONDARY_SKIP_THRESHOLD = 2;
   const includeSecondary =
     !opts.buildQuery && (input.priorPlanLinks ?? 0) < SECONDARY_SKIP_THRESHOLD;
-  const queries = [
-    buildQuery(input.accountName),
-    includeSecondary ? SECONDARY_QUERY(input.accountName) : null,
-  ].filter((q): q is string => !!q);
+  const queries = includeSecondary
+    ? [COMBINED_COLD_QUERY(input.accountName)]
+    : [buildQuery(input.accountName)];
 
   const allDocs: GleanDocument[] = [];
   for (const q of queries) {

@@ -120,11 +120,10 @@ export const gleanMcpAdapter: ReadAdapter = {
     // the orchestrator's last-write-wins merge keeps the prior snapshot's
     // data intact for skipped accounts. Bypass: FORCE_REFRESH=1.
     //
-    // Cost shape: each account = ~2 Glean searches (calendar + gmail) plus
-    // ~3–4 paginated Slack queries (channel id, slug, token). At the rate-
-    // limiter ceiling of ~10 req/s aggregate shared with cerebro+gainsight,
-    // a cold-cache run of 347 accounts ≈ 140s+ for glean-mcp alone; a
-    // warm-cache run is near-zero.
+    // Cost shape: each account ≈ 1 plan search + 1 combined calendar/gmail
+    // search + 1–3 paginated Slack queries (channel-id only when SF maps
+    // a customer channel). Prior per-account totals were ~2 plan + 2 evidence
+    // + up to 4×5 Slack pages before the 2026-06 perf pass.
     const limit = resolveGleanEnrichLimit();
     const scoped = limit > 0 ? allAccounts.slice(0, limit) : allAccounts;
     const priorAccounts = scoped.filter(

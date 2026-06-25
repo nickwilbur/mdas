@@ -91,15 +91,14 @@ describe('fetchAccountContext', () => {
     expect(out.accountPlanLinks[0]?.url).toBe('u');
   });
 
-  // Performance optimization: warm accounts (≥2 prior plan links) skip
-  // the secondary QBR/business-review query — the primary "<name> account
-  // plan" alone is enough to refresh metadata on existing links. Cold
-  // accounts still get both queries to bootstrap coverage.
-  it('runs both primary + secondary queries for cold accounts (priorPlanLinks < 2)', async () => {
+  // Performance optimization: cold accounts use one combined plan/QBR query
+  // instead of separate primary + secondary searches.
+  it('runs one combined query for cold accounts (priorPlanLinks < 2)', async () => {
     const search = vi.fn(async () => ({ results: [] as GleanDocument[] }));
     const client = { search } as unknown as GleanClient;
     await fetchAccountContext(client, { accountId: 'a1', accountName: 'Acme', priorPlanLinks: 0 });
-    expect(search).toHaveBeenCalledTimes(2);
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(search).toHaveBeenCalledWith({ query: 'Acme account plan QBR review' });
   });
 
   it('skips secondary query for warm accounts (priorPlanLinks >= 2)', async () => {
@@ -109,10 +108,10 @@ describe('fetchAccountContext', () => {
     expect(search).toHaveBeenCalledTimes(1);
   });
 
-  it('defaults to cold (both queries) when priorPlanLinks is omitted', async () => {
+  it('defaults to cold (combined query) when priorPlanLinks is omitted', async () => {
     const search = vi.fn(async () => ({ results: [] as GleanDocument[] }));
     const client = { search } as unknown as GleanClient;
     await fetchAccountContext(client, { accountId: 'a1', accountName: 'Acme' });
-    expect(search).toHaveBeenCalledTimes(2);
+    expect(search).toHaveBeenCalledTimes(1);
   });
 });

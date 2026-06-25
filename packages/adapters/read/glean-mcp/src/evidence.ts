@@ -299,36 +299,43 @@ export async function fetchSlackChannelDocs(
     .slice(0, maxHumanPosts);
 }
 
-async function fetchNonSlackSourceDocs(
+function docMatchesDatasource(doc: GleanDocument, datasource: string): boolean {
+  if (doc.datasource === datasource) return true;
+  const apps = doc.matchingFilters?.app ?? [];
+  return apps.some((a) => a === datasource);
+}
+
+/** One short query for calendar + gmail evidence (was two separate searches). */
+export function buildCombinedNonSlackQuery(input: EvidenceInput): string {
+  const token = primaryAccountToken(input.accountName) ?? input.accountName;
+  return `${token} renewal QBR staircase review`;
+}
+
+async function fetchCombinedNonSlackDocs(
   client: GleanClient,
-  source: SourceConfig,
   input: EvidenceInput,
   recencyDays: number,
   topN: number,
-): Promise<GleanDocument[]> {
+): Promise<GleanDocument[][]> {
   try {
-    const resp = await client.search({
-      query: source.buildQuery(input),
-    });
+    const resp = await client.search({ query: buildCombinedNonSlackQuery(input) });
     const docs = resp.documents ?? resp.results ?? [];
-    const inSource = docs.filter((d) => {
-      if (d.datasource === source.datasource) return true;
-      const apps = d.matchingFilters?.app ?? [];
-      return apps.some((a) => a === source.datasource);
-    });
-    return inSource
-      .filter((d) => isRecent(d, recencyDays))
-      .filter((d) => docMatchesAccount(d, input, source.datasource))
-      .sort((a, b) => docRecencyMs(b) - docRecencyMs(a))
-      .slice(0, topN);
+    return NON_SLACK_SOURCES.map((source) =>
+      docs
+        .filter((d) => docMatchesDatasource(d, source.datasource))
+        .filter((d) => isRecent(d, recencyDays))
+        .filter((d) => docMatchesAccount(d, input, source.datasource))
+        .sort((a, b) => docRecencyMs(b) - docRecencyMs(a))
+        .slice(0, topN),
+    );
   } catch {
-    return [];
+    return NON_SLACK_SOURCES.map(() => []);
   }
 }
 
 /**
  * Fetch cross-source evidence (calendar, slack, staircase) for one account.
- * Slack uses dedicated multi-query pagination; other sources use one search each.
+ * Slack uses dedicated multi-query pagination; calendar + gmail share one search.
  */
 export async function fetchAccountEvidence(
   client: GleanClient,
@@ -340,12 +347,11 @@ export async function fetchAccountEvidence(
   const slackRecencyDays = opts.slackRecencyDays ?? Math.max(recencyDays, DEFAULT_SLACK_RECENCY_DAYS);
   const maxSlackHumanPosts = opts.maxSlackHumanPosts ?? DEFAULT_MAX_SLACK_HUMAN_POSTS;
 
-  const [slackDocs, ...otherSourceDocs] = await Promise.all([
+  const [slackDocs, combinedDocs] = await Promise.all([
     fetchSlackChannelDocs(client, input, slackRecencyDays, maxSlackHumanPosts),
-    ...NON_SLACK_SOURCES.map((source) =>
-      fetchNonSlackSourceDocs(client, source, input, recencyDays, topN),
-    ),
+    fetchCombinedNonSlackDocs(client, input, recencyDays, topN),
   ]);
+  const otherSourceDocs = combinedDocs;
 
   const perSource: { source: SourceConfig; docs: GleanDocument[] }[] = [
     { source: SLACK_SOURCE, docs: slackDocs },

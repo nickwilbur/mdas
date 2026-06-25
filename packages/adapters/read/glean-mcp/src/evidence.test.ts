@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mergeRecentMeetings } from '@mdas/canonical';
 import {
   applyContextAndEvidenceToAccount,
+  buildCombinedNonSlackQuery,
   buildSlackSearchQueries,
   docMatchesAccount,
   fetchAccountEvidence,
@@ -135,17 +136,11 @@ describe('fetchAccountEvidence', () => {
     ).toHaveLength(2);
   });
 
-  it('survives a single-source failure without losing other sources', async () => {
-    // Glean's MCP search uses one query per source (different keyword
-    // sets per datasource bucket). We route by query content: the
-    // "staircase" keyword belongs to the gmail bucket and we make
-    // that call throw; other queries succeed and surface a calendar
-    // result the assertions can lock onto.
+  it('survives when combined non-Slack search omits gmail hits', async () => {
     const client: GleanClient = {
-      searchAll: vi.fn(),
+      searchAll: vi.fn(async () => []),
       search: vi.fn(async ({ query }: { query: string }) => {
-        if (query.includes('staircase')) throw new Error('Gmail connector down');
-        if (query.includes('renewal QBR')) {
+        if (query.includes('renewal QBR staircase')) {
           return {
             results: [
               { title: 'Acme EBR', url: 'https://cal/1', updateTime: RECENT, datasource: 'googlecalendar' },
@@ -196,7 +191,7 @@ describe('fetchAccountEvidence', () => {
       return [];
     });
     const search = vi.fn(async ({ query }: { query: string }) => {
-      if (query.includes('staircase')) {
+      if (query.includes('kustomer') && query.includes('renewal')) {
         return {
           results: [
             {
@@ -339,6 +334,14 @@ describe('fetchAccountEvidence', () => {
     const slackTitles = out.recentMeetings.map((m) => m.title);
     expect(slackTitles).toContain('Dominic Varner in cust-leafly');
     expect(slackTitles).not.toContain('Alice joined #cust-leafly');
+  });
+});
+
+describe('buildCombinedNonSlackQuery', () => {
+  it('uses a single short keyword query for calendar and gmail', () => {
+    expect(
+      buildCombinedNonSlackQuery({ accountId: '1', accountName: 'Kustomer, LLC.' }),
+    ).toBe('kustomer renewal QBR staircase review');
   });
 });
 
