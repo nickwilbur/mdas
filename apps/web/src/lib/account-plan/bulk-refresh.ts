@@ -22,7 +22,10 @@ let drainRunning = false;
 
 export async function enqueueExpand3BulkRefresh(requestedBy: string): Promise<string> {
   const active = await findActiveAccountPlanBulkJob();
-  if (active) return active.id;
+  if (active) {
+    kickBulkJobDrain(active.id);
+    return active.id;
+  }
 
   const accountIds = await listEligibleExpand3AccountIds();
   const { enqueueAccountPlanBulkJob } = await import('@mdas/db');
@@ -33,14 +36,19 @@ export async function enqueueExpand3BulkRefresh(requestedBy: string): Promise<st
     total: accountIds.length,
   });
 
+  kickBulkJobDrain(jobId);
+
+  return jobId;
+}
+
+/** Resume or start draining a bulk job (idempotent when already running). */
+export function kickBulkJobDrain(jobId: string): void {
   void drainBulkJob(jobId).catch((err) => {
     logAccountPlanTelemetry('account_plan.bulk.failed', {
       jobId,
       error: (err as Error).message,
     });
   });
-
-  return jobId;
 }
 
 async function drainBulkJob(jobId: string): Promise<void> {
@@ -118,6 +126,13 @@ async function drainBulkJob(jobId: string): Promise<void> {
       finalStatus === 'success' ? 'account_plan.bulk.completed' : 'account_plan.bulk.partial_failed',
       { jobId, ...counts },
     );
+  } catch (err) {
+    const counts = await countBulkJobItemsByStatus(jobId).catch(() => ({}));
+    await completeAccountPlanBulkJob(jobId, 'failed', {
+      error: (err as Error).message,
+      ...counts,
+    }).catch(() => undefined);
+    throw err;
   } finally {
     drainRunning = false;
   }
