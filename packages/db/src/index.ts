@@ -797,7 +797,10 @@ export async function findActiveAccountPlanBulkJob(): Promise<{ id: string; stat
   const r = await query<{ id: string; status: string }>(
     `SELECT id, status FROM account_plan_bulk_jobs
        WHERE status IN ('queued', 'running')
-         AND (started_at IS NULL OR started_at > NOW() - INTERVAL '2 hours')
+         AND (
+           (status = 'queued' AND enqueued_at > NOW() - INTERVAL '2 hours')
+           OR (status = 'running' AND started_at > NOW() - INTERVAL '2 hours')
+         )
      ORDER BY enqueued_at DESC
      LIMIT 1`,
   );
