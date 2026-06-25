@@ -47,6 +47,10 @@ import { gleanMcpAdapter } from '@mdas/adapter-glean-mcp';
 import { GleanClient, readGleanCredsFromEnv } from '@mdas/adapter-glean-mcp';
 import { localSnapshotsAdapter } from '@mdas/adapter-local-snapshots';
 import { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
+import {
+  runCoordinatedGleanEnrichment,
+  shouldUseCoordinatedGleanLoop,
+} from './glean-coordinator.js';
 
 export { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
 
@@ -610,39 +614,111 @@ export async function runRefresh(
         fetchResults.set(a.name, immediateResults[i]!);
       });
     }
-    if (deferredCerebroGlean.length > 0) {
+    if (deferredCerebroGlean.length > 0 || deferred.length > 0) {
       const restResult = fetchResults.get('cerebro-rest');
       const restAttempted = adapters.some((a) => a.name === 'cerebro-rest');
       const cerebroRestCoverage = buildCerebroRestCoverage(restResult, restAttempted);
-      ctx.logger.info('refresh.cerebroGlean.deferred', {
-        waitingFor: immediate.map((a) => a.name),
-        restEnriched: cerebroRestCoverage?.enrichedAccountIds.length ?? 0,
-      });
-      for (const a of deferredCerebroGlean) {
-        const adapterCtx: RefreshContext = {
+      const runCerebroGlean = deferredCerebroGlean.some((a) => a.name === 'cerebro-glean');
+      const runGleanMcp = deferred.some((a) => a.name === 'glean-mcp');
+      const canCoordinate =
+        shouldUseCoordinatedGleanLoop() &&
+        sharedGleanClient &&
+        runCerebroGlean &&
+        runGleanMcp;
+
+      if (canCoordinate) {
+        ctx.logger.info('refresh.glean.coordinated', {
+          cerebroGlean: true,
+          gleanMcp: true,
+        });
+        const coordinatedCtx: RefreshContext = {
           ...ctx,
-          reportProgress: (current, total, label) =>
-            progress.report(a.name, current, total, label),
           ...(priorRun ? { priorRun } : {}),
-          ...(sharedGleanClient ? { gleanClient: sharedGleanClient } : {}),
+          gleanClient: sharedGleanClient,
           ...(cerebroRestCoverage ? { cerebroRestCoverage } : {}),
         };
-        fetchResults.set(
-          a.name,
-          await fetchOneAdapter(a, adapterCtx),
-        );
-      }
-    }
-    if (deferred.length > 0) {
-      ctx.logger.info('refresh.gleanMcp.deferred', {
-        waitingFor: [
-          ...immediate.map((a) => a.name),
-          ...deferredCerebroGlean.map((a) => a.name),
-        ],
-        deferred: deferred.map((a) => a.name),
-      });
-      for (const a of deferred) {
-        fetchResults.set(a.name, await fetchOneAdapter(a));
+        progress.markRunning('cerebro-glean', 0);
+        progress.markRunning('glean-mcp', 0);
+        const coordinatedStart = Date.now();
+        try {
+          const coordinated = await runCoordinatedGleanEnrichment(
+            sharedGleanClient,
+            coordinatedCtx,
+            {
+              onCerebroProgress: (current, total, label) =>
+                progress.report('cerebro-glean', current, total, label),
+              onGleanMcpProgress: (current, total, label) =>
+                progress.report('glean-mcp', current, total, label),
+            },
+          );
+          const durationMs = Date.now() - coordinatedStart;
+          fetchResults.set('cerebro-glean', coordinated.cerebroGlean);
+          fetchResults.set('glean-mcp', coordinated.gleanMcp);
+          succeeded.push('cerebro-glean', 'glean-mcp');
+          progress.markDone('cerebro-glean', coordinated.cerebroGlean.accounts?.length ?? 0);
+          progress.markDone('glean-mcp', coordinated.gleanMcp.accounts?.length ?? 0);
+          for (const [name, result] of [
+            ['cerebro-glean', coordinated.cerebroGlean],
+            ['glean-mcp', coordinated.gleanMcp],
+          ] as const) {
+            sections.push({
+              source: name,
+              status: 'success',
+              durationMs,
+              accounts: result.accounts?.length ?? 0,
+              opportunities: result.opportunities?.length ?? 0,
+              refreshedAt: new Date().toISOString(),
+            });
+          }
+        } catch (err) {
+          const message = (err as Error).message;
+          const durationMs = Date.now() - coordinatedStart;
+          for (const name of ['cerebro-glean', 'glean-mcp'] as const) {
+            errorLog.push({ source: name, error: message });
+            progress.markError(name);
+            sections.push({
+              source: name,
+              status: 'failed',
+              durationMs,
+              accounts: 0,
+              opportunities: 0,
+              error: message,
+              refreshedAt: new Date().toISOString(),
+            });
+          }
+          fetchResults.set('cerebro-glean', {});
+          fetchResults.set('glean-mcp', {});
+        }
+      } else {
+        if (deferredCerebroGlean.length > 0) {
+          ctx.logger.info('refresh.cerebroGlean.deferred', {
+            waitingFor: immediate.map((a) => a.name),
+            restEnriched: cerebroRestCoverage?.enrichedAccountIds.length ?? 0,
+          });
+          for (const a of deferredCerebroGlean) {
+            const adapterCtx: RefreshContext = {
+              ...ctx,
+              reportProgress: (current, total, label) =>
+                progress.report(a.name, current, total, label),
+              ...(priorRun ? { priorRun } : {}),
+              ...(sharedGleanClient ? { gleanClient: sharedGleanClient } : {}),
+              ...(cerebroRestCoverage ? { cerebroRestCoverage } : {}),
+            };
+            fetchResults.set(a.name, await fetchOneAdapter(a, adapterCtx));
+          }
+        }
+        if (deferred.length > 0) {
+          ctx.logger.info('refresh.gleanMcp.deferred', {
+            waitingFor: [
+              ...immediate.map((a) => a.name),
+              ...deferredCerebroGlean.map((a) => a.name),
+            ],
+            deferred: deferred.map((a) => a.name),
+          });
+          for (const a of deferred) {
+            fetchResults.set(a.name, await fetchOneAdapter(a));
+          }
+        }
       }
     }
     const fetched = adapters.map(
