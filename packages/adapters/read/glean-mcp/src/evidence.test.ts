@@ -236,19 +236,40 @@ describe('fetchAccountEvidence', () => {
     expect(titles).toContain('Meeting summary - Kustomer, LLC (Jun-05)');
   });
 
-  it('merges Slack hits from multiple queries (channel id + slug)', async () => {
+  it('uses a single channel-id query when Salesforce maps a Slack channel', async () => {
+    const searchAll = vi.fn(async () => [
+      {
+        title: 'Dominic Varner in cust-leafly',
+        url: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6/p1',
+        updateTime: RECENT,
+        snippets: ['Renewal timeline follow-up.'],
+        datasource: 'slack',
+      },
+    ]);
+    const client = {
+      search: vi.fn(async () => ({ results: [] })),
+      searchAll,
+      getDocuments: vi.fn(),
+      healthCheck: vi.fn(),
+    } as unknown as GleanClient;
+
+    const docs = await fetchSlackChannelDocs(
+      client,
+      {
+        accountId: 'leafly',
+        accountName: 'Leafly, LLC',
+        salesforceSlackChannelUrl: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6',
+      },
+      90,
+      50,
+    );
+    expect(searchAll).toHaveBeenCalledTimes(1);
+    expect(searchAll).toHaveBeenCalledWith({ query: 'C03ULQFE6V6' }, expect.any(Number));
+    expect(docs.map((d) => d.title)).toEqual(['Dominic Varner in cust-leafly']);
+  });
+
+  it('merges Slack hits from slug queries when no channel is mapped', async () => {
     const searchAll = vi.fn(async ({ query }: { query: string }) => {
-      if (query === 'C03ULQFE6V6') {
-        return [
-          {
-            title: 'Dominic Varner in cust-leafly',
-            url: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6/p1',
-            updateTime: RECENT,
-            snippets: ['Renewal timeline follow-up.'],
-            datasource: 'slack',
-          },
-        ];
-      }
       if (query === 'cust-leafly' || query === 'leafly') {
         return [
           {
@@ -274,15 +295,12 @@ describe('fetchAccountEvidence', () => {
       {
         accountId: 'leafly',
         accountName: 'Leafly, LLC',
-        salesforceSlackChannelUrl: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6',
       },
       90,
       50,
     );
-    expect(searchAll).toHaveBeenCalled();
-    expect(docs.map((d) => d.title)).toEqual(
-      expect.arrayContaining(['Dominic Varner in cust-leafly', 'CSE note in cust-leafly']),
-    );
+    expect(searchAll.mock.calls.length).toBeGreaterThan(1);
+    expect(docs.map((d) => d.title)).toEqual(['CSE note in cust-leafly']);
   });
 
   it('keeps human Slack posts and drops join noise at ingest', async () => {
@@ -325,13 +343,21 @@ describe('fetchAccountEvidence', () => {
 });
 
 describe('buildSlackSearchQueries', () => {
-  it('includes channel id, slug variants, and slack keyword token', () => {
+  it('uses only the mapped channel id when Salesforce provides a Slack URL', () => {
     const queries = buildSlackSearchQueries({
       accountId: '1',
       accountName: 'Leafly, LLC',
       salesforceSlackChannelUrl: 'https://zuora.enterprise.slack.com/archives/C03ULQFE6V6',
     });
-    expect(queries).toEqual(expect.arrayContaining(['C03ULQFE6V6', 'cust-leafly', 'leafly', 'leafly slack']));
+    expect(queries).toEqual(['C03ULQFE6V6']);
+  });
+
+  it('falls back to slug and keyword tokens when no channel is mapped', () => {
+    const queries = buildSlackSearchQueries({
+      accountId: '1',
+      accountName: 'Leafly, LLC',
+    });
+    expect(queries).toEqual(expect.arrayContaining(['cust-leafly', 'leafly', 'leafly slack']));
   });
 });
 

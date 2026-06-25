@@ -53,7 +53,10 @@ const STAIRCASE_PREFIX = 'staircase';
 const DEFAULT_SLACK_RECENCY_DAYS = 90;
 const DEFAULT_MAX_SLACK_HUMAN_POSTS = 50;
 /** Pages per Slack query — each page is one Glean MCP search call. */
-const SLACK_SEARCH_MAX_PAGES = 5;
+function resolveSlackSearchMaxPages(): number {
+  const n = Number(process.env.GLEAN_SLACK_SEARCH_MAX_PAGES);
+  return Number.isFinite(n) && n > 0 ? n : 3;
+}
 
 interface SourceConfig {
   /** Glean datasource id. */
@@ -231,6 +234,12 @@ function isAutomatedSlackDoc(doc: GleanDocument): boolean {
 
 /** Distinct Slack search queries — channel id first when mapped. */
 export function buildSlackSearchQueries(input: EvidenceInput): string[] {
+  const channelId = mappedSlackChannelId(input);
+  // When Salesforce maps a customer channel, a single channel-id query is
+  // precise enough (docMatchesAccount filters by id). Extra slug/token
+  // queries were ~3 redundant paginated searches per account.
+  if (channelId) return [channelId];
+
   const queries: string[] = [];
   const seen = new Set<string>();
   const add = (q: string | null | undefined) => {
@@ -240,8 +249,6 @@ export function buildSlackSearchQueries(input: EvidenceInput): string[] {
     queries.push(trimmed);
   };
 
-  const channelId = mappedSlackChannelId(input);
-  add(channelId);
   const slug = slugifyAccountName(input.accountName);
   if (slug) {
     add(slug);
@@ -265,24 +272,27 @@ export async function fetchSlackChannelDocs(
 ): Promise<GleanDocument[]> {
   const byUrl = new Map<string, GleanDocument>();
   const queries = buildSlackSearchQueries(input);
+  const maxPages = resolveSlackSearchMaxPages();
 
-  await Promise.all(
-    queries.map(async (query) => {
-      try {
-        const docs = await client.searchAll({ query }, SLACK_SEARCH_MAX_PAGES);
-        for (const doc of docs) {
-          if (!doc.url || byUrl.has(doc.url)) continue;
-          if (!docIsSlackSource(doc)) continue;
-          if (!isRecent(doc, recencyDays)) continue;
-          if (!docMatchesAccount(doc, input, 'slack')) continue;
-          if (isAutomatedSlackDoc(doc)) continue;
-          byUrl.set(doc.url, doc);
-        }
-      } catch {
-        // Per-query failure is non-fatal — other queries may succeed.
+  // Run queries sequentially so we can stop once the cap is met — avoids
+  // firing 3–4 parallel paginated searches when the first query suffices.
+  for (const query of queries) {
+    if (byUrl.size >= maxHumanPosts) break;
+    try {
+      const docs = await client.searchAll({ query }, maxPages);
+      for (const doc of docs) {
+        if (!doc.url || byUrl.has(doc.url)) continue;
+        if (!docIsSlackSource(doc)) continue;
+        if (!isRecent(doc, recencyDays)) continue;
+        if (!docMatchesAccount(doc, input, 'slack')) continue;
+        if (isAutomatedSlackDoc(doc)) continue;
+        byUrl.set(doc.url, doc);
+        if (byUrl.size >= maxHumanPosts) break;
       }
-    }),
-  );
+    } catch {
+      // Per-query failure is non-fatal — other queries may succeed.
+    }
+  }
 
   return [...byUrl.values()]
     .sort((a, b) => docRecencyMs(b) - docRecencyMs(a))
