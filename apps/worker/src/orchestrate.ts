@@ -757,7 +757,9 @@ export async function runRefresh(
     accounts: merged.accounts.length,
     opportunities: merged.opportunities.length,
   };
-  merged = filterExpand3Snapshot(merged);
+  merged = filterExpand3Snapshot(merged, {
+    asOfDate: startedAt.toISOString().slice(0, 10),
+  });
   ctx.logger.info('refresh.expand3.scope', {
     before: beforeExpand3,
     after: {

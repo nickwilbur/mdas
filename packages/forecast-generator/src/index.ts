@@ -3,6 +3,8 @@ import type {
   CanonicalAccount,
   CanonicalOpportunity,
   ChangeEvent,
+  MeetingSummary,
+  Workshop,
 } from '@mdas/canonical';
 import {
   parseClariManagerForecastExportCsv,
@@ -92,6 +94,20 @@ export interface ForecastInput {
    * web API orchestrates the lookup and passes the map here.
    */
   accountContext?: Record<string, string>;
+
+  /**
+   * Days back from `activityAsOfDate` for the Key activities block (SF workshops,
+   * calendar demos, Staircase meeting summaries). Defaults to 7 to align
+   * with the WoW change-event window.
+   */
+  activityWindowDays?: number;
+
+  /**
+   * End date (ISO YYYY-MM-DD) for the Key activities recency window. Defaults
+   * to today at render time. Intentionally separate from `asOfDate`, which
+   * anchors fiscal-quarter KPI bucketing (often the quarter start in the UI).
+   */
+  activityAsOfDate?: string;
 
   /**
    * Emerging-risk accounts that Glean flagged from soft signals
@@ -662,17 +678,15 @@ function clariSelectionForQuarter(
 }
 
 /**
- * "Total Risk / Baseline" = full ATR exposed across confirmed + saveable
- * accounts in the quarter (worst case, before saves).
+ * "Total Risk / Baseline" = full ATR on the Clari churn-grid rows in the
+ * quarter (renewal + down-forecast signal), matching the Available to Renew
+ * footer on Forecast → Churn & Downsell → Total.
  */
 function totalRisk(rows: QuarterBucket['rows']): number {
-  return rows
-    .filter(
-      (r) =>
-        r.view.bucket === 'Confirmed Churn' ||
-        r.view.bucket === 'Saveable Risk',
-    )
-    .reduce((s, r) => s + (r.opp.availableToRenewUSD ?? 0), 0);
+  return rows.reduce((s, r) => {
+    if (!isRenewalDownsellChurnOpp(r.view, r.opp)) return s;
+    return s + (r.opp.availableToRenewUSD ?? 0);
+  }, 0);
 }
 
 /**
@@ -1670,6 +1684,158 @@ interface WowSummary {
   details: { sign: '+' | '-'; text: string }[];
 }
 
+/** Leadership-facing customer touchpoint surfaced in the forecast script. */
+export interface KeyActivity {
+  accountName: string;
+  /** Short activity label, e.g. "Modernization workshop" or "Product demo". */
+  label: string;
+  /** ISO timestamp for stable sort / dedupe. */
+  occurredAt: string;
+}
+
+const DEFAULT_ACTIVITY_WINDOW_DAYS = 7;
+const MAX_KEY_ACTIVITIES = 8;
+
+const KEY_ACTIVITY_KEYWORDS =
+  /\b(workshop|demo|qbr|executive|architecture|onboarding|training|poc|proof of concept|deep dive|ebr|business review|revenue)\b/i;
+
+function parseAsOfEndMs(asOfDate: string): number {
+  const t = Date.parse(`${asOfDate}T23:59:59.999Z`);
+  return Number.isFinite(t) ? t : Date.now();
+}
+
+function parseActivityTimeMs(iso: string): number {
+  const trimmed = iso.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return Date.parse(`${trimmed}T23:59:59.999Z`);
+  }
+  return Date.parse(trimmed);
+}
+
+function isWithinActivityWindow(
+  iso: string | null | undefined,
+  windowEndMs: number,
+  windowDays: number,
+): boolean {
+  if (!iso || iso.trim() === '') return false;
+  const t = parseActivityTimeMs(iso);
+  if (!Number.isFinite(t)) return false;
+  const startMs = windowEndMs - windowDays * 24 * 60 * 60 * 1000;
+  return t >= startMs && t <= windowEndMs;
+}
+
+function formatActivityDate(iso: string): string {
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return iso.slice(0, 10);
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+function isSlackThreadMeeting(m: MeetingSummary): boolean {
+  const url = m.url ?? '';
+  return url.includes('slack.com') || /^thread between\b/i.test(m.title);
+}
+
+function inferMeetingActivityLabel(m: MeetingSummary): string | null {
+  if (isSlackThreadMeeting(m)) return null;
+
+  const blob = `${m.title} ${m.summary ?? ''}`;
+
+  if (m.source === 'staircase') {
+    if (/\bworkshop\b/i.test(blob)) return 'Workshop';
+    if (/\bdemo\b/i.test(blob)) return 'Product demo';
+    return 'Customer meeting';
+  }
+
+  if (!KEY_ACTIVITY_KEYWORDS.test(blob)) return null;
+  if (/\bdemo\b/i.test(blob)) return 'Product demo';
+  if (/\bworkshop\b/i.test(blob)) return 'Workshop';
+  if (/\bqbr\b/i.test(blob) || /\bebr\b/i.test(blob)) return 'QBR / EBR';
+  return 'Customer meeting';
+}
+
+function workshopActivityLabel(w: Workshop): string {
+  const type = w.engagementType?.trim();
+  if (!type) return 'Workshop';
+  return /workshop/i.test(type) ? type : `${type} workshop`;
+}
+
+/**
+ * Collect customer-facing activities in the WoW window from SF workshops
+ * and Glean-sourced meetings (calendar, Staircase summaries).
+ * Scans all forecast views — activities are book-wide, not quarter-scoped.
+ */
+export function collectKeyActivities(
+  views: AccountView[],
+  windowEndDate: string,
+  windowDays = DEFAULT_ACTIVITY_WINDOW_DAYS,
+): KeyActivity[] {
+  const windowEndMs = parseAsOfEndMs(windowEndDate);
+  const deduped = new Map<string, KeyActivity>();
+
+  const remember = (activity: KeyActivity) => {
+    const day = activity.occurredAt.slice(0, 10);
+    const key = `${activity.accountName.toLowerCase()}|${activity.label.toLowerCase()}|${day}`;
+    const prev = deduped.get(key);
+    if (!prev || activity.occurredAt > prev.occurredAt) {
+      deduped.set(key, activity);
+    }
+  };
+
+  for (const view of views) {
+    const accountName = view.account.accountName;
+
+    for (const w of view.account.workshops ?? []) {
+      const when = w.workshopDate;
+      if (!when || !isWithinActivityWindow(when, windowEndMs, windowDays)) continue;
+      remember({
+        accountName,
+        label: workshopActivityLabel(w),
+        occurredAt: when,
+      });
+    }
+
+    for (const m of view.account.recentMeetings ?? []) {
+      if (!isWithinActivityWindow(m.startTime, windowEndMs, windowDays)) continue;
+      const label = inferMeetingActivityLabel(m);
+      if (!label) continue;
+      remember({
+        accountName,
+        label,
+        occurredAt: m.startTime,
+      });
+    }
+  }
+
+  return [...deduped.values()]
+    .sort((a, b) => {
+      const dt = b.occurredAt.localeCompare(a.occurredAt);
+      if (dt !== 0) return dt;
+      return a.accountName.localeCompare(b.accountName);
+    })
+    .slice(0, MAX_KEY_ACTIVITIES);
+}
+
+function renderKeyActivitiesSection(
+  activities: KeyActivity[],
+): string[] {
+  const lines: string[] = [];
+  lines.push(`Key activities this week:`);
+  if (activities.length === 0) {
+    lines.push(`  - None recorded this week`);
+    return lines;
+  }
+  for (const a of activities) {
+    lines.push(
+      `  - ${a.accountName} — ${a.label} (${formatActivityDate(a.occurredAt)})`,
+    );
+  }
+  return lines;
+}
+
 /**
  * Dollar / count roll-up across the WoW signals, used to populate the
  * Week-over-week section header. Computed inside wowChanges() so the
@@ -1967,6 +2133,10 @@ function renderQuarterSection(
   mlOverrideMismatchContext:
     | Record<string, MlOverrideMismatchEnrichment>
     | undefined,
+  asOfDate: string,
+  activityWindowDays: number,
+  activityAsOfDate: string,
+  allViews: AccountView[],
 ): string[] {
   const lines: string[] = [];
   const clariPlan = clariSelectionForQuarter(
@@ -2050,6 +2220,31 @@ function renderQuarterSection(
       lines.push(renderAccountBullet(r.view, r.opp, r.usd));
     }
   }
+  lines.push('');
+
+  // Week-over-week + key customer activities — leadership reads what moved
+  // and what we did with customers this week before hygiene / alignment
+  // sections (ML Override mismatch, not-yet-hedged, etc.).
+  const { summaries: wow, header: wowHeader } = wowChanges(bucket.rows, events);
+  lines.push(
+    `Week-over-week Changes - Improvements and increased risk: ${formatWowHeaderSummary(wowHeader)}`,
+  );
+  if (wow.length === 0) {
+    lines.push(`  - No movement this week`);
+  } else {
+    for (const w of wow) {
+      const detail = w.details
+        .map((d) => `${d.sign === '-' ? '↓' : '↑'} ${d.text}`)
+        .join('; ');
+      lines.push(`  ${w.sign} ${w.accountName} - ${detail}`);
+    }
+  }
+  lines.push('');
+  lines.push(
+    ...renderKeyActivitiesSection(
+      collectKeyActivities(allViews, activityAsOfDate, activityWindowDays),
+    ),
+  );
   lines.push('');
 
   // Renewals where the CSE's ML Override materially diverges from the
@@ -2188,25 +2383,6 @@ function renderQuarterSection(
   }
   lines.push('');
 
-  // Week-over-week — placed above Key Saves so leadership sees what
-  // moved this week before drilling into per-account narrative.
-  // (Moved from below Key Saves on 2026-05-20.)
-  const { summaries: wow, header: wowHeader } = wowChanges(bucket.rows, events);
-  lines.push(
-    `Week-over-week Changes - Improvements and increased risk: ${formatWowHeaderSummary(wowHeader)}`,
-  );
-  if (wow.length === 0) {
-    lines.push(`  - No movement this week`);
-  } else {
-    for (const w of wow) {
-      const detail = w.details
-        .map((d) => `${d.sign === '-' ? '↓' : '↑'} ${d.text}`)
-        .join('; ');
-      lines.push(`  ${w.sign} ${w.accountName} - ${detail}`);
-    }
-  }
-  lines.push('');
-
   lines.push(
     `Key Saves/Improvements to close the gap from Total Churn/Downsell risk to Flash:`,
   );
@@ -2256,6 +2432,8 @@ function renderQuarterSection(
  */
 export function generateWeeklyForecast(input: ForecastInput): string {
   const { current } = bucketByQuarter(input.views, input.asOfDate);
+  const activityAsOfDate =
+    input.activityAsOfDate ?? new Date().toISOString().slice(0, 10);
   const lines: string[] = [];
 
   const clariRows = input.clariManagerForecastCsv
@@ -2277,6 +2455,10 @@ export function generateWeeklyForecast(input: ForecastInput): string {
       input.gleanFlaggedRisks,
       input.closeGapActionPlans,
       input.mlOverrideMismatchContext,
+      input.asOfDate,
+      input.activityWindowDays ?? DEFAULT_ACTIVITY_WINDOW_DAYS,
+      activityAsOfDate,
+      input.views,
     ),
   );
 

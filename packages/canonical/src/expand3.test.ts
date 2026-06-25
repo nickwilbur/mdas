@@ -196,7 +196,54 @@ describe('filterExpand3Snapshot', () => {
   });
 
   it('rejects churn customer status from Salesforce', () => {
-    expect(isActiveExpand3Account(acct({ customerStatus: 'Churned (Live)' }), [])).toBe(false);
+    expect(isActiveExpand3Account(acct({ customerStatus: 'Churned (Live)' }), [])).toBe(
+      false,
+    );
+  });
+
+  it('retains churned-live accounts with in-quarter churn-grid renewal opps', () => {
+    const account = acct({ customerStatus: 'Churned (Live)', accountName: 'Bird' });
+    const opps: CanonicalOpportunity[] = [
+      {
+        opportunityId: 'o-bird',
+        opportunityName: 'Bird Renewal',
+        accountId: '001',
+        type: 'Renewal',
+        stageName: '8.0 - Closed/Won',
+        stageNum: 8,
+        closeDate: '2026-05-08',
+        closeQuarter: 'Q2',
+        fiscalYear: 2027,
+        acv: 200_000,
+        availableToRenewUSD: 200_000,
+        forecastMostLikely: -199_904,
+        forecastMostLikelyOverride: null,
+        mostLikelyConfidence: null,
+        forecastHedgeUSD: null,
+        acvDelta: -199_904,
+        knownChurnUSD: null,
+        productLine: null,
+        flmNotes: null,
+        slmNotes: null,
+        scNextSteps: null,
+        salesEngineer: null,
+        fullChurnNotificationToOwnerDate: null,
+        fullChurnFinalEmailSentDate: null,
+        churnDownsellReason: null,
+        sourceLinks: [],
+        lastUpdated: '2026-06-16T00:00:00Z',
+      },
+    ];
+    const out = filterExpand3Snapshot(
+      { accounts: [account], opportunities: opps },
+      { asOfDate: '2026-06-25' },
+    );
+    expect(out.accounts).toHaveLength(1);
+    expect(out.opportunities).toHaveLength(1);
+    expect(
+      isActiveExpand3Account(account, opps, { asOfDate: '2026-06-25' }),
+    ).toBe(true);
+    expect(isActiveExpand3Account(account, opps)).toBe(false);
   });
 
   it('rejects accounts with churn reason and no future open renewal (WellSky pattern)', () => {

@@ -17,6 +17,10 @@
 // payloads. Acceptable for a manual "Generate Update" button click;
 // if we wire this into a cron-pulled dashboard we should memoize
 // per-snapshot KPIs to the `account_view` row or a sibling table.
+//
+// Note: `refresh_runs.trajectory_kpis` is written at refresh time but
+// is NOT read here — the forecast always recomputes (or accepts
+// `latestViews` from account_view for the current point).
 import 'server-only';
 import {
   listSuccessfulRunsSince,
@@ -24,19 +28,18 @@ import {
   readSnapshotOpportunities,
   type RefreshRun,
 } from '@mdas/db';
-import { buildAccountView } from '@mdas/scoring';
+import { buildAccountViewWithDefaults, withAccountDefaults } from '@/lib/account-defaults';
+import type { TrajectoryOverlayMeta } from '@/lib/forecast-trajectory-kpis';
+import type { AccountView, CanonicalAccount, CanonicalOpportunity } from '@mdas/canonical';
 import {
   computeQuarterKpis,
   fiscalQuarterFromDate,
   fiscalQuarterStart,
   parseClariManagerForecastExportCsv,
   selectLatestClariForecastValue,
-  supplementViewsWithDroppedQuarterChurnOpps,
   timeframeMatchesFiscalQuarter,
   type QuarterKpiSnapshot,
 } from '@mdas/forecast-generator';
-import type { AccountView, CanonicalAccount, CanonicalOpportunity } from '@mdas/canonical';
-import { loadChurnOpportunitySupplementFromRecentRefreshes } from '@/lib/read-model';
 
 /**
  * One trajectory point — KPI snapshot for a single quarter at a
@@ -77,6 +80,17 @@ export interface TrajectoryPlanInput {
   currentQuarterUSD?: number;
 }
 
+export interface LoadForecastTrajectoryOptions {
+  /**
+   * The same AccountView[] used to render the forecast script. When set,
+   * the latest calendar-day trajectory point is computed from these views
+   * instead of rebuilding from snapshot rows (avoids drift after surgical
+   * SF re-ingests and matches account_view scoring).
+   */
+  latestViews?: AccountView[];
+  latestRefresh?: TrajectoryOverlayMeta;
+}
+
 /**
  * Load all per-day KPI snapshots since the start of the fiscal
  * quarter containing `asOfDate`.
@@ -91,6 +105,7 @@ export async function loadForecastTrajectory(
   asOfDate: string,
   plan?: TrajectoryPlanInput,
   clariManagerForecastCsv?: string,
+  options?: LoadForecastTrajectoryOptions,
 ): Promise<ForecastTrajectory> {
   const currentFq = fiscalQuarterFromDate(asOfDate);
   if (!currentFq) {
@@ -138,15 +153,14 @@ export async function loadForecastTrajectory(
 
     let views: AccountView[];
     try {
-      views = await buildViewsForRun(run.id);
-      if (day === latestDay) {
-        const prior = await loadChurnOpportunitySupplementFromRecentRefreshes(run.id);
-        views = supplementViewsWithDroppedQuarterChurnOpps(
-          views,
-          prior,
-          asOfDate,
-          buildAccountView,
-        );
+      if (
+        day === latestDay &&
+        options?.latestViews &&
+        options.latestViews.length > 0
+      ) {
+        views = options.latestViews;
+      } else {
+        views = await buildViewsForRun(run.id);
       }
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -211,7 +225,9 @@ async function buildViewsForRun(refreshId: string): Promise<AccountView[]> {
   const views: AccountView[] = [];
   for (const a of accountsById.values()) {
     if (a.franchise !== 'Expand 3') continue;
-    views.push(buildAccountView(a, oppsByAccount.get(a.accountId) ?? []));
+    views.push(
+      buildAccountViewWithDefaults(a, oppsByAccount.get(a.accountId) ?? []),
+    );
   }
   return views;
 }

@@ -38,6 +38,8 @@ export interface EvidenceOutput {
 export interface EvidenceOptions {
   /** Per-source top-N for calendar/gmail. Default 3. */
   topNPerSource?: number;
+  /** Extra calendar hits from the demo/workshop activity query. Default 8. */
+  calendarActivityTopN?: number;
   /** Days back to consider "recent" for calendar/gmail. Default 30. */
   recencyDays?: number;
   /** Slack uses a longer window — channels are checked less often in UI. Default 90. */
@@ -52,6 +54,7 @@ const STAIRCASE_PREFIX = 'staircase';
 
 const DEFAULT_SLACK_RECENCY_DAYS = 90;
 const DEFAULT_MAX_SLACK_HUMAN_POSTS = 50;
+const DEFAULT_CALENDAR_ACTIVITY_TOP_N = 8;
 /** Pages per Slack query — each page is one Glean MCP search call. */
 function resolveSlackSearchMaxPages(): number {
   const n = Number(process.env.GLEAN_SLACK_SEARCH_MAX_PAGES);
@@ -308,7 +311,48 @@ function docMatchesDatasource(doc: GleanDocument, datasource: string): boolean {
 /** One short query for calendar + gmail evidence (was two separate searches). */
 export function buildCombinedNonSlackQuery(input: EvidenceInput): string {
   const token = primaryAccountToken(input.accountName) ?? input.accountName;
-  return `${token} renewal QBR staircase review`;
+  return `${token} renewal QBR demo workshop staircase review`;
+}
+
+/** Dedicated calendar query for customer-facing demos / workshops / revenue meetings. */
+export function buildCalendarActivityQuery(input: EvidenceInput): string {
+  const token = primaryAccountToken(input.accountName) ?? input.accountName;
+  return `${token} demo workshop revenue product meeting onsite`;
+}
+
+async function fetchCalendarActivityDocs(
+  client: GleanClient,
+  input: EvidenceInput,
+  recencyDays: number,
+  topN: number,
+): Promise<GleanDocument[]> {
+  if (topN <= 0) return [];
+  try {
+    const resp = await client.search({ query: buildCalendarActivityQuery(input) });
+    const docs = resp.documents ?? resp.results ?? [];
+    return docs
+      .filter((d) => docMatchesDatasource(d, 'googlecalendar'))
+      .filter((d) => isRecent(d, recencyDays))
+      .filter((d) => docMatchesAccount(d, input, 'googlecalendar'))
+      .sort((a, b) => docRecencyMs(b) - docRecencyMs(a))
+      .slice(0, topN);
+  } catch {
+    return [];
+  }
+}
+
+function mergeCalendarDocs(
+  primary: GleanDocument[],
+  activity: GleanDocument[],
+  cap: number,
+): GleanDocument[] {
+  const byUrl = new Map<string, GleanDocument>();
+  for (const doc of [...primary, ...activity]) {
+    if (doc.url) byUrl.set(doc.url, doc);
+  }
+  return [...byUrl.values()]
+    .sort((a, b) => docRecencyMs(b) - docRecencyMs(a))
+    .slice(0, cap);
 }
 
 async function fetchCombinedNonSlackDocs(
@@ -343,33 +387,48 @@ export async function fetchAccountEvidence(
   opts: EvidenceOptions = {},
 ): Promise<EvidenceOutput> {
   const topN = opts.topNPerSource ?? 3;
+  const calendarActivityTopN = opts.calendarActivityTopN ?? DEFAULT_CALENDAR_ACTIVITY_TOP_N;
   const recencyDays = opts.recencyDays ?? 30;
   const slackRecencyDays = opts.slackRecencyDays ?? Math.max(recencyDays, DEFAULT_SLACK_RECENCY_DAYS);
   const maxSlackHumanPosts = opts.maxSlackHumanPosts ?? DEFAULT_MAX_SLACK_HUMAN_POSTS;
 
-  const [slackDocs, combinedDocs] = await Promise.all([
+  const [slackDocs, combinedDocs, calendarActivityDocs] = await Promise.all([
     fetchSlackChannelDocs(client, input, slackRecencyDays, maxSlackHumanPosts),
     fetchCombinedNonSlackDocs(client, input, recencyDays, topN),
+    fetchCalendarActivityDocs(client, input, recencyDays, calendarActivityTopN),
   ]);
-  const otherSourceDocs = combinedDocs;
 
-  const perSource: { source: SourceConfig; docs: GleanDocument[] }[] = [
-    { source: SLACK_SOURCE, docs: slackDocs },
-    ...NON_SLACK_SOURCES.map((source, i) => ({
-      source,
-      docs: otherSourceDocs[i] ?? [],
-    })),
-  ];
+  const calendarSource = NON_SLACK_SOURCES[0]!;
+  const gmailSource = NON_SLACK_SOURCES[1]!;
+  const mergedCalendarDocs = mergeCalendarDocs(
+    combinedDocs[0] ?? [],
+    calendarActivityDocs,
+    calendarActivityTopN <= 0 ? topN : topN + calendarActivityTopN,
+  );
 
   const recentMeetings: MeetingSummary[] = [];
   const sourceLinks: SourceLink[] = [];
-  for (const { source, docs } of perSource) {
-    for (const doc of docs) {
-      const m = toMeetingSummary(doc, source);
-      if (m) recentMeetings.push(m);
-      const sl = toSourceLink(doc, source);
-      if (sl) sourceLinks.push(sl);
-    }
+
+  // Slack channel posts are qualitative evidence links, not calendar
+  // meetings — routing them through recentMeetings mis-tags threads as
+  // calendar and drowns out real demo/workshop events.
+  for (const doc of slackDocs) {
+    const sl = toSourceLink(doc, SLACK_SOURCE);
+    if (sl) sourceLinks.push(sl);
+  }
+
+  for (const doc of mergedCalendarDocs) {
+    const m = toMeetingSummary(doc, calendarSource);
+    if (m) recentMeetings.push(m);
+    const sl = toSourceLink(doc, calendarSource);
+    if (sl) sourceLinks.push(sl);
+  }
+
+  for (const doc of combinedDocs[1] ?? []) {
+    const m = toMeetingSummary(doc, gmailSource);
+    if (m) recentMeetings.push(m);
+    const sl = toSourceLink(doc, gmailSource);
+    if (sl) sourceLinks.push(sl);
   }
 
   // Reference the SLACK_PREFIX/CAL_PREFIX/STAIRCASE_PREFIX exports so they

@@ -2,7 +2,6 @@
 // diff vs. previous refresh runs without re-fetching from any external system.
 
 import type { ReadAdapter, AdapterFetchResult, RefreshContext } from '@mdas/canonical';
-import { filterExpand3Snapshot } from '@mdas/canonical';
 import {
   latestSuccessfulRun,
   readSnapshotAccounts,
@@ -20,7 +19,7 @@ export const localSnapshotsAdapter: ReadAdapter = {
     if (!last) return { accounts: [], opportunities: [] };
     const accounts = await readSnapshotAccounts(last.id);
     const opportunities = await readSnapshotOpportunities(last.id);
-    return filterExpand3Snapshot({ accounts, opportunities });
+    return { accounts, opportunities };
   },
 };
 

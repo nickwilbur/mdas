@@ -102,6 +102,7 @@ export interface SfdcWorkshopRow extends SalesforceQueryRecord {
   Engagement_Type__c: string | null;
   Status__c: string | null;
   Completion_Date__c: string | null;
+  Scheduled_Date__c: string | null;
 }
 
 // ---------- Helpers ----------
@@ -274,7 +275,8 @@ export function mapWorkshop(row: SfdcWorkshopRow): Workshop {
     id: row.Id,
     engagementType: row.Engagement_Type__c ?? '',
     status: row.Status__c ?? '',
-    workshopDate: dateOnly(row.Completion_Date__c),
+    workshopDate:
+      dateOnly(row.Completion_Date__c) ?? dateOnly(row.Scheduled_Date__c),
   };
 }
 

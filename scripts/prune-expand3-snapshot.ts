@@ -30,7 +30,8 @@ async function main(): Promise<void> {
   const opportunities = await readSnapshotOpportunities(run.id);
   const before = { accounts: accounts.length, opportunities: opportunities.length };
 
-  const filtered = filterExpand3Snapshot({ accounts, opportunities });
+  const asOfDate = new Date(run.started_at).toISOString().slice(0, 10);
+  const filtered = filterExpand3Snapshot({ accounts, opportunities }, { asOfDate });
   const after = {
     accounts: filtered.accounts.length,
     opportunities: filtered.opportunities.length,

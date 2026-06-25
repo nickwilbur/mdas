@@ -17,6 +17,7 @@ import type {
 } from '@mdas/canonical';
 import {
   closeGapAccountContexts,
+  collectKeyActivities,
   mlOverrideBestCaseGap,
   mlOverrideMismatchContexts,
   resolveCloseGapOwner,
@@ -151,10 +152,11 @@ describe('generateWeeklyForecast (churn-call script)', () => {
       'Hedge:',
       'Renewal Downsell / Churn Opps:',
       'Accounts with Hedge (churn-save renewals):',
+      'Week-over-week Changes - Improvements and increased risk:',
+      'Key activities this week:',
       'Renewals where ML Override ≠ Best Case:',
       'Churn-save targets not yet hedged in Clari (ATR exposed):',
       'Accounts to Close Gap (churn-save renewals):',
-      'Week-over-week Changes - Improvements and increased risk:',
       'Key Saves/Improvements to close the gap from Total Churn/Downsell risk to Flash:',
       'Accounts in red - risk trending:',
       'Accounts in yellow - path to add hedge to the line:',
@@ -230,11 +232,11 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).toMatch(/Churn\/Downsell Flash \/ Most Likely: -\$250,000/);
   });
 
-  it('computes Total Risk from ATR for saveable accounts', () => {
+  it('computes Total Risk from ATR on churn-grid renewal opps', () => {
     const acc = mkAccount({ accountName: 'Acme Corp' });
     const opp = mkOpportunity({
       availableToRenewUSD: 500_000,
-      forecastMostLikely: 500_000, // no churn baked in
+      forecastMostLikely: -50_000,
       closeDate: '2026-04-15',
     });
     const view = mkView(acc, [opp], {
@@ -1912,6 +1914,158 @@ describe('generateWeeklyForecast (churn-call script)', () => {
     expect(md).toContain(
       'Week-over-week Changes - Improvements and increased risk: no movement this week',
     );
+  });
+
+  describe('Key activities this week', () => {
+    it('collectKeyActivities surfaces SF workshops and Staircase meetings in the window', () => {
+      const acc = mkAccount({
+        accountId: 'Z1',
+        accountName: 'Zello',
+        workshops: [],
+        recentMeetings: [
+          {
+            source: 'staircase',
+            title: 'Meeting summary - Zello (Jun-23)',
+            startTime: '2026-06-24T13:48:02Z',
+            attendees: [],
+            summary: 'Summary of the meeting with Zello on Jun-23',
+            url: 'https://mail.google.com/mail/u/0/#all/zello-jun23',
+          },
+        ],
+      });
+      const avetta = mkAccount({
+        accountId: 'A1',
+        accountName: 'Avetta',
+        workshops: [],
+        recentMeetings: [
+          {
+            source: 'calendar',
+            title: 'Avetta — product demo',
+            startTime: '2026-06-25T10:00:00Z',
+            attendees: ['nick@zuora.com'],
+            summary: 'Live product demo for the Avetta team.',
+            url: 'https://calendar.google.com/event/avetta-demo',
+          },
+        ],
+      });
+      const elm = mkAccount({
+        accountId: 'E1',
+        accountName: 'Elm Street Technology, LLC',
+        workshops: [
+          {
+            id: 'W1',
+            engagementType: 'Modernization',
+            status: 'Completed',
+            workshopDate: '2026-06-20',
+          },
+        ],
+        recentMeetings: [],
+      });
+      const opp = mkOpportunity({ accountId: 'Z1', closeDate: '2026-06-30' });
+      const views = [
+        mkView(acc, [opp]),
+        mkView(avetta, [mkOpportunity({ accountId: 'A1', closeDate: '2026-06-30' })]),
+        mkView(elm, [mkOpportunity({ accountId: 'E1', closeDate: '2026-06-30' })]),
+      ];
+      const activities = collectKeyActivities(views, '2026-06-26', 7);
+      expect(activities.map((a) => `${a.accountName}|${a.label}`)).toEqual([
+        'Avetta|Product demo',
+        'Zello|Customer meeting',
+        'Elm Street Technology, LLC|Modernization workshop',
+      ]);
+    });
+
+    it('renders key activities between WoW and ML Override mismatch', () => {
+      const acc = mkAccount({
+        accountId: 'Z1',
+        accountName: 'Zello',
+        recentMeetings: [
+          {
+            source: 'staircase',
+            title: 'Meeting summary - Zello (Jun-23)',
+            startTime: '2026-06-24T13:48:02Z',
+            attendees: [],
+            summary: null,
+            url: 'https://mail.google.com/mail/u/0/#all/zello',
+          },
+        ],
+      });
+      const md = generateWeeklyForecast({
+        views: [
+          mkView(acc, [
+            mkOpportunity({
+              accountId: 'Z1',
+              closeDate: '2026-06-30',
+              forecastMostLikely: -50_000,
+              acvDelta: -50_000,
+            }),
+          ]),
+        ],
+        changeEvents: [],
+        asOfDate: '2026-05-01',
+        activityAsOfDate: '2026-06-26',
+      });
+      const wowIdx = md.indexOf(
+        'Week-over-week Changes - Improvements and increased risk:',
+      );
+      const activitiesIdx = md.indexOf('Key activities this week:');
+      const mismatchIdx = md.indexOf('Renewals where ML Override ≠ Best Case:');
+      expect(wowIdx).toBeGreaterThan(-1);
+      expect(activitiesIdx).toBeGreaterThan(wowIdx);
+      expect(mismatchIdx).toBeGreaterThan(activitiesIdx);
+      expect(md).toContain('Zello — Customer meeting (Jun 24)');
+    });
+
+    it('quarter-start asOfDate does not clip activities when activityAsOfDate is today', () => {
+      const acc = mkAccount({
+        accountId: 'Z1',
+        accountName: 'Zello',
+        recentMeetings: [
+          {
+            source: 'staircase',
+            title: 'Meeting summary - Zello (Jun-23)',
+            startTime: '2026-06-24T13:48:02Z',
+            attendees: [],
+            summary: null,
+            url: 'https://mail.google.com/mail/u/0/#all/zello',
+          },
+        ],
+      });
+      const md = generateWeeklyForecast({
+        views: [
+          mkView(acc, [
+            mkOpportunity({ accountId: 'Z1', closeDate: '2026-07-27', forecastMostLikely: -50_000 }),
+          ]),
+        ],
+        changeEvents: [],
+        asOfDate: '2026-05-01',
+        activityAsOfDate: '2026-06-26',
+      });
+      expect(md).toContain('Zello — Customer meeting (Jun 24)');
+    });
+
+    it('suppresses Slack thread noise mis-tagged as calendar meetings', () => {
+      const acc = mkAccount({
+        accountId: 'A1',
+        accountName: 'Avetta',
+        recentMeetings: [
+          {
+            source: 'calendar',
+            title: 'Andrew, Radhakrishna, Srini, Jasir, and Jeanie',
+            startTime: '2026-06-25T15:47:52.212Z',
+            attendees: [],
+            summary: null,
+            url: 'https://teamzuora.slack.com/archives/C07GYAM4HC3/p1780953200',
+          },
+        ],
+      });
+      const activities = collectKeyActivities(
+        [mkView(acc, [mkOpportunity({ accountId: 'A1', closeDate: '2026-06-30' })])],
+        '2026-06-26',
+        7,
+      );
+      expect(activities).toHaveLength(0);
+    });
   });
 
   // 2026-05-20 manager feedback: Key Saves bullets were unreadable

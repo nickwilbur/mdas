@@ -34,8 +34,7 @@ export const isReadOnly: true = true;
 //   Account.Churn_Destription__c    → moved to Opportunity (org schema)
 //   Opportunity.SC_Next_Steps__c    → renamed Opportunity.SE_Next_Steps__c
 //   Workshop_Engagement__c.Status   → renamed Workshop_Engagement__c.Status__c
-export const SOQL_ACCOUNTS = `
-SELECT
+export const SOQL_ACCOUNT_FIELDS = `
   Id, Name, X18_Digit_ID__c, Type, OwnerId, Owner.Name,
   Assigned_CSE__c, Assigned_CSE__r.Name,
   Current_FY_Franchise__c, Tenant_ID__c, ZuoraTenant__c,
@@ -48,11 +47,40 @@ SELECT
   Internal_Customer_Slack_Channel__c,
   engagio__EngagementMinutesLast7Days__c,
   engagio__EngagementMinutesLast30Days__c,
-  engagio__EngagementMinutesLast3Months__c
+  engagio__EngagementMinutesLast3Months__c`;
+
+export const SOQL_ACCOUNTS = `
+SELECT${SOQL_ACCOUNT_FIELDS}
 FROM Account
 WHERE Current_FY_Franchise__c = 'Expand 3'
   AND Customer_Status__c IN ('Live', 'Implementing', 'In Production')
 `;
+
+function chunkIds<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+async function fetchAccountsById(
+  client: SalesforceClient,
+  accountIds: string[],
+  log?: RefreshContext['logger'],
+): Promise<SfdcAccountRow[]> {
+  if (accountIds.length === 0) return [];
+  const rows: SfdcAccountRow[] = [];
+  for (const batch of chunkIds(accountIds, 200)) {
+    const inList = batch.map((id) => `'${id}'`).join(',');
+    const soql = `SELECT${SOQL_ACCOUNT_FIELDS} FROM Account WHERE Id IN (${inList})`;
+    const batchRows = await client.query<SfdcAccountRow>(soql);
+    rows.push(...batchRows);
+  }
+  log?.info('salesforce.accounts.supplement', {
+    requested: accountIds.length,
+    fetched: rows.length,
+  });
+  return rows;
+}
 
 export const SOQL_OPPS = `
 SELECT
@@ -80,9 +108,10 @@ WHERE FranchisePicklist__c = 'Expand 3'
 `;
 
 export const SOQL_WORKSHOPS = `
-SELECT Id, Account__c, Engagement_Type__c, Status__c, Completion_Date__c
+SELECT Id, Account__c, Engagement_Type__c, Status__c, Completion_Date__c, Scheduled_Date__c
 FROM Workshop_Engagement__c
 WHERE Completion_Date__c = LAST_N_DAYS:365
+   OR Scheduled_Date__c = LAST_N_DAYS:90
 `;
 
 /**
@@ -139,6 +168,30 @@ export const salesforceAdapter: ReadAdapter = {
       client.query<SfdcWorkshopRow>(SOQL_WORKSHOPS),
     ]);
 
+    const mapCtx = { instanceUrl: creds.instanceUrl, refreshAt };
+    const accountsByIdPartial = new Map<string, Partial<CanonicalAccount>>();
+    for (const row of accountRows) {
+      accountsByIdPartial.set(row.Id, mapAccount(row, mapCtx));
+    }
+
+    const missingAccountIds = [
+      ...new Set(
+        oppRows
+          .map((o) => o.AccountId)
+          .filter((id) => id && !accountsByIdPartial.has(id)),
+      ),
+    ];
+    if (missingAccountIds.length > 0) {
+      const supplementalRows = await fetchAccountsById(
+        client,
+        missingAccountIds,
+        log,
+      );
+      for (const row of supplementalRows) {
+        accountsByIdPartial.set(row.Id, mapAccount(row, mapCtx));
+      }
+    }
+
     let workshopRows: SfdcWorkshopRow[] = workshopRowsInitial;
     // If REST's auto-pagination returned a large set, log it; if it would
     // have been throttled by row caps we'd already have noticed at fetch
@@ -163,17 +216,14 @@ export const salesforceAdapter: ReadAdapter = {
     }
 
     log?.info('salesforce.fetched', {
-      accounts: accountRows.length,
+      accounts: accountsByIdPartial.size,
+      accountsFromStatusFilter: accountRows.length,
+      supplementalAccounts: accountsByIdPartial.size - accountRows.length,
       opportunities: oppRows.length,
       workshops: workshopRows.length,
     });
 
     // 2) Map → canonical (partials).
-    const mapCtx = { instanceUrl: creds.instanceUrl, refreshAt };
-    const accountsByIdPartial = new Map<string, Partial<CanonicalAccount>>();
-    for (const row of accountRows) {
-      accountsByIdPartial.set(row.Id, mapAccount(row, mapCtx));
-    }
 
     // 3) Apply opp-level Churn_Destription__c → account.churnReasonSummary
     //    (the org keeps the field on Opportunity; canonical exposes it on

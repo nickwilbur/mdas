@@ -338,6 +338,7 @@ describe('mapWorkshop', () => {
       Engagement_Type__c: 'Architecture Review',
       Status__c: 'Completed',
       Completion_Date__c: '2026-03-15T00:00:00.000+0000',
+      Scheduled_Date__c: null,
     };
     expect(mapWorkshop(row)).toEqual({
       id: 'a01000000000001',
@@ -346,14 +347,29 @@ describe('mapWorkshop', () => {
       workshopDate: '2026-03-15',
     });
   });
+
+  it('uses scheduled date when completion date is absent', () => {
+    expect(
+      mapWorkshop({
+        Id: 'w-sched',
+        Account__c: 'a1',
+        Engagement_Type__c: 'Modernization',
+        Status__c: 'Scheduled',
+        Completion_Date__c: null,
+        Scheduled_Date__c: '2026-06-23T00:00:00.000+0000',
+      }),
+    ).toMatchObject({
+      workshopDate: '2026-06-23',
+    });
+  });
 });
 
 describe('groupWorkshopsByAccount', () => {
   it('buckets workshops by Account__c', () => {
     const rows: SfdcWorkshopRow[] = [
-      { Id: 'w1', Account__c: 'a1', Engagement_Type__c: 'Arch', Status__c: 'Completed', Completion_Date__c: '2026-01-01' },
-      { Id: 'w2', Account__c: 'a1', Engagement_Type__c: 'Onboarding', Status__c: 'Scheduled', Completion_Date__c: '2026-02-01' },
-      { Id: 'w3', Account__c: 'a2', Engagement_Type__c: 'QBR', Status__c: 'Completed', Completion_Date__c: '2026-03-01' },
+      { Id: 'w1', Account__c: 'a1', Engagement_Type__c: 'Arch', Status__c: 'Completed', Completion_Date__c: '2026-01-01', Scheduled_Date__c: null },
+      { Id: 'w2', Account__c: 'a1', Engagement_Type__c: 'Onboarding', Status__c: 'Scheduled', Completion_Date__c: '2026-02-01', Scheduled_Date__c: null },
+      { Id: 'w3', Account__c: 'a2', Engagement_Type__c: 'QBR', Status__c: 'Completed', Completion_Date__c: '2026-03-01', Scheduled_Date__c: null },
     ];
     const grouped = groupWorkshopsByAccount(rows);
     expect(grouped.get('a1')).toHaveLength(2);

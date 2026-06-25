@@ -3,6 +3,7 @@ import { mergeRecentMeetings } from '@mdas/canonical';
 import {
   applyContextAndEvidenceToAccount,
   buildCombinedNonSlackQuery,
+  buildCalendarActivityQuery,
   buildSlackSearchQueries,
   docMatchesAccount,
   fetchAccountEvidence,
@@ -76,14 +77,12 @@ describe('fetchAccountEvidence', () => {
       { accountId: 'a1', accountName: 'Acme' },
       { recencyDays: 30 },
     );
-    expect(out.recentMeetings).toHaveLength(3);
+    expect(out.recentMeetings).toHaveLength(2);
     const buckets = new Set(out.recentMeetings.map((m) => m.source));
     expect(buckets).toEqual(new Set(['calendar', 'staircase']));
-    // Calendar bucket includes both googlecalendar and slack (per the
-    // SOURCES config — slack maps to "calendar" because the canonical
-    // type union doesn't have a dedicated slack bucket today).
-    expect(out.recentMeetings.filter((m) => m.source === 'calendar')).toHaveLength(2);
+    expect(out.recentMeetings.filter((m) => m.source === 'calendar')).toHaveLength(1);
     expect(out.recentMeetings.filter((m) => m.source === 'staircase')).toHaveLength(1);
+    expect(out.sourceLinks.some((sl) => sl.source === 'slack')).toBe(true);
   });
 
   it('extracts attendees from the calendar matchingFilters facet', async () => {
@@ -129,7 +128,7 @@ describe('fetchAccountEvidence', () => {
     const out = await fetchAccountEvidence(
       client,
       { accountId: 'a1', accountName: 'Acme' },
-      { topNPerSource: 2 },
+      { topNPerSource: 2, calendarActivityTopN: 0 },
     );
     expect(
       out.recentMeetings.filter((m) => m.url?.startsWith('https://cal/')),
@@ -140,7 +139,7 @@ describe('fetchAccountEvidence', () => {
     const client: GleanClient = {
       searchAll: vi.fn(async () => []),
       search: vi.fn(async ({ query }: { query: string }) => {
-        if (query.includes('renewal QBR staircase')) {
+        if (query.includes('renewal QBR') && query.includes('staircase')) {
           return {
             results: [
               { title: 'Acme EBR', url: 'https://cal/1', updateTime: RECENT, datasource: 'googlecalendar' },
@@ -224,11 +223,15 @@ describe('fetchAccountEvidence', () => {
     );
 
     expect(searchAll).toHaveBeenCalledWith(expect.objectContaining({ query: 'C06JHCM76PK' }), expect.any(Number));
-    const titles = out.recentMeetings.map((m) => m.title);
+    const titles = out.sourceLinks.map((sl) => sl.label);
     expect(titles).toContain('Dominic Varner in cust-kustomer');
     expect(titles).not.toContain('Account Pulse APP joined #cust-kustomer');
-    expect(titles).not.toContain('Meeting summary - Leafly, LLC (Jun-17)');
-    expect(titles).toContain('Meeting summary - Kustomer, LLC (Jun-05)');
+    expect(out.recentMeetings.map((m) => m.title)).not.toContain(
+      'Meeting summary - Leafly, LLC (Jun-17)',
+    );
+    expect(out.recentMeetings.map((m) => m.title)).toContain(
+      'Meeting summary - Kustomer, LLC (Jun-05)',
+    );
   });
 
   it('uses a single channel-id query when Salesforce maps a Slack channel', async () => {
@@ -331,9 +334,17 @@ describe('fetchAccountEvidence', () => {
       },
       { recencyDays: 30, topNPerSource: 3 },
     );
-    const slackTitles = out.recentMeetings.map((m) => m.title);
+    const slackTitles = out.sourceLinks.map((sl) => sl.label);
     expect(slackTitles).toContain('Dominic Varner in cust-leafly');
     expect(slackTitles).not.toContain('Alice joined #cust-leafly');
+  });
+});
+
+describe('buildCalendarActivityQuery', () => {
+  it('targets demos, workshops, and revenue meetings', () => {
+    expect(
+      buildCalendarActivityQuery({ accountId: '1', accountName: 'YMCA of Central Florida Metro' }),
+    ).toBe('ymca-of-central-florida-metro demo workshop revenue product meeting onsite');
   });
 });
 
@@ -341,7 +352,7 @@ describe('buildCombinedNonSlackQuery', () => {
   it('uses a single short keyword query for calendar and gmail', () => {
     expect(
       buildCombinedNonSlackQuery({ accountId: '1', accountName: 'Kustomer, LLC.' }),
-    ).toBe('kustomer renewal QBR staircase review');
+    ).toBe('kustomer renewal QBR demo workshop staircase review');
   });
 });
 

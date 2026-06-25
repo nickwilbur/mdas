@@ -9,20 +9,19 @@ import {
   mlOverrideMismatchContexts,
   fiscalQuarterFromDate,
   fiscalQuarterLabel,
-  supplementViewsWithDroppedQuarterChurnOpps,
+  computeQuarterKpis,
   type ForecastInput,
   type GleanFlaggedRisk,
   type CloseGapActionPlan,
   type MlOverrideMismatchEnrichment,
 } from '@mdas/forecast-generator';
 import type { AccountView } from '@mdas/canonical';
-import { buildAccountView } from '@mdas/scoring';
 import {
   getDashboardData,
   getWoWChangeEvents,
-  loadChurnOpportunitySupplementFromRecentRefreshes,
 } from '@/lib/read-model';
 import { loadForecastTrajectory } from '@/lib/forecast-trajectory';
+import { overlayAuthoritativeTrajectoryKpis } from '@/lib/forecast-trajectory-kpis';
 import { generateHealthSnapshot } from '@/lib/forecast-narrative';
 import { generateAccountContext } from '@/lib/forecast-account-context';
 import {
@@ -121,20 +120,20 @@ export async function generateForecastScript(
   };
 
   progress('data', 'Loading account data…', 8);
-  const [{ views, refreshId }, { events }] = await Promise.all([
+  const [{ views, refreshId, startedAt }, { events }] = await Promise.all([
     getDashboardData(),
     getWoWChangeEvents(),
   ]);
-  let forecastViews = views;
-  if (refreshId) {
-    const prior = await loadChurnOpportunitySupplementFromRecentRefreshes(refreshId);
-    forecastViews = supplementViewsWithDroppedQuarterChurnOpps(
-      views,
-      prior,
-      asOfDate,
-      buildAccountView,
-    );
-  }
+  const forecastViews = views;
+  const latestRefreshMeta = {
+    refreshId: refreshId ?? '',
+    refreshStartedAt:
+      typeof startedAt === 'string'
+        ? startedAt
+        : startedAt != null
+          ? new Date(startedAt as string | Date).toISOString()
+          : `${asOfDate}T12:00:00.000Z`,
+  };
   progress('data', 'Account data loaded', 18);
 
   // One GleanClient per forecast request — each instance holds an MCP
@@ -160,10 +159,26 @@ export async function generateForecastScript(
       asOfDate,
       body.plan,
       body.clariManagerForecastCsv,
+      {
+        latestViews: forecastViews,
+        latestRefresh: latestRefreshMeta,
+      },
+    );
+    const planUSD = body.plan?.currentQuarterUSD ?? null;
+    const authoritativeKpis = computeQuarterKpis(
+      forecastViews,
+      asOfDate,
+      'current',
+      planUSD,
+    );
+    const trajectoryForNarrative = overlayAuthoritativeTrajectoryKpis(
+      trajectory,
+      authoritativeKpis,
+      latestRefreshMeta,
     );
     healthSnapshot = await generateHealthSnapshot(
       req,
-      trajectory,
+      trajectoryForNarrative,
       sharedGleanClient,
     );
     if (!healthSnapshot?.trim()) healthSnapshot = undefined;
@@ -272,6 +287,7 @@ export async function generateForecastScript(
     views: forecastViews,
     changeEvents: events,
     asOfDate,
+    activityAsOfDate: new Date().toISOString().slice(0, 10),
     plan: body.plan,
     clariManagerForecastCsv: body.clariManagerForecastCsv,
     healthSnapshot,
