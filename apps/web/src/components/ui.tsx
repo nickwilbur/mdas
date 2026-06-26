@@ -25,7 +25,7 @@ export function RiskBadge({
     Critical: 'bg-red-600 text-white',
     High: 'bg-orange-600 text-white',
     Medium: 'bg-yellow-500 text-black',
-    Low: 'bg-green-600 text-white',
+    Low: 'bg-green-700 text-white',
     Unknown: 'bg-gray-400 text-white',
   };
   const text = level ?? 'Unknown';
@@ -50,7 +50,7 @@ export function AssessmentPill({
     Critical: 'bg-red-600 text-white',
     High: 'bg-orange-600 text-white',
     Medium: 'bg-yellow-500 text-black',
-    Low: 'bg-green-600 text-white',
+    Low: 'bg-green-700 text-white',
     Unknown: 'bg-gray-400 text-white',
   };
   return (
