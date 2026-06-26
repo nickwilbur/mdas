@@ -212,6 +212,32 @@ describe('runRefresh — orchestrator', () => {
     expect(typeof s.refreshedAt).toBe('string');
   });
 
+  it('records refresh duration in audit on completion', async () => {
+    (fakeLocal.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      accounts: [accountFixture('A1')],
+      opportunities: [],
+    });
+
+    const result = await runRefresh({ actor: 'test' });
+
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+
+    const completedCalls = audit.mock.calls.filter((c) => c[1] === 'refresh.completed');
+    expect(completedCalls).toHaveLength(1);
+    const details = completedCalls[0]![2] as {
+      durationMs?: number;
+      phases?: Record<string, number>;
+    };
+    expect(details).toMatchObject({
+      durationMs: result.durationMs,
+      phases: {
+        prefetchMs: expect.any(Number),
+        fetchMs: expect.any(Number),
+        mergeMs: expect.any(Number),
+      },
+    });
+  });
+
   it('marks a single failed adapter as section.failed and surfaces the error message', async () => {
     (fakeLocal.fetch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error('upstream 503'),

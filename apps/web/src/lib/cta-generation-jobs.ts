@@ -46,6 +46,35 @@ export const CTA_JOB_MAX_STORED = 100;
 /** Max simultaneous child processes — prevents unbounded spawns/listeners. */
 export const CTA_JOB_MAX_CONCURRENT = 2;
 
+/**
+ * Running jobs older than this are treated as zombies (worker crashed,
+ * dev HMR dropped the child handler, etc.) and marked failed on read.
+ * Full Expand 3 scans typically finish in minutes; 1h is a safe ceiling.
+ */
+export const CTA_JOB_RUNNING_STALE_MS = 60 * 60 * 1000;
+
+function reconcileStaleRunningJob(job: CTAJob, now = Date.now()): CTAJob {
+  if (job.status !== 'running') return job;
+  const age = now - Date.parse(job.startedAt);
+  if (age <= CTA_JOB_RUNNING_STALE_MS) return job;
+  job.status = 'error';
+  job.finishedAt = new Date(now).toISOString();
+  job.error =
+    job.error ??
+    `Generation timed out after ${Math.round(age / 60_000)} minutes (no completion signal)`;
+  console.warn(
+    JSON.stringify({
+      time: new Date(now).toISOString(),
+      level: 'warn',
+      msg: 'cta.job.stale',
+      service: 'web',
+      jobId: job.id,
+      ageMs: age,
+    }),
+  );
+  return job;
+}
+
 function detachCtaJobChild(jobId: string): void {
   const child = childByJobId.get(jobId);
   if (!child) return;
@@ -83,6 +112,7 @@ export function countRunningCtaJobs(): number {
   pruneCtaJobs();
   let running = 0;
   for (const job of jobs.values()) {
+    reconcileStaleRunningJob(job);
     if (job.status === 'running') running += 1;
   }
   return running;
@@ -141,7 +171,22 @@ export function putCtaJob(job: CTAJob): void {
 
 export function getCtaJob(id: string): CTAJob | undefined {
   pruneCtaJobs();
-  return jobs.get(id);
+  const job = jobs.get(id);
+  if (!job) return undefined;
+  return reconcileStaleRunningJob(job);
+}
+
+/** Most recent non-stale running job, if any — for UI resume after navigation. */
+export function findActiveCtaGenerationJob(): CTAJob | null {
+  pruneCtaJobs();
+  const running = [...jobs.values()]
+    .filter((j) => j.status === 'running')
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  for (const job of running) {
+    const reconciled = reconcileStaleRunningJob(job);
+    if (reconciled.status === 'running') return reconciled;
+  }
+  return null;
 }
 
 export function listCtaJobsSortedRecent(limit: number): CTAJob[] {

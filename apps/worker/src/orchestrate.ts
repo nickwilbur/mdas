@@ -876,9 +876,20 @@ export async function runRefresh(
     errorLog: errorLog.length ? errorLog : null,
   });
 
+  const totalDurationMs = Date.now() - start;
+
   await audit(options.actor ?? 'manual:nick', 'refresh.completed', {
     refreshId,
     status,
+    durationMs: totalDurationMs,
+    phases: {
+      prefetchMs,
+      fetchMs,
+      mergeMs,
+      persistMs,
+      scoreMs,
+      publishMs,
+    },
     rowCounts: {
       accounts: merged.accounts.length,
       opportunities: merged.opportunities.length,
@@ -886,7 +897,6 @@ export async function runRefresh(
     },
   });
 
-  const totalDurationMs = Date.now() - start;
   ctx.logger.info('refresh.summary', {
     refreshId,
     status,

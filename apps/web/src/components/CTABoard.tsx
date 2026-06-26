@@ -17,6 +17,10 @@ import {
   isCtaOpen,
   type CTAProgressStatus,
 } from '@mdas/cta-engine';
+import {
+  subscribeCtaGenerationJobPoll,
+  type CtaGenerationJobStatus,
+} from '@/lib/cta-generation-job-watch';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -980,148 +984,300 @@ export function CTABoard({
 
 // ── Generate CTAs Button ──────────────────────────────────────────────────
 
-interface GenerateJob {
-  id: string;
-  status: 'running' | 'done' | 'error';
-  progress: { phase: string; current: number; total: number; label?: string } | null;
-  result: { ctaCount: number } | null;
-  error: string | null;
+const CTA_PHASE_LABELS: Record<string, string> = {
+  init: 'Initializing',
+  snapshot: 'Loading snapshots',
+  'sfdc-fallback': 'SFDC fallback',
+  classify: 'Evaluating accounts',
+};
+
+function formatElapsed(startedAt: string): string {
+  const sec = Math.max(0, Math.floor((Date.now() - Date.parse(startedAt)) / 1000));
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  return rem > 0 ? `${min}m ${rem}s` : `${min}m`;
+}
+
+function CtaGenerationProgressPanel({ job }: { job: CtaGenerationJobStatus }): JSX.Element {
+  const progress = job.progress;
+  const progressPct = progress && progress.total > 0
+    ? Math.round((progress.current / progress.total) * 100)
+    : 0;
+  const phaseLabel = progress?.phase
+    ? (CTA_PHASE_LABELS[progress.phase] ?? progress.phase)
+    : 'Starting';
+
+  return (
+    <div className="absolute right-0 top-full z-20 mt-2 w-80 space-y-2 rounded-lg border border-gray-200 bg-white p-3 shadow-lg">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold text-gray-900">CTA Generation</span>
+        <span className="text-xs tabular-nums text-gray-500">{formatElapsed(job.startedAt)}</span>
+      </div>
+      <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200">
+        <div
+          className="h-full rounded-full bg-blue-600 transition-all duration-500"
+          style={{ width: `${progressPct}%` }}
+        />
+      </div>
+      <div className="flex items-center justify-between text-xs">
+        <span className="font-medium text-gray-700">{phaseLabel}</span>
+        <span className="tabular-nums text-blue-600">{progressPct}%</span>
+      </div>
+      {progress?.label ? (
+        <p className="truncate text-xs text-gray-500" title={progress.label}>
+          {progress.label}
+        </p>
+      ) : job.status === 'running' ? (
+        <p className="text-xs text-gray-400">Waiting for progress from scanner…</p>
+      ) : null}
+      <p className="truncate font-mono text-[10px] text-gray-300" title={job.id}>
+        job {job.id.slice(0, 8)}…
+      </p>
+    </div>
+  );
 }
 
 export function GenerateCTAsButton() {
-  const [job, setJob] = useState<GenerateJob | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [job, setJob] = useState<CtaGenerationJobStatus | null>(null);
+  const [statusMsg, setStatusMsg] = useState<{ label: string; tone: 'ok' | 'warn' | 'err' } | null>(
+    null,
+  );
+  const unsubscribeRef = useRef<(() => void) | null>(null);
   const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearMsgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+
+  const detachFromJob = useCallback(() => {
+    unsubscribeRef.current?.();
+    unsubscribeRef.current = null;
+  }, []);
+
+  const clearStatusLater = useCallback(() => {
+    if (clearMsgTimerRef.current) clearTimeout(clearMsgTimerRef.current);
+    clearMsgTimerRef.current = setTimeout(() => {
+      if (!mountedRef.current) return;
+      setStatusMsg(null);
+      setJob(null);
+    }, 12_000);
+  }, []);
+
+  const attachToJob = useCallback(
+    (jobId: string, resume = false) => {
+      detachFromJob();
+      if (reloadTimerRef.current) {
+        clearTimeout(reloadTimerRef.current);
+        reloadTimerRef.current = null;
+      }
+
+      setJob({
+        id: jobId,
+        status: 'running',
+        progress: null,
+        result: null,
+        error: null,
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+      });
+      if (resume) {
+        setStatusMsg({
+          label: 'Generation in progress — reconnected, watching…',
+          tone: 'warn',
+        });
+      } else {
+        setStatusMsg({ label: 'Starting CTA generation…', tone: 'warn' });
+      }
+
+      unsubscribeRef.current = subscribeCtaGenerationJobPoll(jobId, {
+        onProgress: (sj) => {
+          if (!mountedRef.current) return;
+          setJob(sj);
+          const pct =
+            sj.progress && sj.progress.total > 0
+              ? Math.round((sj.progress.current / sj.progress.total) * 100)
+              : 0;
+          const detail = sj.progress?.label ?? sj.progress?.phase ?? 'running';
+          setStatusMsg({ label: `Generating… ${pct}% — ${detail}`, tone: 'warn' });
+        },
+        onPollError: (failures) => {
+          if (!mountedRef.current || failures < 3) return;
+          setStatusMsg({
+            label: `Generation in progress — status API slow (${failures} retries)…`,
+            tone: 'warn',
+          });
+        },
+        onComplete: (sj) => {
+          if (!mountedRef.current) return;
+          setJob(sj);
+          detachFromJob();
+          if (sj.status === 'done') {
+            setStatusMsg({
+              label: `${sj.result?.ctaCount ?? 0} CTAs generated — reloading…`,
+              tone: 'ok',
+            });
+            reloadTimerRef.current = setTimeout(() => window.location.reload(), 1500);
+            return;
+          }
+          setStatusMsg({
+            label: sj.error ?? 'Generation failed',
+            tone: 'err',
+          });
+          clearStatusLater();
+        },
+      });
+    },
+    [clearStatusLater, detachFromJob],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      if (pollRef.current) clearInterval(pollRef.current);
+      detachFromJob();
       if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+      if (clearMsgTimerRef.current) clearTimeout(clearMsgTimerRef.current);
     };
-  }, []);
+  }, [detachFromJob]);
+
+  // Resume watching an in-flight generation after navigation or refresh.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/ctas/generate', {
+          signal: AbortSignal.timeout(8000),
+          cache: 'no-store',
+        });
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { jobId: string | null };
+        if (!data.jobId) return;
+        attachToJob(data.jobId, true);
+      } catch {
+        // No active job or transient error.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [attachToJob]);
 
   const startGeneration = useCallback(async () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
+    detachFromJob();
     if (reloadTimerRef.current) {
       clearTimeout(reloadTimerRef.current);
       reloadTimerRef.current = null;
     }
+    setStatusMsg({ label: 'Starting CTA generation…', tone: 'warn' });
 
     try {
       const res = await fetch('/api/ctas/generate', { method: 'POST' });
       if (res.status === 429) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        // Another generation may already be running — attach instead of dead-ending.
+        const activeRes = await fetch('/api/ctas/generate', { cache: 'no-store' });
+        if (activeRes.ok) {
+          const active = (await activeRes.json()) as { jobId: string | null };
+          if (active.jobId) {
+            setStatusMsg({
+              label: 'Joined an in-flight generation — watching progress…',
+              tone: 'warn',
+            });
+            attachToJob(active.jobId, true);
+            return;
+          }
+        }
         setJob({
           id: '',
           status: 'error',
           progress: null,
           result: null,
-          error: 'Another generation is already running',
+          error: body.error ?? 'Another generation is already running',
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
         });
+        setStatusMsg({
+          label: body.error ?? 'Another generation is already running',
+          tone: 'err',
+        });
+        clearStatusLater();
         return;
       }
-      const { jobId } = await res.json();
-      setJob({ id: jobId, status: 'running', progress: null, result: null, error: null });
-
-      pollRef.current = setInterval(async () => {
-        try {
-          const statusRes = await fetch(`/api/ctas/generate/${jobId}`);
-          if (!mountedRef.current) return;
-          const data = await statusRes.json();
-          if (!mountedRef.current) return;
-          setJob(data);
-          if (data.status === 'done' || data.status === 'error') {
-            if (pollRef.current) {
-              clearInterval(pollRef.current);
-              pollRef.current = null;
-            }
-            if (data.status === 'done' && mountedRef.current) {
-              reloadTimerRef.current = setTimeout(() => window.location.reload(), 1500);
-            }
-          }
-        } catch {
-          if (pollRef.current) {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
-        }
-      }, 1000);
-    } catch {
-      setJob({ id: '', status: 'error', progress: null, result: null, error: 'Failed to start' });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      const { jobId } = (await res.json()) as { jobId: string };
+      attachToJob(jobId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to start';
+      setJob({
+        id: '',
+        status: 'error',
+        progress: null,
+        result: null,
+        error: message,
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+      });
+      setStatusMsg({ label: message, tone: 'err' });
+      clearStatusLater();
     }
-  }, []);
+  }, [attachToJob, clearStatusLater, detachFromJob]);
 
   const isRunning = job?.status === 'running';
   const isDone = job?.status === 'done';
   const isError = job?.status === 'error';
-  const progressPct = job?.progress
-    ? Math.round((job.progress.current / job.progress.total) * 100)
-    : 0;
+  const toneClass =
+    statusMsg?.tone === 'err'
+      ? 'text-red-700'
+      : statusMsg?.tone === 'warn'
+        ? 'text-amber-700'
+        : statusMsg?.tone === 'ok'
+          ? 'text-emerald-700'
+          : 'text-gray-600';
 
   return (
-    <div className="flex items-center gap-3">
-      {/* Progress indicator */}
-      {isRunning && job.progress && (
-        <div className="flex items-center gap-2 text-xs text-gray-500">
-          <div className="h-1.5 w-24 rounded-full bg-gray-200 overflow-hidden">
-            <div
-              className="h-full rounded-full bg-blue-600 transition-all duration-300"
-              style={{ width: `${progressPct}%` }}
-            />
-          </div>
-          <span className="tabular-nums">{progressPct}%</span>
-          {job.progress.label && (
-            <span className="max-w-[200px] truncate text-gray-400">{job.progress.label}</span>
-          )}
-        </div>
-      )}
-      {isDone && job.result && (
-        <span className="text-xs text-green-600 font-medium">
-          {job.result.ctaCount} CTAs generated — reloading…
-        </span>
-      )}
-      {isError && (
-        <span className="text-xs text-red-600 font-medium truncate max-w-[200px]">
-          {job.error ?? 'Generation failed'}
-        </span>
-      )}
+    <div className="relative">
+      <div className="flex items-center gap-3">
+        {statusMsg ? (
+          <span className={`max-w-xs truncate text-xs font-medium ${toneClass}`} role="status" aria-live="polite">
+            {statusMsg.label}
+          </span>
+        ) : null}
 
-      <button
-        onClick={startGeneration}
-        disabled={isRunning}
-        className={clsx(
-          'inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium shadow-sm transition-colors',
-          isRunning
-            ? 'bg-gray-400 text-white cursor-not-allowed'
-            : isDone
-              ? 'bg-green-600 text-white'
-              : isError
-                ? 'bg-red-600 text-white hover:bg-red-700'
-                : 'bg-gray-900 text-white hover:bg-gray-800',
-        )}
-      >
-        {isRunning ? (
-          <>
-            <span className="animate-spin text-base leading-none">⏳</span>
-            Generating…
-          </>
-        ) : isDone ? (
-          <>
-            <Check className="h-4 w-4" />
-            Done
-          </>
-        ) : (
-          <>
-            <span className="text-base leading-none">⚡</span>
-            Generate CTAs
-          </>
-        )}
-      </button>
+        <button
+          onClick={startGeneration}
+          disabled={isRunning}
+          className={clsx(
+            'inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium shadow-sm transition-colors',
+            isRunning
+              ? 'bg-gray-400 text-white cursor-not-allowed'
+              : isDone
+                ? 'bg-green-600 text-white'
+                : isError
+                  ? 'bg-red-600 text-white hover:bg-red-700'
+                  : 'bg-gray-900 text-white hover:bg-gray-800',
+          )}
+        >
+          {isRunning ? (
+            <>
+              <span className="animate-spin text-base leading-none">⏳</span>
+              Generating…
+            </>
+          ) : isDone ? (
+            <>
+              <Check className="h-4 w-4" />
+              Done
+            </>
+          ) : (
+            <>
+              <span className="text-base leading-none">⚡</span>
+              Generate CTAs
+            </>
+          )}
+        </button>
+      </div>
+      {isRunning && job ? <CtaGenerationProgressPanel job={job} /> : null}
     </div>
   );
 }

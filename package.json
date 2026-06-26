@@ -27,6 +27,7 @@
     "cta:generate": "tsx scripts/generate-ctas.ts",
     "cta:dry-run": "tsx scripts/generate-ctas.ts --dry-run",
     "cta:backfill": "tsx scripts/backfill-cta-opportunity-ids.ts",
+    "cta:triage": "tsx scripts/cta-open-triage.ts",
     "snapshot:prune-expand3": "tsx scripts/prune-expand3-snapshot.ts",
     "snapshot:compact-source-links": "tsx scripts/compact-snapshot-source-links.ts",
     "snapshot:backfill-trajectory-kpis": "tsx scripts/backfill-trajectory-kpis.ts",
@@ -39,7 +40,7 @@
     "@playwright/test": "^1.59.1",
     "@types/node": "^20.11.30",
     "@types/pg": "^8.20.0",
-    "@vitest/coverage-v8": "^4.1.6",
+    "@vitest/coverage-v8": "^1.6.0",
     "tsx": "^4.7.2",
     "typescript": "^5.4.5",
     "vitest": "^1.5.0"

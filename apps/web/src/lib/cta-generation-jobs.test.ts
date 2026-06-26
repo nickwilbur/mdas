@@ -5,9 +5,11 @@ import {
   __resetCtaJobStoreForTests,
   CTA_JOB_MAX_CONCURRENT,
   CTA_JOB_MAX_STORED,
+  CTA_JOB_RUNNING_STALE_MS,
   CTA_JOB_TERMINAL_TTL_MS,
   countRunningCtaJobs,
   disposeCtaJobChild,
+  findActiveCtaGenerationJob,
   getCtaJob,
   listCtaJobsSortedRecent,
   pruneCtaJobs,
@@ -86,6 +88,27 @@ describe('countRunningCtaJobs', () => {
       putCtaJob(makeJob(`run-${i}`, 'running', '2026-01-15T11:00:00.000Z', null));
     }
     expect(countRunningCtaJobs()).toBe(CTA_JOB_MAX_CONCURRENT);
+  });
+
+  it('does not count stale running jobs', () => {
+    const staleStart = new Date(PRUNE_TEST_NOW - CTA_JOB_RUNNING_STALE_MS - 60_000).toISOString();
+    putCtaJob(makeJob('stale-run', 'running', staleStart, null));
+    expect(countRunningCtaJobs()).toBe(0);
+    expect(getCtaJob('stale-run')?.status).toBe('error');
+  });
+});
+
+describe('findActiveCtaGenerationJob', () => {
+  it('returns the newest non-stale running job', () => {
+    putCtaJob(makeJob('run-old', 'running', '2026-01-15T10:00:00.000Z', null));
+    putCtaJob(makeJob('run-new', 'running', '2026-01-15T11:00:00.000Z', null));
+    expect(findActiveCtaGenerationJob()?.id).toBe('run-new');
+  });
+
+  it('returns null when only stale running jobs exist', () => {
+    const staleStart = new Date(PRUNE_TEST_NOW - CTA_JOB_RUNNING_STALE_MS - 60_000).toISOString();
+    putCtaJob(makeJob('stale-run', 'running', staleStart, null));
+    expect(findActiveCtaGenerationJob()).toBeNull();
   });
 });
 

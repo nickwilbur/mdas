@@ -6,6 +6,8 @@ import { randomUUID } from 'crypto';
 import {
   CTA_JOB_MAX_CONCURRENT,
   countRunningCtaJobs,
+  findActiveCtaGenerationJob,
+  getCtaJob,
   listCtaJobsSortedRecent,
   putCtaJob,
   registerCtaJobChild,
@@ -113,13 +115,48 @@ export async function POST(): Promise<Response> {
     );
   });
 
+  child.on('error', (err) => {
+    job.finishedAt = new Date().toISOString();
+    job.status = 'error';
+    job.error = err.message || 'Failed to spawn generation process';
+    console.error(
+      JSON.stringify({
+        time: new Date().toISOString(),
+        level: 'error',
+        msg: 'cta.job.spawn_error',
+        service: 'web',
+        jobId,
+        error: job.error,
+      }),
+    );
+  });
+
   registerCtaJobChild(jobId, child);
 
   return NextResponse.json({ jobId });
 }
 
-// GET: list active/recent jobs
-export async function GET(): Promise<Response> {
+// GET: active job for resume, full status via ?jobId=, or recent job list
+export async function GET(req: Request): Promise<Response> {
+  const jobId = new URL(req.url).searchParams.get('jobId');
+  const headers = { 'Cache-Control': 'no-store' };
+
+  if (jobId) {
+    const job = getCtaJob(jobId);
+    if (!job) {
+      return NextResponse.json({ error: 'not found' }, { status: 404, headers });
+    }
+    return NextResponse.json(job, { headers });
+  }
+
+  const active = findActiveCtaGenerationJob();
   const list = listCtaJobsSortedRecent(10);
-  return NextResponse.json({ jobs: list });
+  return NextResponse.json(
+    {
+      jobId: active?.id ?? null,
+      status: active?.status ?? null,
+      jobs: list,
+    },
+    { headers },
+  );
 }
