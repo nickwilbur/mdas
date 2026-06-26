@@ -1,4 +1,10 @@
-import type { CanonicalAccount, CanonicalOpportunity, AccountView, ChangeEvent } from '@mdas/canonical';
+import type {
+  CanonicalAccount,
+  CanonicalOpportunity,
+  AccountView,
+  ChangeEvent,
+  CerebroRiskCategory,
+} from '@mdas/canonical';
 import { buildAccountView } from '@mdas/scoring';
 
 /** Defaults partial SF / supplemental accounts need before scoring. */
@@ -30,7 +36,7 @@ export function withAccountDefaults(a: CanonicalAccount): CanonicalAccount {
 export function buildAccountViewWithDefaults(
   account: CanonicalAccount,
   opps: CanonicalOpportunity[],
-  opts: { changeEvents?: ChangeEvent[]; prevRiskCategory?: string | null } = {},
+  opts: { changeEvents?: ChangeEvent[]; prevRiskCategory?: CerebroRiskCategory } = {},
 ): AccountView {
   return buildAccountView(withAccountDefaults(account), opps, opts);
 }
