@@ -119,7 +119,15 @@ vi.mock('@mdas/adapter-cerebro-glean', () => ({ cerebroGleanAdapter: fakeCerebro
 vi.mock('@mdas/adapter-gainsight', () => ({ gainsightAdapter: { name: 'gs', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-staircase-gmail', () => ({ staircaseGmailAdapter: { name: 'sg', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-zuora-mcp', () => ({ zuoraMcpAdapter: { name: 'zu', isReadOnly: true, fetch: vi.fn() } }));
-vi.mock('@mdas/adapter-glean-mcp', () => ({ gleanMcpAdapter: { name: 'gl', isReadOnly: true, fetch: vi.fn() } }));
+vi.mock('@mdas/adapter-glean-mcp', async () => {
+  const actual = await vi.importActual<typeof import('@mdas/adapter-glean-mcp')>(
+    '@mdas/adapter-glean-mcp',
+  );
+  return {
+    ...actual,
+    gleanMcpAdapter: { name: 'gl', isReadOnly: true, fetch: vi.fn() },
+  };
+});
 
 vi.mock('@mdas/forecast-generator', () => ({
   computeRefreshTrajectoryKpis: vi.fn(() => ({

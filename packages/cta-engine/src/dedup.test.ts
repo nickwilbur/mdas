@@ -55,4 +55,37 @@ describe('decideDedup', () => {
     const decision = decideDedup(makeCTA({ priority_score: 75 }), log, DEFAULT_CTA_CONFIG, NOW);
     expect(decision.action).toBe('update');
   });
+
+  it('matches open CTAs by renewal opportunity URL when dedup_key is absent', () => {
+    const oppUrl =
+      'https://zuora.lightning.force.com/lightning/r/Opportunity/006Po00000RENEWAL1/view';
+    const entry: CTALogEntry = {
+      ...makeCTA({
+        dedup_key: undefined,
+        renewal_opportunity_id: null,
+        renewal_opportunity_url: oppUrl,
+        salesforce_account_id: '001ACC',
+      }),
+      posted_at: '2026-05-10T12:00:00Z',
+      posted_to_channel: '#expand3-risk-signals',
+      status: 'open',
+      last_checked_at: null,
+      escalation_message_id: null,
+    };
+    const log = new Map([[entry.cta_id, entry]]);
+    const decision = decideDedup(
+      makeCTA({
+        cta_id: 'expand3-2026-05-12-acme-dark_account-v2',
+        dedup_key: undefined,
+        renewal_opportunity_id: null,
+        renewal_opportunity_url: oppUrl,
+        salesforce_account_id: '001ACC',
+      }),
+      log,
+      DEFAULT_CTA_CONFIG,
+      NOW,
+    );
+    expect(decision.action).toBe('skip');
+    expect(decision.existing?.cta_id).toBe(entry.cta_id);
+  });
 });
