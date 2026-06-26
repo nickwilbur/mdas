@@ -135,7 +135,10 @@ export default async function DashboardPage({
           <p className="text-xs text-gray-500">
             Last refresh: <RelativeTime iso={startedAt} />
             {' · '}
-            <Link href="/renewals" className="text-blue-700 hover:underline">
+            <Link
+              href="/renewals"
+              className="font-medium text-blue-700 underline underline-offset-2 hover:text-blue-900"
+            >
               Renewals scorecard →
             </Link>
           </p>

@@ -471,7 +471,7 @@ const builds: Build[] = REAL_EXPAND_3_ACCOUNTS.map((acc, i) => ({
   isConfirmedChurn: i === 0,
   churnReason: i === 0 ? 'Competitive Pressure' : undefined,
   churnReasonSummary: i === 0 ? 'Considering competitor due to pricing concerns.' : undefined,
-  churnDate: i === 0 ? daysAheadIso(90).slice(0, 10) : undefined,
+  churnDate: i === 0 ? daysAheadIso(25).slice(0, 10) : undefined,
   opps: [
     {
       id: `OPP-${i + 1}-RENEWAL`,
@@ -479,7 +479,7 @@ const builds: Build[] = REAL_EXPAND_3_ACCOUNTS.map((acc, i) => ({
       type: 'Renewal',
       stage: i === 0 ? 'Closed Lost' : i === 1 ? 'Negotiation' : 'Qualification',
       stageNum: i === 0 ? 9 : i === 1 ? 6 : 2,
-      closeDaysAhead: 90 + i * 30,
+      closeDaysAhead: 20 + (i % 6) * 30,
       acv: 500_000 + i * 100_000,
       atr: 500_000 + i * 100_000,
       forecastMostLikely: i === 0 ? 0 : 500_000 + i * 100_000,
