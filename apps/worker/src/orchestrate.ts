@@ -256,6 +256,32 @@ export function mergeSourceLinks(
 }
 
 /** Observability helper: surface snapshot citation bloat after merge. */
+const EMPTY_CEREBRO_RISKS: CanonicalAccount['cerebroRisks'] = {
+  utilizationRisk: null,
+  engagementRisk: null,
+  suiteRisk: null,
+  shareRisk: null,
+  legacyTechRisk: null,
+  expertiseRisk: null,
+  pricingRisk: null,
+};
+
+/** Preserve prior non-null risk flags when an adapter omits a signal (null). */
+export function mergeCerebroRisks(
+  existing: CanonicalAccount['cerebroRisks'] | undefined,
+  next: CanonicalAccount['cerebroRisks'] | undefined,
+): CanonicalAccount['cerebroRisks'] {
+  const base = existing ?? EMPTY_CEREBRO_RISKS;
+  if (!next) return base;
+  const merged = { ...base };
+  for (const key of Object.keys(base) as (keyof CanonicalAccount['cerebroRisks'])[]) {
+    if (next[key] !== null && next[key] !== undefined) {
+      merged[key] = next[key];
+    }
+  }
+  return merged;
+}
+
 export function summarizeSourceLinkCounts(data: MergedData): {
   accounts: number;
   opportunities: number;
@@ -292,6 +318,7 @@ function mergeAccount(
   return {
     ...existing,
     ...next,
+    cerebroRisks: mergeCerebroRisks(existing.cerebroRisks, next.cerebroRisks),
     lastFetchedFromSource: {
       ...(existing.lastFetchedFromSource ?? {}),
       ...(next.lastFetchedFromSource ?? {}),

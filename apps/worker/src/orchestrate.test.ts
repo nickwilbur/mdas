@@ -119,7 +119,11 @@ vi.mock('@mdas/adapter-cerebro-glean', () => ({ cerebroGleanAdapter: fakeCerebro
 vi.mock('@mdas/adapter-gainsight', () => ({ gainsightAdapter: { name: 'gs', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-staircase-gmail', () => ({ staircaseGmailAdapter: { name: 'sg', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-zuora-mcp', () => ({ zuoraMcpAdapter: { name: 'zu', isReadOnly: true, fetch: vi.fn() } }));
-vi.mock('@mdas/adapter-glean-mcp', () => ({ gleanMcpAdapter: { name: 'gl', isReadOnly: true, fetch: vi.fn() } }));
+vi.mock('@mdas/adapter-glean-mcp', () => ({
+  gleanMcpAdapter: { name: 'glean-mcp', source: 'glean-mcp', isReadOnly: true, fetch: vi.fn() },
+  readGleanCredsFromEnv: vi.fn(() => undefined),
+  GleanClient: vi.fn(),
+}));
 
 vi.mock('@mdas/forecast-generator', () => ({
   computeRefreshTrajectoryKpis: vi.fn(() => ({
@@ -139,7 +143,13 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks, buildCerebroRestCoverage } from './orchestrate.js';
+import {
+  runRefresh,
+  partitionAdaptersForFetch,
+  mergeSourceLinks,
+  mergeCerebroRisks,
+  buildCerebroRestCoverage,
+} from './orchestrate.js';
 import { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
 
 // Helpers to keep tests focused. The fixture only carries the fields
@@ -357,6 +367,63 @@ describe('runRefresh — orchestrator', () => {
     }
   });
 
+  it('preserves cerebro-rest risk flags when cerebro-glean omits them (null)', async () => {
+    process.env.ADAPTER_CEREBRO = 'real';
+    process.env.CEREBRO_GLEAN_FALLBACK = '1';
+    try {
+      (fakeLocal.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        accounts: [accountFixture('A1')],
+        opportunities: [],
+      });
+      (fakeCerebroRest.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        accounts: [
+          {
+            accountId: 'A1',
+            cerebroRisks: {
+              utilizationRisk: true,
+              engagementRisk: null,
+              suiteRisk: null,
+              shareRisk: null,
+              legacyTechRisk: null,
+              expertiseRisk: null,
+              pricingRisk: null,
+            },
+          } as unknown as CanonicalAccount,
+        ],
+        opportunities: [],
+      });
+      (fakeCerebroGlean.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        accounts: [
+          {
+            accountId: 'A1',
+            cerebroRisks: {
+              utilizationRisk: null,
+              engagementRisk: true,
+              suiteRisk: null,
+              shareRisk: null,
+              legacyTechRisk: null,
+              expertiseRisk: null,
+              pricingRisk: null,
+            },
+          } as unknown as CanonicalAccount,
+        ],
+        opportunities: [],
+      });
+
+      await runRefresh({ actor: 'test' });
+
+      const persisted = replaceSnapshotAccounts.mock.calls.at(-1)?.[1] as
+        | CanonicalAccount[]
+        | undefined;
+      const a1 = persisted?.find((a) => a.accountId === 'A1');
+      expect(a1?.cerebroRisks?.utilizationRisk).toBe(true);
+      expect(a1?.cerebroRisks?.engagementRisk).toBe(true);
+    } finally {
+      delete process.env.ADAPTER_CEREBRO;
+      delete process.env.CEREBRO_GLEAN_FALLBACK;
+    }
+  });
+
   it('reuses the priorRun prefetch instead of re-reading for the diff window', async () => {
     // Prefetch returns this run; diff-window query returns the SAME run.
     const priorRunId = 'prior-abc';
@@ -435,5 +502,42 @@ describe('mergeSourceLinks', () => {
     const updated = mergeSourceLinks([sfLink], [{ ...sfLink, label: 'Updated label' }]);
     expect(updated).toHaveLength(1);
     expect(updated[0]?.label).toBe('Updated label');
+  });
+});
+
+describe('mergeCerebroRisks', () => {
+  const withUtilizationTrue = {
+    utilizationRisk: true as const,
+    engagementRisk: null,
+    suiteRisk: null,
+    shareRisk: null,
+    legacyTechRisk: null,
+    expertiseRisk: null,
+    pricingRisk: null,
+  };
+
+  it('preserves existing true flags when the patch omits signals (null)', () => {
+    const sparse = {
+      utilizationRisk: null,
+      engagementRisk: true as const,
+      suiteRisk: null,
+      shareRisk: null,
+      legacyTechRisk: null,
+      expertiseRisk: null,
+      pricingRisk: null,
+    };
+    expect(mergeCerebroRisks(withUtilizationTrue, sparse)).toEqual({
+      utilizationRisk: true,
+      engagementRisk: true,
+      suiteRisk: null,
+      shareRisk: null,
+      legacyTechRisk: null,
+      expertiseRisk: null,
+      pricingRisk: null,
+    });
+  });
+
+  it('returns existing risks when next is undefined', () => {
+    expect(mergeCerebroRisks(withUtilizationTrue, undefined)).toEqual(withUtilizationTrue);
   });
 });
