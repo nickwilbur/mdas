@@ -52,7 +52,10 @@ export function MovementsStrip({
           Movements since {formatBaselineDate(baselineDate)}
           <span className="ml-1 text-xs font-normal text-gray-500">({windowDays}d window)</span>
         </h2>
-        <Link href={`/wow${windowDays !== 7 ? `?window=${windowDays}` : ''}`} className="text-xs text-blue-700 hover:underline">
+        <Link
+          href={`/wow${windowDays !== 7 ? `?window=${windowDays}` : ''}`}
+          className="text-xs font-medium text-blue-700 underline underline-offset-2 hover:text-blue-900"
+        >
           See all {total} →
         </Link>
       </div>
@@ -62,9 +65,11 @@ export function MovementsStrip({
           return (
             <li
               key={c.key}
-              className={`rounded border px-2 py-1 ${c.tone} ${n === 0 ? 'opacity-50' : ''}`}
+              className={`rounded border px-2 py-1 ${
+                n === 0 ? 'border-gray-200 bg-gray-50 text-gray-800' : c.tone
+              }`}
             >
-              <div className="text-[10px] uppercase tracking-wide">{c.label}</div>
+              <div className="text-[10px] font-medium uppercase tracking-wide">{c.label}</div>
               <div className="text-lg font-semibold tabular-nums">{n}</div>
             </li>
           );
