@@ -40,7 +40,16 @@ function acct(overrides: Partial<CanonicalAccount> = {}): CanonicalAccount {
     churnDate: null,
     gainsightTasks: [],
     workshops: [{ id: 'w1', engagementType: 'QBR', status: 'Complete', workshopDate: '2026-05-01' }],
-    recentMeetings: [{ source: 'calendar', title: 'Check-in', startTime: '2026-06-01T00:00:00Z', attendees: [] }],
+    recentMeetings: [
+      {
+        source: 'calendar',
+        title: 'Check-in',
+        startTime: '2026-06-01T00:00:00Z',
+        attendees: [],
+        summary: null,
+        url: null,
+      },
+    ],
     accountPlanLinks: [],
     salesforceSlackChannelUrl: 'https://slack.example/C123',
     sourceLinks: [],

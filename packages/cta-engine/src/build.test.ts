@@ -80,6 +80,7 @@ function renewalOpp(): CanonicalOpportunity {
     sourceLinks: [
       {
         source: 'salesforce',
+        label: 'SFDC Opportunity',
         url: 'https://zuora.my.salesforce.com/lightning/r/Opportunity/006Po00000RENEWAL1/view',
       },
     ],

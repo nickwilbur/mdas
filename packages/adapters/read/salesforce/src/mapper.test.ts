@@ -151,6 +151,7 @@ const SAMPLE_OPP_ROW: SfdcOpportunityRow = {
   Name: 'Stenograph - Billing Volume',
   AccountId: '0017000000abc123',
   Type: 'Amendment',
+  Sub_type__c: null,
   StageName: '5.0 Propose',
   Stage_Num__c: 5,
   CloseDate: '2026-04-28',

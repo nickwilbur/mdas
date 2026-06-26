@@ -39,7 +39,16 @@ function acct(overrides: Partial<CanonicalAccount> = {}): CanonicalAccount {
     churnDate: null,
     gainsightTasks: [],
     workshops: [{ id: 'w1', engagementType: 'QBR', status: 'Complete', workshopDate: '2026-05-01' }],
-    recentMeetings: [{ source: 'calendar', title: 'Sync', startTime: '2026-05-15T00:00:00Z', attendees: [] }],
+    recentMeetings: [
+      {
+        source: 'calendar',
+        title: 'Sync',
+        startTime: '2026-05-15T00:00:00Z',
+        attendees: [],
+        summary: null,
+        url: null,
+      },
+    ],
     accountPlanLinks: [],
     salesforceSlackChannelUrl: 'https://slack.example/C123',
     sourceLinks: [],
@@ -104,7 +113,14 @@ describe('evaluateAccount Green sentiment', () => {
         sourceErrors: { cerebro: 'timeout', 'glean-mcp': 'unavailable' },
         lastFetchedFromSource: {},
         recentMeetings: [
-          { source: 'calendar', title: 'Sync', startTime: '2026-06-10T00:00:00Z', attendees: [] },
+          {
+            source: 'calendar',
+            title: 'Sync',
+            startTime: '2026-06-10T00:00:00Z',
+            attendees: [],
+            summary: null,
+            url: null,
+          },
         ],
       }),
       [renewalOpp('2027-05-15')],

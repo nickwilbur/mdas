@@ -609,7 +609,7 @@ export async function runRefresh(
     // merge or the snapshot, surfacing as "Cerebro narrative not synced".
     const fetchResults = new Map<string, Partial<MergedData>>();
     if (immediate.length > 0) {
-      const immediateResults = await Promise.all(immediate.map(fetchOneAdapter));
+      const immediateResults = await Promise.all(immediate.map((a) => fetchOneAdapter(a)));
       immediate.forEach((a, i) => {
         fetchResults.set(a.name, immediateResults[i]!);
       });

@@ -11,7 +11,9 @@ import { fetchPublicChannelIndex, EMPTY_INDEX } from './list-channels.js';
 const origFetch = globalThis.fetch;
 
 function mockFetchReturning(channels: Array<{ id: string; name: string; is_archived?: boolean }>) {
-  return vi.fn(async (url: string) => {
+  return vi.fn(async (url: string, init?: RequestInit) => {
+    void url;
+    void init;
     return {
       ok: true,
       json: async () => ({ ok: true, channels, response_metadata: { next_cursor: '' } }),
@@ -19,13 +21,13 @@ function mockFetchReturning(channels: Array<{ id: string; name: string; is_archi
   });
 }
 
-function lastFetchUrl(mock: ReturnType<typeof vi.fn>): string {
+function lastFetchUrl(mock: ReturnType<typeof mockFetchReturning>): string {
   const calls = mock.mock.calls;
-  return calls[calls.length - 1][0] as string;
+  return calls[calls.length - 1]![0] as string;
 }
 
 describe('fetchPublicChannelIndex', () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
+  let fetchMock: ReturnType<typeof mockFetchReturning>;
   beforeEach(() => {
     fetchMock = mockFetchReturning([
       { id: 'C111', name: 'cust-acme' },
@@ -80,7 +82,7 @@ describe('fetchPublicChannelIndex', () => {
     expect(idx.includesPrivate).toBe(true);
 
     // Assert Cookie header was attached.
-    const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    const headers = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
     expect(headers.Cookie).toBe('d=xoxd-cookie-value');
     expect(headers.Authorization).toBe('Bearer xoxc-test');
   });

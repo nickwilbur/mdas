@@ -108,7 +108,7 @@ function buildHighExpansionView() {
       }),
     ],
   );
-  return { ...base, upsell: { band: 'Hot' as const, score: 85 } };
+  return { ...base, upsell: { band: 'Hot' as const, score: 85, signals: [] } };
 }
 
 describe('generateAccountPlan', () => {

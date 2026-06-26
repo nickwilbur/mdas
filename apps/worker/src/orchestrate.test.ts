@@ -3,6 +3,7 @@ import type {
   CanonicalAccount,
   CanonicalOpportunity,
   ReadAdapter,
+  SourceLink,
 } from '@mdas/canonical';
 
 // ---------------------------------------------------------------------------
@@ -44,14 +45,14 @@ const {
   writeSnapshotAccounts: vi.fn(async () => undefined),
   writeSnapshotOpportunities: vi.fn(async () => undefined),
   writeAccountViews: vi.fn(async () => undefined),
-  replaceSnapshotAccounts: vi.fn(async () => undefined),
+  replaceSnapshotAccounts: vi.fn<[string, CanonicalAccount[]], Promise<void>>(async () => undefined),
   replaceSnapshotOpportunities: vi.fn(async () => undefined),
   replaceAccountViews: vi.fn(async () => undefined),
   pruneOldRuns: vi.fn(async () => 0),
   updateRefreshProgress: vi.fn(async () => undefined),
   attachRefreshRunToJob: vi.fn(async () => undefined),
   updateRefreshTrajectoryKpis: vi.fn(async () => undefined),
-  audit: vi.fn(async () => undefined),
+  audit: vi.fn<[string, string, Record<string, unknown>], Promise<void>>(async () => undefined),
 }));
 
 vi.mock('@mdas/db', () => ({
@@ -119,7 +120,11 @@ vi.mock('@mdas/adapter-cerebro-glean', () => ({ cerebroGleanAdapter: fakeCerebro
 vi.mock('@mdas/adapter-gainsight', () => ({ gainsightAdapter: { name: 'gs', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-staircase-gmail', () => ({ staircaseGmailAdapter: { name: 'sg', isReadOnly: true, fetch: vi.fn() } }));
 vi.mock('@mdas/adapter-zuora-mcp', () => ({ zuoraMcpAdapter: { name: 'zu', isReadOnly: true, fetch: vi.fn() } }));
-vi.mock('@mdas/adapter-glean-mcp', () => ({ gleanMcpAdapter: { name: 'gl', isReadOnly: true, fetch: vi.fn() } }));
+vi.mock('@mdas/adapter-glean-mcp', () => ({
+  gleanMcpAdapter: { name: 'gl', isReadOnly: true, fetch: vi.fn() },
+  readGleanCredsFromEnv: vi.fn(() => null),
+  GleanClient: vi.fn(),
+}));
 
 vi.mock('@mdas/forecast-generator', () => ({
   computeRefreshTrajectoryKpis: vi.fn(() => ({
@@ -450,7 +455,7 @@ describe('mergeSourceLinks', () => {
   });
 
   it('keeps bounded size when simulating many consecutive refresh merges', () => {
-    let links = [sfLink, gleanLink];
+    let links: SourceLink[] = [sfLink, gleanLink];
     for (let refresh = 0; refresh < 100; refresh += 1) {
       links = mergeSourceLinks(links, [sfLink, gleanLink]);
     }

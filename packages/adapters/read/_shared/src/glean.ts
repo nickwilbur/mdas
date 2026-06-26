@@ -1027,10 +1027,10 @@ export function readGleanCredsFromEnv(): GleanCredentials | null {
 
 /** Prefer orchestrator-injected client; otherwise construct a new one. */
 export function resolveGleanClient(
-  ctx: { gleanClient?: GleanClient } | undefined,
+  ctx: { gleanClient?: unknown } | undefined,
   creds: GleanCredentials | null,
 ): GleanClient | null {
-  if (ctx?.gleanClient) return ctx.gleanClient;
+  if (ctx?.gleanClient) return ctx.gleanClient as GleanClient;
   if (!creds) return null;
   return new GleanClient(creds);
 }
