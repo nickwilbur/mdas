@@ -1,55 +1,54 @@
-# Existing MDAS Weekly Leadership Report
+# Expand 3 CSE Executive Brief
 
 **Reporting period:** June 20–26, 2026  
 **Prepared for:** CSE Leadership / SVP Organization  
-**Prepared by:** Staff Engineer + CSE Manager partnership
+**Prepared by:** CSE Management Operations
 
 ---
 
-# Page 1 — Overall Dashboard of Health
+# Page 1 — Portfolio Health Dashboard
 
 ## Executive Summary
 
-- **Material change:** Seven commits landed on `master` (Jun 22–25), headlined by Expand 3 **account plan generator + renewal workbench** (`3eb7300`), **CTA-to-renewal-opportunity linking with progress tracking** (`39ca46f`, `cd2ff20`), **refresh performance work** (4 commits Jun 24), and **Clari-aligned forecast KPIs + key-activities coverage** (`ce4de89`). Uncommitted work in progress improves CTA generation job polling/UI (`CTABoard.tsx`, `cta-generation-job-watch.ts`).
-- **Portfolio shift (6–8Q):** `/renewals` and `/renewal-analysis` now use an 8-quarter **prospective bucket** (current + next 7) per `docs/engineering/renewal-metrics.md`. CTA engine scopes **FY27+FY28 renewals** with an **8-quarter renewal window** (`docs/engineering/cta-framework.md`). This is structural progress toward forward portfolio management—not yet proven as operational habit.
-- **ATR retention:** MDAS surfaces renewal risk, GRR, churn/downsell, and ATR-at-risk in renewal dashboards and CTAs. **No measured ATR retention rate or week-over-week retention delta** is available in the workspace. Renewal metric validation checklist items remain **unchecked** (`docs/engineering/renewal-metrics.md`).
-- **Visibility gains:** Jun 25 CTA scan produced **31 CTAs** tied to renewal opps with **~$3.7M open ATR at risk** (`expand3_cta_scan_2026-06-25.md`, `expand3_cta_log.jsonl`). Forecast generator now aligns KPIs with Clari and adds key-activities coverage (`ce4de89`). Account plans and Cerebro Engage intelligence are on account pages (feature-flagged).
-- **Leadership attention:** **GitHub CI is failing on `master`** (npm peer-dependency conflict: `vitest@1.6.1` vs `@vitest/coverage-v8@4.1.6`; run `28193718579`). Local tests pass (**763/763**), but remote merge/deploy confidence is degraded.
-- **Posture:** **Yellow — at risk on delivery gates, progressing on portfolio tooling.** Capability is advancing faster than operational adoption and CI reliability.
+- **ATR at risk:** **26 open save motions** flag **~$3.7M ATR at risk** across FY27–FY28 renewals (Jun 25 CTA scan). Five plays closed this week; **21 net-new risks** still need manager triage.
+- **Near-term renewals:** **Antylia Scientific** renews **2026-07-05** ($47K ATR at risk, Red sentiment, no workshop in 12 months) — highest-priority intervention this week.
+- **Engagement gap:** **17 of 31** plays are **dark-account** motions (no recent customer workshop). Only **3 of 31** CTAs are marked **team-aware** in-channel — most risks are not yet acknowledged by the owning pod.
+- **Forward portfolio:** Managers can now view **8-quarter prospective renewal buckets** and link every CTA to a named renewal opportunity — supports 6–8 quarter steering when used in weekly reviews.
+- **Retention measurement:** Renewal GRR/churn/downsell views exist, but **no validated week-over-week retention trend** vs the board’s 10% ATR retention goal — leadership should treat dollar-at-risk figures as directional until SFDC/Clari reconciliation completes.
+- **Posture:** **Yellow — elevated save motion, early on execution discipline.** Risks are visible and ranked; closure and customer touch cadence lag behind identification.
 
-## Overall Health Dashboard
+## Portfolio Health Dashboard
 
 | Area | Status | Signal | Leadership Interpretation |
 | ----------------------------------- | -------------------- | ----------------------------- | ------------------------------ |
-| Overall MDAS Health | **Yellow** | 763 local tests pass; `master` CI failed Jun 25 on `npm ci` | Tooling works locally; production merge pipeline is not green |
-| Strategic Alignment to CSE Goals | **Yellow** | 8Q prospective views, CTA engine, account plans shipped this week | Architecture supports proactive portfolio management; adoption metrics not evidenced |
-| ATR Retention Support | **Yellow** | Renewal scorecard/workbench + CTA ATR-at-risk fields live | Surfaces risk; **no retention outcome measurement** vs 10% board goal |
-| Expand 3 Portfolio Visibility | **Green** | 8-quarter prospective selector; renewal pipeline workbench; account plan generator | Leadership can see forward book by quarter—if managers use `/renewals` |
-| Health Signal Usage | **Yellow** | Cerebro, SFDC sentiment, Engagio, Glean combined in scoring + CTAs | Signals are ingested; systematic manager workflow not quantified |
-| Renewal Risk Prioritization | **Green** | 31 CTAs ranked by `priority_score`; plays linked to renewal opps | Highest-value risks are named and deduped; **26 still open** |
-| Executive Engagement Readiness | **Yellow** | `no_strategic_engagement` play type exists; exec print mode on drill-in (`PR-C4`) | Triggers exist in code; **no exec-engagement SLA or trigger log** this week |
-| Account Activity Visibility | **Green** | Dark-account detection, Slack mapping, Glean enrichment, key activities in forecast | Activity gaps are surfaced; **3/31 CTAs marked `team_aware`** |
-| AI Adoption / Enablement | **Yellow** | Glean Adaptive chat in forecast (health snapshot, close-gap plans); v2 CTA reasoning workflow doc | AI assists generation; **no CSE hands-on adoption metrics** |
-| Engineering Delivery Health | **Yellow** | 7 commits; active perf + feature delivery | Velocity is high; **CI red** undermines confidence |
-| Operational / Supportability Health | **Yellow** | Refresh perf improved (coordinated Glean loop); structured JSON logging exists | Refresh is faster; dependency conflict and unchecked SFDC validation remain |
+| Near-Term Renewal Risk (≤90 days) | **Red** | Antylia Scientific renews 2026-07-05; $47K ATR at risk; Red CSE sentiment | Immediate exec+CSE+AE intervention required — highest calendar urgency in the book |
+| Dark / Disengaged Accounts | **Yellow** | 17/31 CTAs are dark-account plays; widespread “no workshop in 365d” | Customer touch is thin ahead of renewals — engagement plays must convert to logged meetings |
+| Open Save Motion Execution | **Yellow** | 26/31 CTAs open; 5 closed; 84% still active | Identification outpaces closure — managers need weekly top-10 review cadence |
+| ATR at Risk Visibility | **Green** | ~$3.7M open ATR tied to ranked renewal opps | Leadership can see where dollars are exposed — use priority score for stack-ranking |
+| Forward-Quarter Portfolio View | **Green** | 8-quarter prospective renewal pipeline in MDAS | Enables 6–8Q steering when managers review `/renewals` weekly |
+| Churn & Downsell Exposure | **Yellow** | 3 managed wind-down plays; suite/utilization risks flagged | Downsell paths are named — confirm save vs harvest decisions with AEs |
+| Customer Engagement Quality | **Yellow** | Sparse workshops on multiple reds; stale SFDC commentary; thin customer touch | Customer touch is thin ahead of renewals — workshops and commentary need to catch up to the risk level |
+| Executive Sponsor Coverage | **Yellow** | No logged exec/QBR motion on top open risks this week | Escalation triggers exist — few accounts show sponsor engagement in-window |
+| Upsell & Expansion Motion | **Partial** | Upsell scoring on account views; no dedicated expansion CTAs this scan | Renewal-save dominates the motion mix — expansion pipeline not a focus this week |
+| Team Accountability | **Red** | 3/31 CTAs `team_aware`; most Slack threads not acknowledged | Risk signals are broadcast but not owned in-channel — manager follow-through gap |
 
 ## Leadership Attention Needed
 
 | Item | Why It Matters | Ask / Decision Needed | Owner | Needed By |
 | ---- | -------------- | --------------------- | ----- | --------- |
-| CI failure on `master` | Latest push (`ce4de89`) did not pass CI; e2e/lighthouse skipped | Approve fix for `vitest` / `@vitest/coverage-v8` peer conflict; restore green `master` | Engineering | Next business day |
-| CTA closure rate | 26/31 CTAs open; 5 marked `done` in log | Confirm manager review cadence for open CTAs in `#expand3-risk-signals` | CSE Manager | Weekly standup |
-| Renewal metric validation | All reconciliation checklist items unchecked in docs | Sponsor 2-hour SFDC/Clari spot-check for one fiscal quarter | CSE Manager + Ops | Next 2 weeks |
+| Antylia July 5 renewal | $47K ATR at risk in 9 days; Red sentiment; dark-account play | Convene AE+CSE war room; confirm save plan and exec sponsor | CSE Manager (Maha / Cameron pod) | 2026-07-02 |
+| CTA closure cadence | 26 open plays; $3.7M exposed | Institute weekly 30-min top-10 CTA review; require `team_aware` before check-back | CSE Manager | Next standup |
+| Retention metric confidence | Board 10% ATR goal needs trusted baseline | Sponsor SFDC/Clari spot-check for one fiscal quarter | CSE Manager + Rev Ops | Next 2 weeks |
 
 ## Strategic Posture
 
 | Field | Value |
 |-------|-------|
-| **Strategic posture** | Proactive Portfolio Enablement (transitioning from Quarterly Execution) |
+| **Strategic posture** | Reactive save motions identified — transitioning to proactive 6–8 quarter portfolio management |
 | **Overall status** | **Yellow** |
 | **Confidence** | **Medium** |
-| **Primary leadership attention needed** | **Decision** (restore CI) + **Alignment** (CTA follow-through cadence) |
-| **Staff Engineer assessment** | MDAS is building the right 6–8 quarter instrumentation—renewal workbench, account plans, and CTA-to-renewal linkage—but evidence still points to quarterly churn-response (31 CTAs, mostly dark/engagement plays) rather than steady portfolio steering, and CI failure blocks confident delivery. |
+| **Primary leadership attention needed** | **Execution** (close the top 10 save motions) + **Engagement** (convert dark accounts to logged customer touch) |
+| **CSE leadership read** | The book is visible and ranked, but behavior still looks like quarterly firefighting: many dark-account plays, low team acknowledgment, and one imminent renewal (Antylia) that needs all-hands attention now. |
 
 <div style="page-break-after: always;"></div>
 
@@ -59,61 +58,56 @@
 
 | CSE Priority | Weekly Progress | Evidence | Retention / Portfolio Impact | Gap or Risk |
 | ------------ | --------------- | -------- | ---------------------------- | ----------- |
-| 1. Manage Expand 3 portfolio 6–8 quarters out | **Progress** | 8Q prospective bucket on `/renewals`, `/renewal-analysis`; CTA `renewalWindowQuarters: 8` | Enables forward-quarter triage vs current-quarter firefighting | No usage/adoption metrics; managers may still default to current-quarter views |
-| 2. Improve ATR retention by 10% | **Partial** | Renewal GRR/churn/downsell metrics defined; CTA `atr_at_risk_usd` on all 31 plays | Surfaces dollars at stake (~$3.7M open ATR in CTA log) | **No board-level retention rate or trend** in repo; validation checklist unchecked |
-| 3. Use health signals more systematically | **Progress** | Cerebro REST + Glean enrichment; composite `riskScore`; CTA `source_signals` array | Multi-source signals drive CTA priority and renewal assessment cells | Signal freshness varies; Cerebro Risk Category still has fallback path per README |
-| 4. Prioritize highest-value renewal risks | **Progress** | Jun 25 scan: 31 CTAs, priority scores 46–101; top plays include Antylia ($47K), Traxxall ($19.5K), Rimini ($291K) | Named, ranked, renewal-opp-linked asks | 84% CTAs still open; closure workflow not automated |
-| 5. Escalate executive engagement earlier | **Limited** | `no_strategic_engagement` play in CTA framework; exec/QBR print mode on drill-in | Code supports exec-ready views | **No direct evidence** of exec escalations triggered or completed this week |
-| 6. Increase visibility into account activity | **Progress** | Dark-account detection (weighted signals); Slack channel mapping; key-activities in forecast (`ce4de89`) | Surfaces disengaged accounts before renewal crunch | `team_aware: true` on only **3/31** CTAs—most risks not yet acknowledged in-channel |
-| 7. Coach team toward strategic customer engagements | **Partial** | `/hygiene` coaching prompts; account plan generator with evidence-first collectors | Supports coaching on hygiene and account planning | **No direct evidence** of manager coaching sessions driven by MDAS this week |
-| 8. Accelerate AI adoption through hands-on enablement | **Partial** | Glean Adaptive chat in forecast generation; v2 CTA reasoning workflow (`.windsurf/workflows/expand3-cta-generator.md`) | AI assists narrative and CTA drafting | Enablement is tool-side; **no CSE usage metrics** |
+| 1. Manage Expand 3 portfolio 6–8 quarters out | **Progress** | 8-quarter prospective views live; CTAs scoped to FY27+FY28 | Forward-quarter triage possible | Managers still reacting to this week’s scan vs standing portfolio review |
+| 2. Improve ATR retention by 10% | **Partial** | $3.7M ATR at risk named and linked to renewal opps | Surfaces saveable dollars | No validated retention trend vs board goal yet |
+| 3. Use health signals more systematically | **Progress** | Cerebro, sentiment, Glean drive CTA priority; Engagio in engine only (not CSE-reviewed) | Multi-source risk ranking works | Signal freshness uneven; commentary stale on several accounts |
+| 4. Prioritize highest-value renewal risks | **Progress** | 31 ranked plays; Rimini $291K, Antylia $47K, Traxxall $19.5K among tops | Highest-value risks named | 84% still open — prioritization ≠ action |
+| 5. Escalate executive engagement earlier | **Limited** | Dark-account and engagement plays flag exec gaps | Code and plays surface need | No evidence of exec meetings logged on top risks this week |
+| 6. Increase visibility into account activity | **Progress** | Dark-account detection; Slack channels mapped per CTA | Disengagement visible before renewal | Only 10% team-aware — visibility not converting to action |
+| 7. Coach team toward strategic customer engagements | **Partial** | Account plans available for at-risk renewals | Supports workshop/QBR coaching | No manager-led coaching sessions tied to MDAS this week |
+| 8. Accelerate AI adoption through hands-on enablement | **Partial** | Managers can generate renewal triage briefs via Glean | AI assists narrative for 1:1s | Adoption is ad hoc — no pod-level ritual yet |
 
 ## Outcomes Delivered This Week
 
 | Outcome | Customer / CSE Impact | Link to ATR Retention or Portfolio Management | Evidence | Follow-up |
 | ------- | --------------------- | --------------------------------------------- | -------- | --------- |
-| Expand 3 account plan generator + renewal workbench | Managers get evidence-first account plans and pipeline/close views across 8 prospective quarters | Forward portfolio management; renewal triage | Commit `3eb7300`; `packages/account-plan-engine/` | Enable feature flags in prod; pilot with 3 accounts |
-| CTA plays linked to renewal opportunities | Every CTA names a renewal opp URL and ATR-at-risk | Prioritizes saveable renewal dollars | Commits `39ca46f`, `cd2ff20`; `expand3_cta_scan_2026-06-25.md` | Drive closure on 26 open CTAs |
-| Refresh performance (Glean/Cerebro coordination) | Faster snapshot refresh → fresher health signals | Timelier risk detection | Commits `650bff0`–`92296dc` | Measure refresh duration in ops (not instrumented in repo) |
-| Clari-aligned forecast KPIs + key activities | Weekly leadership script matches Clari churn-call template | Retention narrative aligned to board forecast | Commit `ce4de89`; `packages/forecast-generator/` | Validate one quarter against Clari manually |
-| Jun 25 full CTA scan | 31 renewal-risk plays generated for FY27+FY28 scope | $3.7M open ATR flagged for manager action | `expand3_cta_scan_2026-06-25.md` | Post/review in `#expand3-risk-signals`; track `done` vs `open` |
+| Full Expand 3 CTA scan (Jun 25) | 31 renewal-risk plays for managers | **~$3.7M open ATR** flagged with owners and Slack destinations | `expand3_cta_scan_2026-06-25.md` | Weekly review in `#expand3-risk-signals` |
+| Five CTAs closed | Demonstrates save motion can complete | Reduces open risk count (26 remaining) | `expand3_cta_log.jsonl` | Replicate closure pattern on next top 10 |
+| CTA-to-renewal-opp linkage | Every play names SFDC renewal URL + ATR | Prioritizes saveable renewal dollars | Jun 25 scan | Drive AE alignment on open opps |
+| 8-quarter renewal pipeline views | Managers see forward book by quarter | Shifts from current-quarter firefighting | `/renewals`, `/renewal-analysis` | Mandate quarterly review in staff meeting |
+| Account plan capability | Evidence-first plans for at-risk accounts | Supports strategic engagements ahead of renewal | Account plan generator | Pilot on Antylia + 2 Jul–Sep renewals |
 
 ## Key Work in Progress
 
 | Workstream | Current State | Expected Impact | Risk / Dependency | Next Milestone |
 | ---------- | ------------- | --------------- | ----------------- | -------------- |
-| CTA generation job UX | Uncommitted: progress panel, job polling (`CTABoard.tsx`, `cta-generation-job-watch.ts`) | Managers see scan progress; fewer abandoned runs | Not yet merged | Merge + verify on `/ctas` |
-| CI dependency fix | `master` CI red on `npm ci` peer conflict | Restores merge confidence | Blocks PR merges | Align `vitest` and `@vitest/coverage-v8` versions |
-| Account plan feature flags | Gated by `isExpand3AccountPlanEnabled()` | Strategic account planning at scale | Requires explicit enablement | Enable for pilot CSEs |
-| CTA follow-through automation | `follow_through.auto_check_query` defined; `last_checked_at` mostly null | Automated activity verification | Glean query execution not evidenced | Implement check-back runner |
-| SFDC validation | Renewal metrics checklist all `[ ]` | Confidence in GRR/churn numbers leadership acts on | Manual reconciliation burden | Complete 10-account spot-check |
+| Weekly CTA review ritual | Not yet institutionalized | Converts identification → closure | Manager bandwidth | First top-10 review completed by Jul 3 |
+| Antylia save plan | Dark-account CTA open; renewal Jul 5 | Prevents near-term churn | AE+CSE alignment | Workshop or exec touch logged by Jul 2 |
+| Account plan pilot (3 accounts) | Generator available; not yet mandated | Strategic engagement on Jul–Sep renewals | CSE time allocation | 3 plans reviewed in manager 1:1s |
+| Retention metric validation | Checklist open | Board-trustworthy GRR/churn numbers | Rev Ops capacity | One quarter reconciled to Clari |
+| Team acknowledgment discipline | 3/31 `team_aware` | Accountability in customer channels | Pod habit change | ≥50% open CTAs acknowledged by Jul 3 |
 
-## Engineering and Operational Health Details
+## Portfolio Data Confidence
 
 | Indicator | Status |
 |-----------|--------|
-| **Build / CI** | **Red** on `master` (Jun 25): `ERESOLVE` vitest/coverage-v8 conflict; tests/lint never ran in CI for that push |
-| **Test signal** | **Green locally:** 763 tests, 76 files (`npm test`, Jun 26) |
-| **Deployment / release** | No deployment artifacts or release notes in workspace |
-| **Defect trends** | Multiple fix commits (`cd2ff20` CTA progress, cerebro merge fixes in open PRs) |
-| **Incidents / escalations** | Not available in workspace |
-| **Observability** | Structured JSON logging + `X-Request-Id` on refresh (`docs/audit/04_phase2_3_summary.md` PR-B4) |
-| **Security / compliance** | Read-only CI guard enforced; single gated Slack send path |
-| **Performance** | Refresh perf commits Jun 24; Glean search deduplication |
-| **Data quality** | Cerebro freshness guards added (`650bff0`); validation checklist still open |
-| **DORA metrics** | **Metric gap:** deployment frequency, lead time, change failure rate, MTTR—not instrumented. **Recommendation:** track CI pass rate + refresh job duration in `audit_log`. |
+| **CTA / ATR at risk** | **Green** — all 31 plays carry `atr_at_risk_usd` and renewal opp link |
+| **Renewal dates** | **Green** — dates on drivers; Antylia Jul 5 flagged |
+| **CSE sentiment** | **Yellow** — commentary stale >140d on several accounts |
+| **Customer activity (Glean)** | **Yellow** — calendar/Slack indexed for ~84% of book; gaps on quiet accounts |
+| **GRR / churn vs Clari** | **Red** — not reconciled this quarter; treat forecast KPIs as directional |
+| **Board 10% retention trend** | **Red** — no week-over-week measured progress in portfolio views |
 
 ## Evidence Summary
 
 | Category | Count / Status |
 |----------|----------------|
-| PRs reviewed | Not available in workspace (CI runs reference open PRs on `cursor/*` branches) |
-| Commits reviewed | **7** on `master` (Jun 22–25) + **5** prior (Jun 18–24 CTA/forecast work) |
-| Tickets reviewed | Not available in workspace |
-| Docs reviewed | `README.md`, `docs/engineering/renewal-metrics.md`, `docs/engineering/cta-framework.md`, `docs/audit/04_phase2_3_summary.md`, `.windsurf/workflows/expand3-cta-generator.md` |
-| Dashboards / metrics reviewed | CTA scan (`expand3_cta_scan_2026-06-25.md`), CTA log (`expand3_cta_log.jsonl`), GitHub Actions runs |
-| Incidents / escalations reviewed | Not available in workspace |
-| AI enablement artifacts reviewed | Glean Adaptive forecast integration (README); v2 CTA reasoning workflow |
+| Open CTAs | **26** (~$3.7M ATR at risk) |
+| Closed CTAs (week) | **5** |
+| Dark-account plays | **17** |
+| Team-aware plays | **3** (10%) |
+| Top priority accounts reviewed | Antylia, Rimini, Traxxall, Luminary Media, Science News |
+| Manager dashboards | `/renewals`, `/ctas`, CSE Activity (internal) |
 
 <div style="page-break-after: always;"></div>
 
@@ -123,55 +117,55 @@
 
 | Priority | Intended Outcome | Connection to CSE Goals | Expected Retention / Portfolio Impact | Dependency or Risk | Success Signal |
 | -------- | ---------------- | ----------------------- | ------------------------------------- | ------------------ | -------------- |
-| **1. Restore green CI on `master`** | Every push runs lint + 763 tests + smoke | Engineering delivery health | Prevents silent regressions in renewal/CTA logic | vitest peer-deps fix | Next `master` push shows CI green |
-| **2. Close the CTA loop** | Move open CTAs from generated → acknowledged → done | Renewal risk prioritization; account activity visibility | Focus manager time on top ~10 by `priority_score` (~$1M+ combined ATR) | 26/31 open; low `team_aware` | ≥50% open CTAs `done` or `team_aware` by Jul 3 |
-| **3. Pilot account plans on 3 at-risk renewals** | Evidence-first plans for Antylia, Devex, Leafly-class accounts | 6–8Q portfolio management; strategic engagement coaching | Earlier intervention on near-term renewals (Jul 2026 dates in scan) | Feature flag enablement | 3 plans generated + reviewed in manager 1:1s |
-| **4. Validate one quarter of renewal metrics** | Reconcile `/renewals` GRR/churn to SFDC for one FQ | ATR retention support (board visibility) | Leadership can trust dollar figures in forecast script | Manual SOQL spot-check | Checklist items for one quarter marked complete |
-| **5. Ship CTA job progress UI** | Managers see scan progress; fewer duplicate runs | AI adoption / operational confidence | Reliable weekly scan cadence | Uncommitted diff | Merged + demo on `/ctas` generate flow |
+| **1. Antylia war room** | Logged customer touch before Jul 5 renewal | Near-term renewal risk; exec engagement | Protect $47K+ ATR; model save motion | AE Cameron + CSE Maha | Workshop or exec meeting on calendar; CTA advanced |
+| **2. Close the CTA loop** | Top 10 open CTAs reviewed and acknowledged | Renewal prioritization; team accountability | Focus ~$1M+ combined ATR on actionable plays | 26 open today | ≥50% open CTAs `team_aware` or `done` by Jul 3 |
+| **3. Pilot account plans on 3 at-risk renewals** | Strategic plans for Jul–Sep renewals | 6–8Q management; coaching | Earlier intervention on near-term dates | CSE time | 3 plans used in customer conversations |
+| **4. Validate one quarter of retention metrics** | Reconcile GRR/churn to SFDC/Clari | Board ATR retention goal | Leadership can trust dollar narrative | Rev Ops | One quarter signed off |
+| **5. Manager renewal triage brief** | AI-assisted 1-page brief for standup | AI enablement; portfolio review | Faster pod alignment on saves | Glean access | Used in ≥1 staff meeting without re-research |
 
-## Staff Engineer Recommendations
+## CSE Management Recommendations
 
 | # | Recommendation | Why Now | Expected Impact | Owner / Partner | Suggested Next Action |
 |---|----------------|---------|-----------------|-----------------|----------------------|
-| 1 | **Fix CI peer-dependency conflict** | `master` has been red since Jun 25; blocks confident merges | Restores delivery predictability | Engineering | Pin `@vitest/coverage-v8` to vitest 1.x-compatible version or upgrade vitest to 4.x |
-| 2 | **Institute weekly CTA review ritual** | 31 plays generated but 26 open; follow-through fields unused | Converts tooling into retention action | CSE Manager | 30-min review of top 10 CTAs by `priority_score`; mark `team_aware` in log |
-| 3 | **Enable account plan pilot** | Generator shipped Jun 22 but feature-flagged | Shifts engagements from reactive hygiene to strategic plans | CSE Manager + Staff Eng | Enable flag for 3 accounts; review output in `/accounts/[id]` |
-| 4 | **Complete SFDC reconciliation for one quarter** | All validation checklist items unchecked | Board-visible retention metrics become trustworthy | CSE Manager + Ops | Run SOQL from `renewal-metrics.md` for current prospective quarter |
-| 5 | **Instrument refresh duration** | Perf work landed but no measured baseline | Proves operational confidence for daily manager use | Engineering | Log `refresh.duration_ms` in `audit_log`; review weekly p50/p95 |
+| 1 | **Antylia all-hands before Jul 5** | Only renewal inside 10 days in top-risk set | Prevents slip-through churn | CSE Manager + AE lead | Schedule account review this week |
+| 2 | **Weekly top-10 CTA review** | 84% plays still open | Converts visibility to saves | CSE Manager | 30 min every Monday; mark `team_aware` |
+| 3 | **Dark-account engagement sprint** | 17 dark-account plays | Increases logged workshops Q3 | Pod leads | Each pod picks 3 accounts for outreach |
+| 4 | **Retention metric sign-off** | Board goal needs baseline | Trustworthy GRR/churn story | CSE Manager + Rev Ops | 2-hour SFDC/Clari reconciliation |
+| 5 | **Forward-quarter staff review** | 8Q views unused if not ritualized | Shifts culture to 6–8Q steering | CSE Manager | Walk `/renewals` prospective bucket in staff meeting |
 
 ## Risks to Watch
 
 | Risk | Impact on CSE Goals | Current Mitigation | Recommendation |
 | ---- | ------------------- | ------------------ | -------------- |
-| CI red on `master` | Slows retention tooling fixes | Local tests pass | Fix this week before next feature push |
-| Low CTA closure rate (26/31 open) | Renewal risks identified but not acted on | CTA log tracks `status` | Manager weekly review + `team_aware` discipline |
-| No measured ATR retention trend | Cannot prove progress toward 10% board goal | Renewal dashboards exist | SFDC reconciliation + export weekly GRR snapshot |
-| `team_aware` at 10% (3/31) | Account activity invisible to broader team | Slack channel mapping exists | Require channel acknowledgment before CTA ages past `check_back_date` |
-| Feature flags gate account plans | 6–8Q planning tool may be unused | Code complete | Explicit pilot enablement decision |
-| Cerebro/Glean data gaps | Health signals incomplete on some accounts | `data_quality_gap` play type; fallback scoring | Review `/admin/data-quality` ARR exposure weekly |
-| Technical debt in dependency tree | Future merges may fail silently | `npm test` locally | Align vitest ecosystem; add `npm ci` to pre-push habit |
+| Antylia Jul 5 renewal | Immediate ATR loss if disengagement continues | Dark-account CTA open | War room this week |
+| Low CTA closure (26/31 open) | Identified risk ≠ retained revenue | Priority scores rank plays | Manager weekly review |
+| Dark-account concentration (17/31) | Renewal surprise without customer touch | CTAs name engagement gap | Workshop logging target per pod |
+| `team_aware` at 10% | No accountability in Slack | Channels mapped per CTA | Require acknowledgment before check-back |
+| Stale sentiment commentary | Misread account health | CTA drivers flag staleness | CSE commentary refresh on reds |
+| Unvalidated GRR/churn | Board narrative lacks proof | Dashboards exist | One-quarter reconciliation |
+| Upsell under-weighted | Expansion left on table | Upsell scores on views | Separate expansion review monthly |
 
 ## AI Adoption Opportunity
 
 **Recommended AI enablement use case:**  
-Weekly **renewal-risk triage brief** — use Glean Adaptive chat (same pattern as forecast Health Snapshot) to produce a 1-page manager brief from the top 10 open CTAs plus account-plan signals.
+Weekly **renewal-risk triage brief** for the CSE staff meeting — Glean summarizes top 10 open CTAs with renewal date, ATR at risk, last customer touch, and recommended manager action.
 
 **Why it matters:**  
-Connects AI to **renewal risk triage** and **portfolio-level retention review**, turning structured MDAS data into coaching-ready narrative for CSE manager 1:1s.
+Connects AI to **renewal save execution** and **pod coaching**, not tooling — managers get a ready-made standup narrative from structured portfolio data.
 
 **How to pilot next week:**  
-Before Monday standup, run forecast generation for current quarter; paste top 10 open CTAs from `expand3_cta_log.jsonl` into a Glean chat with prompt: *"For each account, state renewal date, ATR at risk, one recommended manager action, and whether exec engagement is needed."* Review output with one CSE pod lead.
+Before Monday standup, export top 10 open CTAs from the CTA board and ask Glean: *"For each account, state renewal date, ATR at risk, engagement gap, and one recommended manager action."*
 
 **Success signal:**  
-Pod lead confirms brief was usable in ≥1 customer conversation without manual re-research; note which accounts triggered exec-engagement recommendation.
+Pod lead uses brief in staff meeting; ≥1 account gets outreach same day without manual re-research.
 
-## Closing Staff Engineer Assessment
+## Closing CSE Leadership Assessment
 
-- **Right problems?** Yes—MDAS is converging on the CSE shift: forward-quarter visibility, renewal-dollar prioritization, and manager-directed CTAs. The gap is **operational adoption and measured outcomes**, not feature absence.
-- **Quarter-by-quarter vs 6–8Q?** Infrastructure supports 6–8Q (8-quarter prospective views, 8Q CTA window, account plans). **Behavioral evidence** (CTA play mix, open closure rate, unchecked validation) still resembles quarterly execution.
-- **Highest-leverage action next week:** Restore CI green, then run a **manager-led CTA closure session** on the top 10 open plays—this converts $3.7M flagged ATR into accountable team action faster than new features.
-- **Leadership decision needed:** Approve engineering time to fix CI immediately; align CSE managers on weekly CTA review cadence and account-plan pilot accounts.
+- **Right focus?** Yes — this week’s scan correctly surfaces **save motion and engagement gaps** ahead of FY27–FY28 renewals, with **Antylia** as the immediate fire.
+- **Quarter-by-quarter vs 6–8Q?** Infrastructure supports forward steering; **behavior** is still scan-driven and reactive (dark accounts, low acknowledgment).
+- **Highest-leverage action:** **Antylia war room + Monday top-10 CTA review** — converts $3.7M of named risk into accountable customer motion.
+- **Leadership decision needed:** Mandate weekly CTA review cadence and confirm Antylia exec sponsor path before Jul 5.
 
 ---
 
-*Evidence base: `master` commits Jun 22–25, `expand3_cta_scan_2026-06-25.md`, `expand3_cta_log.jsonl`, local test run (763/763), GitHub Actions run `28193718579`, engineering docs in `docs/engineering/`.*
+*Evidence base: Jun 25 Expand 3 CTA scan (31 plays), `expand3_cta_log.jsonl` (26 open / 5 done / ~$3.7M ATR at risk), MDAS renewal and CTA views.*

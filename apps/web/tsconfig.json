@@ -17,6 +17,7 @@
       "@mdas/renewal-metrics": ["../../packages/renewal-metrics/src/index.ts"],
       "@mdas/cta-engine": ["../../packages/cta-engine/src/index.ts"],
       "@mdas/account-plan-engine": ["../../packages/account-plan-engine/src/index.ts"],
+      "@mdas/cse-activity": ["../../packages/cse-activity/src/index.ts"],
       "@mdas/db": ["../../packages/db/src/index.ts"],
       "@mdas/slack-send": ["../../packages/slack-send/src/index.ts"]
     }

@@ -18,6 +18,8 @@ const NAV = [
   { href: '/ctas', label: 'CTAs' },
   { href: '/forecast', label: 'Forecast' },
   { href: '/glean', label: 'Glean' },
+  { href: '/admin/cse-activity', label: 'CSE Activity' },
+  { href: '/admin/leadership', label: 'Expand 3 Exec' },
   { href: '/admin/data-quality', label: 'Data Quality' },
   { href: '/admin/refresh', label: 'Refresh' },
   { href: '/admin/slack', label: 'Slack' },

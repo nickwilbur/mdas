@@ -80,7 +80,14 @@ stop_processes() {
   fi
   pkill -f "next dev" 2>/dev/null || true
   pkill -f "tsx src/main.ts" 2>/dev/null || true
+  local wp
+  wp="$(web_pid)"
+  if [[ -n "$wp" ]]; then
+    kill "$wp" 2>/dev/null || true
+  fi
   rm -f "$WEB_PID_FILE" "$WORKER_PID_FILE"
+  # Let screen/node release .next file handles before we clear the cache.
+  sleep 2
 }
 
 wait_for_web() {
@@ -106,10 +113,29 @@ clear_production_next_cache() {
   local next_dir="$REPO_ROOT/apps/web/.next"
   # `next build` leaves production artifacts in .next. If `next dev` starts
   # against that cache, HTML renders but /_next/static/css and chunks 404.
-  if [[ -f "$next_dir/BUILD_ID" || -f "$next_dir/export-marker.json" ]]; then
-    echo "🧹 Clearing production .next cache (required before dev)..."
-    rm -rf "$next_dir"
+  if [[ ! -f "$next_dir/BUILD_ID" && ! -f "$next_dir/export-marker.json" ]]; then
+    return 0
   fi
+  echo "🧹 Clearing production .next cache (required before dev)..."
+  local attempt stale
+  for attempt in 1 2 3 4 5; do
+    if [[ ! -d "$next_dir" ]]; then
+      return 0
+    fi
+    # Rename aside first so dev can start even if background deletion is slow.
+    stale="${next_dir}.stale.$$"
+    if mv "$next_dir" "$stale" 2>/dev/null; then
+      rm -rf "$stale" >/dev/null 2>&1 &
+      return 0
+    fi
+    if rm -rf "$next_dir" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "❌ Could not clear $next_dir (another Next.js process may still be running)." >&2
+  echo "   Run: bash scripts/local-dev.sh stop && sleep 2 && rm -rf $next_dir" >&2
+  return 1
 }
 
 start_web() {

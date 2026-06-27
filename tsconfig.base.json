@@ -34,6 +34,7 @@
       "@mdas/adapter-staircase-gmail": ["packages/adapters/read/staircase-gmail/src/index.ts"],
       "@mdas/adapter-zuora-mcp": ["packages/adapters/read/zuora-mcp/src/index.ts"],
       "@mdas/adapter-glean-mcp": ["packages/adapters/read/glean-mcp/src/index.ts"],
+      "@mdas/cse-activity": ["packages/cse-activity/src/index.ts"],
       "@mdas/adapter-local-snapshots": ["packages/adapters/read/local-snapshots/src/index.ts"]
     }
   }

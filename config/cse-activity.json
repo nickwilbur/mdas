@@ -1,0 +1,20 @@
+{
+  "managerName": "Nick Wilbur",
+  "managerEmail": "nick.wilbur@zuora.com",
+  "strategicAccountIds": [],
+  "expand3AccountIds": [],
+  "renewalRiskAccountIds": [],
+  "atrRelevantAccountIds": [],
+  "executiveSponsorMappings": {},
+  "prioritySlackChannels": ["expand3-risk-signals"],
+  "customerSlackChannels": [],
+  "internalCseChannels": ["expand3-cse"],
+  "excludedSlackChannels": [],
+  "analyzePrivateSlackDms": false,
+  "timezone": "America/Denver",
+  "fridayEodTime": "17:00",
+  "snapshotOutputDir": "reports/cse_activity_snapshots",
+  "individualReportOutputDir": "team_member_reports",
+  "autoDeliverReports": false,
+  "enablePdfExport": true
+}

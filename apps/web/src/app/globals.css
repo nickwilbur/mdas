@@ -4,3 +4,101 @@
 
 :root { color-scheme: light; }
 body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+/* Leadership brief: 3 landscape letter pages (browser print) */
+@media print {
+  @page {
+    size: letter landscape;
+    margin: 0.35in;
+  }
+
+  .brief-screen-only {
+    display: none !important;
+  }
+
+  .brief-export-only {
+    display: block !important;
+  }
+
+  .leadership-print-header {
+    background: #0f172a !important;
+    background-image: none !important;
+  }
+
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+  }
+
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  header {
+    display: none !important;
+  }
+
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+  }
+
+  .print\\:hidden {
+    display: none !important;
+  }
+
+  .leadership-export-root > *:not(.leadership-dashboard) {
+    display: none !important;
+  }
+
+  .leadership-dashboard {
+    background: white !important;
+    gap: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .leadership-print-page {
+    display: block !important;
+    break-after: page;
+    page-break-after: always;
+    margin: 0;
+    padding: 0;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .leadership-print-page:last-of-type {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  .leadership-print-body {
+    font-size: 8pt;
+    line-height: 1.25;
+  }
+
+  .leadership-print-page table {
+    font-size: 7pt;
+    line-height: 1.2;
+  }
+
+  .leadership-print-page table th,
+  .leadership-print-page table td {
+    padding: 2px 4px !important;
+  }
+
+  .leadership-print-page .leadership-print-body {
+    zoom: 0.9;
+  }
+}
+
+/* Screen/print toggle helpers used by the on-screen brief + browser-print fallback. */
+.brief-export-only {
+  display: none;
+}

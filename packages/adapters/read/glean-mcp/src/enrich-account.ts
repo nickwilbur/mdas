@@ -21,13 +21,6 @@ export async function enrichGleanMcpAccount(
     fetchAccountContext(client, input),
     fetchAccountEvidence(client, input),
   ]);
-  if (
-    context.accountPlanLinks.length === 0 &&
-    evidence.recentMeetings.length === 0 &&
-    evidence.sourceLinks.length === 0
-  ) {
-    return null;
-  }
   const patch: Partial<CanonicalAccount> = { accountId: account.accountId };
   applyContextAndEvidenceToAccount(
     patch,

@@ -30,6 +30,7 @@ const nextConfig = {
     '@mdas/adapter-glean-mcp',
     '@mdas/adapter-shared',
     '@mdas/canonical',
+    '@mdas/cse-activity',
     '@mdas/cta-engine',
     '@mdas/db',
     '@mdas/forecast-generator',
