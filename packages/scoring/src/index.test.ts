@@ -182,6 +182,37 @@ describe('scoreUpsell', () => {
     expect(r.signals.find((s) => s.label.startsWith('Open Upsell'))).toBeTruthy();
     expect(r.signals.find((s) => /Whitespace/.test(s.label))).toBeTruthy();
   });
+
+  it('rewards Cerebro risk category improvement WoW', () => {
+    const improved = scoreUpsell(
+      { ...baseAccount, cerebroRiskCategory: 'Medium' },
+      [],
+      'High',
+    );
+    expect(improved.signals.find((s) => s.label === 'Cerebro Risk Category improved WoW')).toBeTruthy();
+    expect(improved.score).toBeGreaterThanOrEqual(15);
+  });
+
+  it('does not reward risk category worsening or unchanged WoW', () => {
+    const worsened = scoreUpsell(
+      { ...baseAccount, cerebroRiskCategory: 'High' },
+      [],
+      'Low',
+    );
+    expect(worsened.signals.find((s) => /improved WoW/.test(s.label))).toBeFalsy();
+
+    const unchanged = scoreUpsell(
+      { ...baseAccount, cerebroRiskCategory: 'Low' },
+      [],
+      'Low',
+    );
+    expect(unchanged.signals.find((s) => /improved WoW/.test(s.label))).toBeFalsy();
+  });
+
+  it('ignores prevRiskCategory when current category is missing', () => {
+    const r = scoreUpsell({ ...baseAccount, cerebroRiskCategory: null }, [], 'High');
+    expect(r.signals.find((s) => /improved WoW/.test(s.label))).toBeFalsy();
+  });
 });
 
 describe('evaluateHygiene', () => {
