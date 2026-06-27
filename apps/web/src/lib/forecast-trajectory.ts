@@ -37,9 +37,11 @@ import {
   fiscalQuarterStart,
   parseClariManagerForecastExportCsv,
   selectLatestClariForecastValue,
+  supplementViewsWithDroppedQuarterChurnOpps,
   timeframeMatchesFiscalQuarter,
   type QuarterKpiSnapshot,
 } from '@mdas/forecast-generator';
+import { loadChurnOpportunitySupplementFromRecentRefreshes } from '@/lib/read-model';
 
 /**
  * One trajectory point — KPI snapshot for a single quarter at a
@@ -162,6 +164,13 @@ export async function loadForecastTrajectory(
       } else {
         views = await buildViewsForRun(run.id);
       }
+      const prior = await loadChurnOpportunitySupplementFromRecentRefreshes(run.id);
+      views = supplementViewsWithDroppedQuarterChurnOpps(
+        views,
+        prior,
+        asOfDate,
+        (account, opps) => buildAccountViewWithDefaults(account, opps),
+      );
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('forecast.trajectory.buildViews.failed', {

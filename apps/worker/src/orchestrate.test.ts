@@ -144,7 +144,7 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks, buildCerebroRestCoverage } from './orchestrate.js';
+import { runRefresh, partitionAdaptersForFetch, mergeSourceLinks, buildCerebroRestCoverage, mergeCerebroRisks } from './orchestrate.js';
 import { applySalesforceAuthoritativeSnapshot } from './salesforce-authoritative.js';
 
 // Helpers to keep tests focused. The fixture only carries the fields
@@ -331,6 +331,33 @@ describe('runRefresh — orchestrator', () => {
 
   // cerebro-glean inclusion policy is covered in cerebro-glean-policy.test.ts.
 
+  describe('mergeCerebroRisks', () => {
+    it('preserves true flags when a later adapter emits null for the same field', () => {
+      const merged = mergeCerebroRisks(
+        {
+          utilizationRisk: true,
+          engagementRisk: false,
+          suiteRisk: null,
+          shareRisk: null,
+          legacyTechRisk: null,
+          expertiseRisk: null,
+          pricingRisk: null,
+        },
+        {
+          utilizationRisk: null,
+          engagementRisk: true,
+          suiteRisk: null,
+          shareRisk: null,
+          legacyTechRisk: null,
+          expertiseRisk: null,
+          pricingRisk: null,
+        },
+      );
+      expect(merged.utilizationRisk).toBe(true);
+      expect(merged.engagementRisk).toBe(true);
+    });
+  });
+
   it('keeps results from two adapters that share a source (cerebro-rest + cerebro-glean)', async () => {
     // Regression: fetchResults was keyed by `source`, so cerebro-glean
     // (source 'cerebro', runs second) overwrote cerebro-rest's result
@@ -349,6 +376,15 @@ describe('runRefresh — orchestrator', () => {
             accountId: 'A1',
             cerebroRiskCategory: 'Critical',
             cerebroRiskAnalysis: 'Paused use of Zuora Revenue.',
+            cerebroRisks: {
+              utilizationRisk: true,
+              engagementRisk: null,
+              suiteRisk: null,
+              shareRisk: null,
+              legacyTechRisk: null,
+              expertiseRisk: null,
+              pricingRisk: null,
+            },
           } as unknown as CanonicalAccount,
         ],
         opportunities: [],
