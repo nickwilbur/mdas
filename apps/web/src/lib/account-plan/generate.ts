@@ -17,6 +17,7 @@ import {
   hasActiveAccountPlanRefresh,
   insertAccountPlan,
   setAccountPlanRefreshingLock,
+  clearStaleRefreshingPlans,
 } from '@mdas/db';
 import { getAccount } from '@/lib/read-model';
 import { fetchRemoteCollectorContext } from '@/lib/account-plan/remote-collectors';
@@ -90,6 +91,7 @@ export async function generatePersistedAccountPlan(opts: {
   }
 
   if (!opts.skipConcurrencyGuard) {
+    await clearStaleRefreshingPlans();
     if (inFlight.has(opts.accountId) || (await hasActiveAccountPlanRefresh(opts.accountId))) {
       throw new AccountPlanConcurrentError();
     }
