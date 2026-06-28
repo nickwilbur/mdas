@@ -528,36 +528,35 @@ export function getMockDataPrior(): {
     opportunities: opportunities.map((o) => ({ ...o })),
   };
 
-  // Helios (02): prior risk High → currently Critical
-  const helios = prior.accounts.find((a) => a.accountId === '0010000000000002AAA');
-  if (helios) helios.cerebroRiskCategory = 'High';
-
-  // Bridgewater (03): prior sentiment Yellow → currently Red
-  const bw = prior.accounts.find((a) => a.accountId === '0010000000000003AAA');
-  if (bw) bw.cseSentiment = 'Yellow';
-
-  // Kestrel (04): prior had no recent workshop; current has one → workshop added this week
-  const kestrel = prior.accounts.find((a) => a.accountId === '0010000000000004AAA');
-  if (kestrel) kestrel.workshops = [];
-
-  // Lumen Zephr (06): prior stage Stage 2; current Stage 3
-  const lumenZephr = prior.opportunities.find((o) => o.opportunityId === 'OPP-06-UP');
-  if (lumenZephr) {
-    lumenZephr.stageName = 'Stage 2 - Discovery';
-    lumenZephr.stageNum = 2;
-    lumenZephr.forecastMostLikely = 150_000;
+  // Adweek (idx 0): prior risk High → currently Critical
+  if (prior.accounts[0]) {
+    prior.accounts[0].cerebroRiskCategory = 'High';
+    prior.accounts[0].cerebroRisks = {
+      ...prior.accounts[0].cerebroRisks,
+      engagementRisk: false,
+    };
   }
 
-  // Northwind (01): prior had no churn notice date
-  const nw = prior.opportunities.find((o) => o.opportunityId === 'OPP-01-CHURN');
-  if (nw) {
-    nw.fullChurnNotificationToOwnerDate = null;
-    nw.fullChurnFinalEmailSentDate = null;
+  // WEHCO Media (idx 1): prior sentiment Yellow → currently Red
+  if (prior.accounts[1]) prior.accounts[1].cseSentiment = 'Yellow';
+
+  // Quotit (idx 2): prior had no recent workshop; current has one
+  if (prior.accounts[2]) prior.accounts[2].workshops = [];
+
+  // WEHCO renewal (idx 1): prior stage Stage 2; current Negotiation (stage 6)
+  const wehcoRenewal = prior.opportunities.find((o) => o.accountId === accounts[1]?.accountId);
+  if (wehcoRenewal) {
+    wehcoRenewal.stageName = 'Stage 2 - Discovery';
+    wehcoRenewal.stageNum = 2;
+    wehcoRenewal.forecastMostLikely = 150_000;
   }
 
-  // Pinecrest (12): prior had cerebroRisks.engagementRisk false → currently true
-  const pine = prior.accounts.find((a) => a.accountId === '0010000000000012AAA');
-  if (pine) pine.cerebroRisks = { ...pine.cerebroRisks, engagementRisk: false };
+  // Adweek renewal: prior had no churn notice dates
+  const adweekRenewal = prior.opportunities.find((o) => o.accountId === accounts[0]?.accountId);
+  if (adweekRenewal) {
+    adweekRenewal.fullChurnNotificationToOwnerDate = null;
+    adweekRenewal.fullChurnFinalEmailSentDate = null;
+  }
 
   return prior;
 }
