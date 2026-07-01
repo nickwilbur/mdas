@@ -10,6 +10,7 @@ import {
   fiscalQuarterFromDate,
   fiscalQuarterLabel,
   computeQuarterKpis,
+  supplementViewsWithDroppedQuarterChurnOpps,
   type ForecastInput,
   type GleanFlaggedRisk,
   type CloseGapActionPlan,
@@ -19,7 +20,9 @@ import type { AccountView } from '@mdas/canonical';
 import {
   getDashboardData,
   getWoWChangeEvents,
+  loadChurnOpportunitySupplementFromRecentRefreshes,
 } from '@/lib/read-model';
+import { buildAccountViewWithDefaults } from '@/lib/account-defaults';
 import { loadForecastTrajectory } from '@/lib/forecast-trajectory';
 import { overlayAuthoritativeTrajectoryKpis } from '@/lib/forecast-trajectory-kpis';
 import { generateHealthSnapshot } from '@/lib/forecast-narrative';
@@ -124,7 +127,14 @@ export async function generateForecastScript(
     getDashboardData(),
     getWoWChangeEvents(),
   ]);
-  const forecastViews = views;
+  const forecastViews = refreshId
+    ? supplementViewsWithDroppedQuarterChurnOpps(
+        views,
+        await loadChurnOpportunitySupplementFromRecentRefreshes(refreshId),
+        asOfDate,
+        (account, opps) => buildAccountViewWithDefaults(account, opps),
+      )
+    : views;
   const latestRefreshMeta = {
     refreshId: refreshId ?? '',
     refreshStartedAt:
