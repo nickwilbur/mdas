@@ -33,6 +33,7 @@ import {
   mergeConfig,
   carryForwardCtaProgress,
   indexCtaLogByDedupKey,
+  mergeCTAUpdate,
   type CTARecord,
   type CTALogEntry,
 } from '@mdas/cta-engine';
@@ -107,6 +108,13 @@ function toLogEntry(cta: CTARecord, scanDate: string): CTALogEntry {
 
 function appendToLog(cta: CTARecord, scanDate: string): void {
   appendFileSync(logFilePath(), JSON.stringify(toLogEntry(cta, scanDate)) + '\n');
+}
+
+function appendLogUpdate(existing: CTALogEntry, cta: CTARecord, scanDate: string): void {
+  appendFileSync(
+    logFilePath(),
+    JSON.stringify(mergeCTAUpdate(existing, cta, scanDate)) + '\n',
+  );
 }
 
 /** Full-scan refresh: archive prior log and write only the current scan's CTAs. */
@@ -394,7 +402,7 @@ export async function runScan(options: {
 
   emitProgress('classify', 3, 3, `Evaluating ${views.length} accounts`);
 
-  const { ctas, suppressed, skipped } = generateCTAsForViews(views, {
+  const { ctas, suppressed, skipped, updated } = generateCTAsForViews(views, {
     scanDate,
     accountFilter: options.accountFilter,
     existingLog,
@@ -422,9 +430,13 @@ export async function runScan(options: {
       prunedScans = pruneOldScanFiles(scanDate);
       replaceLog(ctas, scanDate, priorLog);
     } else {
+      const updatedIds = new Set(updated.map((c) => c.cta_id));
       for (const cta of ctas) {
-        if (!existingLog.has(cta.cta_id)) {
+        const existing = existingLog.get(cta.cta_id);
+        if (!existing) {
           appendToLog(cta, scanDate);
+        } else if (updatedIds.has(cta.cta_id)) {
+          appendLogUpdate(existing, cta, scanDate);
         }
       }
     }
